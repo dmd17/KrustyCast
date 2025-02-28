@@ -10,3 +10,12 @@ license = "MIT"
 # Add your dependencies here.
 crossbeam-channel = "0.5"
 dashmap = "5.0"
+
+# Define separate binaries
+[[bin]]
+name = "sequencer"
+path = "src/sequencer/sequencer.rs"
+
+[[bin]]
+name = "client1"
+path = "src/examples/client1.rs"

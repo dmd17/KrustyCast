@@ -1,5 +1,4 @@
 use krustycast::client::{start_listener, ClientSender};
-use dashmap::DashMap;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
