@@ -1,0 +1,12 @@
+[package]
+name = "krustycast"
+version = "0.1.0"
+authors = ["Dan & Dan"]
+edition = "2024"
+description = "A Rust-based multicast sequencer for high frequency trading applications."
+license = "MIT"
+
+[dependencies]
+# Add your dependencies here.
+crossbeam-channel = "0.5"
+dashmap = "5.0"
