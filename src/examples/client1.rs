@@ -1,5 +1,4 @@
-use krustycast::client::{start_listener, ClientSender};
-use std::sync::Arc;
+use krustycast::client::KrustyClient;
 use std::thread;
 use std::time::Duration;
 use clap::Parser;
@@ -32,11 +31,11 @@ fn main() -> std::io::Result<()> {
     let to_sequencer_addr = args.to_sequencer_addr;
     let from_sequencer_addr: String = args.from_sequencer_addr;
 
-    // Create a new sender instance.
-    let client = KrustyClient::new(my_id, to_sequencer_addr, from_sequencer_addr);
+    // Create a new client instance.
+    let client = KrustyClient::new(my_id, &to_sequencer_addr, &from_sequencer_addr);
 
     // Register callback for messages intended for me
-    client.register_callback(|msg: [u8]| {
+    client.register_callback(|msg: Vec<u8>| {
         println!("Received msg for me: {:?}", String::from_utf8_lossy(&msg));
     });
 
@@ -44,18 +43,14 @@ fn main() -> std::io::Result<()> {
     client.start_listener();
 
     // Simulate sending messages periodically.
-    thread::spawn(move || {
-        for i in 0..10 {
-            let payload = format!("Message {}", i);
-            if let Err(e) = client.send_message(args.target_id, payload.as_bytes()) {
-                eprintln!("Send error: {}", e);
-            }
-            thread::sleep(Duration::from_millis(500));
-        }
-    });
+    for i in 0..10 {
+        let payload = format!("Message {}", i);
+        client.send_message(args.target_id, payload.as_bytes());
 
-    // Keep the main thread alive.
-    loop {
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(500));
     }
+
+    //client.stop();
+
+    Ok(())
 }

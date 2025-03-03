@@ -1,7 +1,8 @@
 use crossbeam_channel::{select, tick, unbounded};
-use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::collections::{HashMap, VecDeque};
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::thread;
+use std::time::{Duration, Instant};
 use clap::Parser;
 
 const BUFFER_SIZE: usize = 1000; // Store the last 1000 messages
@@ -38,7 +39,7 @@ struct MessageFromClient {
 
 /// Parses an incoming byte slice into a Message.
 /// Expected format: 4 bytes (sender), 8 bytes (sender_seqno), 4 bytes (target) + 8 bytes (target_seqno) + payload.
-fn parse_message(data: &[u8], src_addr: SocketAddr) -> Option<MessageFromClient> {
+fn parse_message(data: &[u8]) -> Option<MessageFromClient> {
     if data.len() < 24 {
         return None;
     }
@@ -71,7 +72,7 @@ fn build_nak_message(expected_sequence: u64) -> Vec<u8> {
 fn main() -> std::io::Result<()> {
     let args = Args::parse(); // Parse command-line arguments
 
-    let epoch: u64 = args.epoch;
+    let epoch: u32 = args.epoch;
 
     // Create UDP socket for receiving.
     let recv_socket = UdpSocket::bind("0.0.0.0:5000")?;
@@ -84,13 +85,11 @@ fn main() -> std::io::Result<()> {
     let send_socket = UdpSocket::bind("0.0.0.0:6000")?;
     send_socket.set_multicast_ttl_v4(1)?;
 
-    let from_sequencer_multicast_v4: Ipv4Addr = args.from_sequencer_addr.parse().unwrap();
-
     // Create a lock-free channel for inter-thread message passing.
-    let (tx, rx) = unbounded::<Message>();
+    let (tx, rx) = unbounded::<MessageFromClient>();
     let ticker = tick(Duration::from_secs(1));
 
-    let mut message_buffer: VecDeque<Message> = VecDeque::with_capacity(BUFFER_SIZE);
+    let mut message_buffer: VecDeque<MessageFromClient> = VecDeque::with_capacity(BUFFER_SIZE);
     let mut last_heartbeat = Instant::now();
     let mut sequence_number = 1;
 
@@ -101,14 +100,14 @@ fn main() -> std::io::Result<()> {
         let mut sender_map: HashMap<u32, u64> = HashMap::new();
 
         //let mut buf = [0u8; 1500];
-        let mut buf = Vec::with_capacity(1500 + msg.payload.len());
+        let mut buf = Vec::with_capacity(9000);
         loop {
             match recv_socket_clone.recv_from(&mut buf) {
                 Ok((n, src_addr)) => {
-                    if let Some(message) = parse_message(&buf[..n], src_addr) {
+                    if let Some(message) = parse_message(&buf[..n]) {
                         println!("Received: {:?}", message);
 
-                        let last_seq = target_map.get(&message.sender_id).copied().unwrap_or(0);
+                        let last_seq = sender_map.get(&message.sender_id).copied().unwrap_or(0);
                         //Check for gaps in per sender seqno
                         if (message.sender_seqno == last_seq + 1) {
                             // enqueue for resender thread
@@ -124,9 +123,9 @@ fn main() -> std::io::Result<()> {
                                 message.sender_seqno
                             );
                             let nak = build_nak_message(last_seq + 1);
-                            match send_socket_clone.send_to(&nak, src_addr) {
+                            match recv_socket_clone.send_to(&nak, src_addr) {
                                 Ok(sent) => {
-                                    println!("Sent NAK to {}: {} bytes", msg.src_addr, sent);
+                                    println!("Sent NAK to {}: {} bytes", src_addr, sent);
                                 }
                                 Err(e) => {
                                     eprintln!("Failed to send NAK: {}", e);
@@ -148,6 +147,8 @@ fn main() -> std::io::Result<()> {
 
     // Resender thread: puts global sequence number on outgoing messages.
     let send_socket_clone = send_socket.try_clone()?;
+    let from_sequencer_multicast_v4: SocketAddrV4 = args.from_sequencer_addr.parse().unwrap();
+
     let resender_handle = thread::spawn(move || -> ! {
         // Mapping: target ID → last sent sequence number.
         let mut target_map: HashMap<u32, u64> = HashMap::new();
@@ -172,7 +173,7 @@ fn main() -> std::io::Result<()> {
                             forwarded_msg.extend(&msg_count.to_be_bytes());
 
                             // add the message size
-                            let msg_size: u16 = 4 + 8 + msg.payload.len();
+                            let msg_size: u16 = 4 + 8 + msg.payload.len() as u16;
                             forwarded_msg.extend(&msg_size.to_be_bytes());
 
                             forwarded_msg.extend(&msg.sender_id.to_be_bytes());
@@ -193,11 +194,11 @@ fn main() -> std::io::Result<()> {
                             }
 
                             last_heartbeat = Instant::now();
-                        } else if msg.sequence <= last_seq {
+                        } else if msg.sequence <= last_seq_to_target {
                             // Stale message for target; drop it.
                             println!(
                                 "Dropping stale message for target {}: received sequence {} (last: {})",
-                                msg.target, msg.sequence, last_seq
+                                msg.target, msg.sequence, last_seq_to_target
                             );
                         } 
                     }
@@ -207,9 +208,9 @@ fn main() -> std::io::Result<()> {
                     if last_heartbeat.elapsed() >= Duration::from_secs(1) {
                         // build the heartbeat header
                         let mut heartbeat_packet = Vec::with_capacity(20);
-                        forwarded_msg.extend(&epoch.to_be_bytes());
-                        forwarded_msg.extend(&global_seqno.to_be_bytes());
-                        forwarded_msg.extend(0.to_be_bytes());
+                        heartbeat_packet.extend(&epoch.to_be_bytes());
+                        heartbeat_packet.extend(&global_seqno.to_be_bytes());
+                        heartbeat_packet.extend(0_u64.to_be_bytes());
 
                         match send_socket.send_to(&heartbeat_packet, from_sequencer_multicast_v4) {
                             Ok(sent) => {
