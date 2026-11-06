@@ -1,3 +1,3 @@
 pub mod client;
 
-pub use client::KrustyClient;
+pub use client::{ClientConfig, KrustyClient};

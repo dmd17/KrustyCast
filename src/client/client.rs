@@ -1,300 +1,390 @@
-use dashmap::DashMap;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use crate::net::{bind_receiver, bind_sender, RECV_BUFFER_SIZE};
+use crate::protocol::{ClientMessage, Feedback, MoldPacket, SequencedMessage, Session};
+use crate::stream::{Outcome, StreamTracker, TrackerConfig};
+use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
+use std::collections::{BTreeMap, HashMap};
+use std::io;
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
- // Define the message structure.
- #[derive(Debug, Clone)]
- struct OutstandingMessage {
-     target_seq: u64,
-     payload: Vec<u8>
- }
+/// How many sent messages are kept for resending after a NAK.
+const SENT_BUFFER_LIMIT: usize = 65536;
+/// Socket read timeout, i.e. how quickly the listener threads notice `stop()`.
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How often the stream processor wakes up to retry re-requests.
+const RETRY_TICK: Duration = Duration::from_millis(20);
 
+type Callback = Box<dyn Fn(Vec<u8>) + Send>;
+
+/// Client settings. `ClientConfig::new` fills in defaults matching the sequencer's.
 #[derive(Debug, Clone)]
- struct Target {
-    last_seq: Arc<AtomicU64>,
-    outstanding: DashMap<u64, OutstandingMessage>
- }
+pub struct ClientConfig {
+    pub my_id: u32,
+    /// Where messages to the sequencer go (unicast or multicast).
+    pub to_sequencer_addr: SocketAddrV4,
+    /// The sequencer's MoldUDP64 multicast stream.
+    pub from_sequencer_addr: SocketAddrV4,
+    /// The sequencer's re-request server. None = don't recover gaps, skip them.
+    pub rerequest_addr: Option<SocketAddrV4>,
+    /// Local interface for multicast (unspecified = OS default).
+    pub interface: Ipv4Addr,
+    /// Only follow this session. None = lock onto the first one seen.
+    pub session: Option<Session>,
+    /// Replay the session from this seqno via re-requests. None = start at the
+    /// first live packet (messages sent before the client joined are not delivered).
+    pub start_seqno: Option<u64>,
+    pub verbose: bool,
+}
 
-/// ClientSender encapsulates the sending logic and sequence tracking.
+impl ClientConfig {
+    pub fn new(my_id: u32) -> Self {
+        ClientConfig {
+            my_id,
+            to_sequencer_addr: "239.0.0.1:5000".parse().unwrap(),
+            from_sequencer_addr: "239.0.0.2:6000".parse().unwrap(),
+            rerequest_addr: Some("127.0.0.1:5001".parse().unwrap()),
+            interface: Ipv4Addr::UNSPECIFIED,
+            session: None,
+            start_seqno: None,
+            verbose: false,
+        }
+    }
+}
+
+/// A message to a target that has been sent but not yet seen on the sequenced stream.
+#[derive(Debug)]
+struct Outstanding {
+    sender_seqno: u64,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+struct TargetState {
+    /// Highest target seq seen on the stream or claimed by us.
+    last_seq: u64,
+    /// Our in-flight messages to this target, by the target seq they claimed.
+    outstanding: HashMap<u64, Outstanding>,
+}
+
+#[derive(Debug)]
+struct SenderState {
+    next_seqno: u64,
+    /// Encoded messages by sender seqno, kept for resending after a NAK.
+    sent: BTreeMap<u64, Vec<u8>>,
+}
+
+struct Inner {
+    cfg: ClientConfig,
+    /// Sends to the sequencer and receives its NAK/REJECT feedback.
+    socket: UdpSocket,
+    // Lock order: `targets` before `sender`.
+    targets: Mutex<HashMap<u32, TargetState>>,
+    sender: Mutex<SenderState>,
+    callback: Mutex<Option<Callback>>,
+    running: AtomicBool,
+    delivered: AtomicU64,
+    lost: AtomicU64,
+}
+
+/// A KrustyCast client: sends messages to targets through the sequencer and
+/// delivers sequenced messages addressed to `my_id` to a callback, in
+/// sequence order, recovering lost packets from the re-request server.
 pub struct KrustyClient {
-    my_id: u32,
-    /// My sequence number
-    my_seqno: Arc<AtomicU64>,
-    /// The address of the sequencer server.
-    to_sequencer_addr: SocketAddrV4,
-    /// The address of the multicast group to which the sequencer sends.
-    from_sequencer_addr: SocketAddrV4,
-    /// UDP socket used for sending messages.
-    to_sequencer_socket: Arc<UdpSocket>,
-
-    // Buffers sent messages for potential resending to sequencer.
-    sent_message_buffer: Arc<DashMap<u64, Vec<u8>>>,
-
-    // track last known seqno and outstanding messages by Target
-    target_map: Arc<DashMap<u32, Target>>,
-
-    callback: Arc<Mutex<Option<Box<dyn Fn(Vec<u8>) + Send>>>>
+    inner: Arc<Inner>,
+    threads: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl KrustyClient {
-    /// Creates a new KrustyClient.
-    ///
-    /// `sequencer_addr` should be in the form "ip:port".
-    pub fn new(my_id: u32, to_sequencer_addr: &str, from_sequencer_addr: &str) -> Self {
-        KrustyClient {
-            my_id: my_id,
-            my_seqno: Arc::new(AtomicU64::new(0)),
-            to_sequencer_addr: to_sequencer_addr.parse().unwrap(),
-            from_sequencer_addr: from_sequencer_addr.parse().unwrap(),
-            to_sequencer_socket: Arc::new(UdpSocket::bind("0.0.0.0:0").expect("Could not bind to a local socket")),
-            sent_message_buffer: Arc::new(DashMap::new()),
-            target_map: Arc::new(DashMap::new()),
-            callback: Arc::new(Mutex::new(None))
-        }
+    pub fn new(cfg: ClientConfig) -> io::Result<Self> {
+        let socket = bind_sender(cfg.to_sequencer_addr, cfg.interface)?;
+        socket.set_read_timeout(Some(POLL_INTERVAL))?;
+        Ok(KrustyClient {
+            inner: Arc::new(Inner {
+                cfg,
+                socket,
+                targets: Mutex::new(HashMap::new()),
+                sender: Mutex::new(SenderState { next_seqno: 1, sent: BTreeMap::new() }),
+                callback: Mutex::new(None),
+                running: AtomicBool::new(false),
+                delivered: AtomicU64::new(0),
+                lost: AtomicU64::new(0),
+            }),
+            threads: Mutex::new(Vec::new()),
+        })
     }
 
-    /// Registers a single callback to receive messages intended for this target.
+    /// Registers the callback that receives payloads of messages addressed to this client.
+    /// It runs on the stream processing thread.
     pub fn register_callback<F>(&self, callback: F)
     where
         F: Fn(Vec<u8>) + Send + 'static,
     {
-        let mut cb = self.callback.lock().unwrap();
-        *cb = Some(Box::new(callback));
+        *self.inner.callback.lock().unwrap() = Some(Box::new(callback));
     }
 
-    /// Sends a message for a given target.
-    ///
-    /// This function automatically increments the sequence number based on the
-    /// last known global sequence for that target.
+    /// Sends a message to `target_id`, claiming the next target seq this client knows of.
+    /// If another sender wins that slot, the sequencer rejects it and the client
+    /// retries automatically with a fresh seq.
     pub fn send_message(&self, target_id: u32, payload: &[u8]) {
-        let target = self.target_map.entry(target_id).or_insert(Target { last_seq: Arc::new(AtomicU64::new(0)), outstanding: DashMap::new() });
+        let mut targets = self.inner.targets.lock().unwrap();
+        let target = targets.entry(target_id).or_default();
+        self.inner.claim_and_send(target_id, target, payload.to_vec());
+    }
 
-        target.last_seq.fetch_add(1, Ordering::Relaxed);
+    /// Number of messages sent but not yet seen on the sequenced stream.
+    pub fn pending(&self) -> usize {
+        self.inner.targets.lock().unwrap().values().map(|t| t.outstanding.len()).sum()
+    }
 
-        let msg = OutstandingMessage {
-            target_seq: target.last_seq.load(Ordering::Relaxed),
-            payload: payload.to_vec() // there is a copy here
+    /// Messages from the stream processed so far (all targets).
+    pub fn delivered(&self) -> u64 {
+        self.inner.delivered.load(Ordering::SeqCst)
+    }
+
+    /// Stream messages given up on after recovery failed.
+    pub fn lost(&self) -> u64 {
+        self.inner.lost.load(Ordering::SeqCst)
+    }
+
+    /// Joins the sequenced stream and starts the listener threads.
+    pub fn start_listener(&self) -> io::Result<()> {
+        if self.inner.running.swap(true, Ordering::SeqCst) {
+            return Ok(()); // already running
+        }
+        let sockets = (|| -> io::Result<_> {
+            let stream = bind_receiver(self.inner.cfg.from_sequencer_addr, self.inner.cfg.interface)?;
+            stream.set_read_timeout(Some(POLL_INTERVAL))?;
+            let rereq = match self.inner.cfg.rerequest_addr {
+                Some(addr) => {
+                    let s = bind_sender(addr, self.inner.cfg.interface)?;
+                    s.set_read_timeout(Some(POLL_INTERVAL))?;
+                    Some(Arc::new(s))
+                }
+                None => None,
+            };
+            Ok((stream, rereq))
+        })();
+        let (stream, rereq) = match sockets {
+            Ok(s) => s,
+            Err(e) => {
+                self.inner.running.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
         };
 
-        //TODO: fix this unnecessary clone
-        target.outstanding.insert(msg.target_seq, msg.clone());
-
-        // Send the message to the sequencer server.
-        send_or_resend_msg(
-            self.my_id,
-            &Arc::clone(&self.my_seqno),
-            target_id,
-            &msg,
-            &Arc::clone(&self.sent_message_buffer),
-            &Arc::clone(&self.to_sequencer_socket),
-            &self.to_sequencer_addr
-            );
-    }
-
-    /// Starts a listener that joins the multicast group and updates the global sequence map.
-    ///
-    /// - `multicast_addr`: The multicast group address in the form "239.0.0.2:6000".
-    /// - `global_sequence_map`: An Arc-wrapped DashMap to store the last known sequence number per target.
-    pub fn start_listener(&self) -> std::io::Result<()> {
-        // alias the needed structures so that the thread doesn't need to borrow self
-        let my_id = self.my_id;
-        let from_sequencer_socket = UdpSocket::bind("0.0.0.0:6000").expect("Could not bind to a local socket");
-        let target_map = Arc::clone(&self.target_map);
-        let cb_clone = Arc::clone(&self.callback);
-
-        let my_seqno_clone = Arc::clone(&self.my_seqno);
-
-        let send_msg_buf_clone = Arc::clone(&self.sent_message_buffer);
-        let to_seq_sock_clone = Arc::clone(&self.to_sequencer_socket);
-        let to_seq_addr_clone = self.to_sequencer_addr.clone();
-
-        // For IPv4, join the multicast group.
-        from_sequencer_socket.join_multicast_v4(self.from_sequencer_addr.ip(), &Ipv4Addr::UNSPECIFIED)?;
-        
-        // Spawn a thread to continuously listen for messages.
-        thread::spawn(move || {
-            let mut buf = [0u8; 9000];
-            let mut global_seqno: u64 = 0;
-
-            loop {
-                match from_sequencer_socket.recv_from(&mut buf) {
-                    Ok((n, _src)) => {
-                        if n >= 20 {
-                            let filled_buf = &mut buf[..n];
-                            //let v = filled_buf.to_vec();
-
-                            use std::convert::TryInto;
-                            // Parse the target and sequence number.
-                            let epoch = u32::from_be_bytes(filled_buf[0..3].try_into().unwrap());
-                            let seq_no = u64::from_be_bytes(filled_buf[4..11].try_into().unwrap());
-                            let msg_count: u16 = u16::from_be_bytes(filled_buf[12..13].try_into().unwrap());
-
-                            //check if the global sequence number is the one expected
-                            if seq_no == global_seqno {
-                                global_seqno += 1;
-                                
-                                let mut offset = 14;
-
-                                // parse the messages
-                                for i in 0..msg_count {
-                                    let msg_len: u16 = u16::from_be_bytes(filled_buf[offset..offset+1].try_into().unwrap());
-
-                                    let sender_id: u32 = u32::from_be_bytes(filled_buf[offset+2..offset+5].try_into().unwrap());
-
-                                    let target_id: u32 = u32::from_be_bytes(filled_buf[offset+6..offset+11].try_into().unwrap());
-
-                                    let target_seq = u64::from_be_bytes(filled_buf[offset+12..offset+20].try_into().unwrap());
-
-                                    offset += 2;
-                                    offset += msg_len as usize;
-
-                                    let payload_len = msg_len - 12;
-
-                                    let target = target_map.entry(target_id).or_insert(Target { last_seq: Arc::new(AtomicU64::new(0)), outstanding: DashMap::new() });
-
-                                    // update the last known seq to target
-                                    target.last_seq.store(target_seq, Ordering::Relaxed);
-
-                                    if target_id == my_id {
-                                        let payload = &filled_buf[offset+14..offset+payload_len as usize];
-                                        
-                                        // Execute registered callback if available
-                                        if let Some(cb) = cb_clone.lock().unwrap().as_ref() {
-                                            //TODO: to_vec makes a copy, so eliminate that
-                                            cb(payload.to_vec());
-                                        }
-                                    } else {                                       
-                                        // find the message
-                                        if let Some(mut msg) = target.outstanding.get_mut(&target_seq) {
-                                            // check if my messages won the race to a target
-                                            if sender_id == my_id {
-                                                // it's the one i sent out, so clean it up
-                                                target.outstanding.remove(&target_seq);
-                                            } else {
-                                                // another client beat me to it, so i need to retry
-                                                //TODO: invoke application logic?
-
-                                                // update the target_seq
-                                                target.last_seq.fetch_add(1, Ordering::Relaxed);
-                                                msg.target_seq = target.last_seq.load(Ordering::Relaxed);
-
-                                                // Send the message to the sequencer server.
-                                                send_or_resend_msg(
-                                                    my_id,
-                                                    &my_seqno_clone,
-                                                    target_id,
-                                                    &msg,
-                                                    &send_msg_buf_clone,
-                                                    &to_seq_sock_clone,
-                                                    &to_seq_addr_clone
-                                                    );
-
-                                            }
-                                        } else {
-                                            println!("Couldn't find outstanding message to target {} with target_seq {}",
-                                                target_id, target_seq
-                                            );
-                                        }
-                                    }
-                                }
-                            } else {
-                                println!(
-                                    "Client detected msg out of global sequence - expected: {}, got: {}).",
-                                    global_seqno, seq_no
-                                );
-
-                                //TODO: send a Request Packet to the sequencer (or later to a re-request server)
-                                let mut msg = Vec::with_capacity(20);
-                                msg.extend(&epoch.to_be_bytes());
-                                msg.extend(&seq_no.to_be_bytes());
-                                msg.extend(1u16.to_be_bytes());
-
-                                //TODO: send it
-                            }
-
-                        } else {
-                            println!("Listener: Received a packet that is too short");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Listener error: {}", e);
-                        // Optionally handle or break the loop on critical errors.
-                    }
-                }
-            }
-        });
-
-        let to_seq_socket_clone = Arc::clone(&self.to_sequencer_socket);
-        let msg_buf_clone = Arc::clone(&self.sent_message_buffer);
-        let to_sequencer_addr_clone = self.to_sequencer_addr.clone();
-
-        // Spawn a thread to continuously listen for NAK messages from the sequencer, on the same socket that was used to send to the sequencer.
-        thread::spawn(move || {
-            let mut buf = [0u8; 100];
-            loop {
-                match to_seq_socket_clone.recv_from(&mut buf) {
-                    Ok((n, _src)) => {
-                        if n >= 8 {
-                            let expected_seq = u64::from_be_bytes(buf[0..7].try_into().unwrap());
-
-                            println!("Received NAK: Sequencer expects seqno {}", expected_seq);
-
-                            // Resend the missing message to the sequencer
-                            if let Some(buffered_msg) = msg_buf_clone.get(&expected_seq) {
-                                println!("Resending message with seqno {}", expected_seq);
-                                
-                                // Send the message to the sequencer server.
-                                to_seq_socket_clone.send_to(&buffered_msg, &to_sequencer_addr_clone);
-                            }
-                        } else {
-                            eprintln!("NAK Listener: Received a packet that is too short");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("NAK Listener error: {}", e);
-                        // Optionally handle or break the loop on critical errors.
-                    }
-                }
-            }
-        });
-
+        let (pkt_tx, pkt_rx) = unbounded::<MoldPacket>();
+        let mut threads = self.threads.lock().unwrap();
+        {
+            let inner = Arc::clone(&self.inner);
+            let tx = pkt_tx.clone();
+            threads.push(thread::spawn(move || inner.packet_recv_loop(stream, tx, "stream")));
+        }
+        if let Some(rereq) = &rereq {
+            let inner = Arc::clone(&self.inner);
+            let socket = rereq.try_clone()?;
+            let tx = pkt_tx.clone();
+            threads.push(thread::spawn(move || inner.packet_recv_loop(socket, tx, "retransmission")));
+        }
+        drop(pkt_tx);
+        {
+            let inner = Arc::clone(&self.inner);
+            threads.push(thread::spawn(move || inner.process_loop(pkt_rx, rereq)));
+        }
+        {
+            let inner = Arc::clone(&self.inner);
+            threads.push(thread::spawn(move || inner.feedback_loop()));
+        }
         Ok(())
     }
 
-    pub fn stop() {
-
+    /// Stops the listener threads and waits for them to exit.
+    pub fn stop(&self) {
+        self.inner.running.store(false, Ordering::SeqCst);
+        for handle in self.threads.lock().unwrap().drain(..) {
+            let _ = handle.join();
+        }
     }
-
 }
 
-fn send_or_resend_msg(my_id: u32, my_seqno: &Arc<AtomicU64>, target_id: u32, msg: &OutstandingMessage,
-    sent_message_buffer: &Arc<DashMap<u64, Vec<u8>>>,
-    to_sequencer_socket: &Arc<UdpSocket>, to_sequencer_addr: &SocketAddrV4) {
+impl Drop for KrustyClient {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
 
-    let my_seqno_snapshot = my_seqno.load(Ordering::Relaxed);
+fn is_timeout(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+}
 
-    // Build the message: 4 bytes my id, 8 bytes my seqno, 4 bytes target + 8 bytes sequence + payload.
-    let mut message = Vec::with_capacity(24 + msg.payload.len());
-    message.extend(my_id.to_be_bytes());
-    message.extend(&my_seqno_snapshot.to_be_bytes());
-    message.extend(&target_id.to_be_bytes());
-    message.extend(&msg.target_seq.to_be_bytes());
-    message.extend(msg.payload.clone());
+impl Inner {
+    /// Claims the next target seq, records the message as outstanding and sends it.
+    /// Caller holds the `targets` lock (passed in as `target`).
+    fn claim_and_send(&self, target_id: u32, target: &mut TargetState, payload: Vec<u8>) {
+        target.last_seq += 1;
+        let target_seq = target.last_seq;
 
-    // buffer the message in case resend is needed
-    //TODO: remove the unnecessary clone
-    sent_message_buffer.insert(my_seqno_snapshot, message.clone());
+        let mut sender = self.sender.lock().unwrap();
+        let sender_seqno = sender.next_seqno;
+        sender.next_seqno += 1;
+        let msg = ClientMessage { sender_id: self.cfg.my_id, sender_seqno, target_id, target_seq, payload };
+        let bytes = msg.encode();
+        // Send while holding the lock so sender seqnos hit the wire in order.
+        if let Err(e) = self.socket.send_to(&bytes, self.cfg.to_sequencer_addr) {
+            // Not fatal: the next message will open a gap and the sequencer will NAK for this one.
+            eprintln!("Send to sequencer failed: {}", e);
+        }
+        sender.sent.insert(sender_seqno, bytes);
+        while sender.sent.len() > SENT_BUFFER_LIMIT {
+            sender.sent.pop_first();
+        }
+        drop(sender);
 
-    // Send the message to the sequencer server.
-    to_sequencer_socket.send_to(&message, to_sequencer_addr);
+        target.outstanding.insert(target_seq, Outstanding { sender_seqno, payload: msg.payload });
+    }
 
-    // increment my sender seqno
-    my_seqno.fetch_add(1, Ordering::Relaxed);
+    /// Receives MoldUDP64 packets on `socket` (the multicast stream, or
+    /// retransmissions) and hands them to the processor.
+    fn packet_recv_loop(&self, socket: UdpSocket, tx: Sender<MoldPacket>, what: &str) {
+        let mut buf = vec![0u8; RECV_BUFFER_SIZE];
+        while self.running.load(Ordering::SeqCst) {
+            let n = match socket.recv_from(&mut buf) {
+                Ok((n, _)) => n,
+                Err(e) if is_timeout(&e) => continue,
+                Err(e) => {
+                    eprintln!("{} receive error: {}", what, e);
+                    continue;
+                }
+            };
+            match MoldPacket::decode(&buf[..n]) {
+                Some(p) => {
+                    if tx.send(p).is_err() {
+                        return;
+                    }
+                }
+                None => eprintln!("Malformed {} byte {} packet", n, what),
+            }
+        }
+    }
 
-    println!(
-        "Sent message for target {} with sequence {}",
-        target_id, msg.target_seq
-    );
+    /// Orders packets, re-requests gaps and delivers messages.
+    fn process_loop(&self, rx: Receiver<MoldPacket>, rereq: Option<Arc<UdpSocket>>) {
+        let mut tracker = StreamTracker::new(TrackerConfig {
+            session: self.cfg.session,
+            start_seqno: self.cfg.start_seqno,
+            recover: rereq.is_some(),
+            ..TrackerConfig::default()
+        });
+        let mut deliver = |_seqno: u64, data: Vec<u8>| self.deliver(data);
+
+        while self.running.load(Ordering::SeqCst) {
+            let lost_before = tracker.lost();
+            match rx.recv_timeout(RETRY_TICK) {
+                Ok(p) => match tracker.on_packet(p, &mut deliver) {
+                    Outcome::NewSession { session, start } => {
+                        println!("[client {}] following session {} from #{}", self.cfg.my_id, session, start)
+                    }
+                    Outcome::EndOfSession => println!("[client {}] end of session", self.cfg.my_id),
+                    Outcome::ForeignSession(_) | Outcome::Accepted => {}
+                },
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            let request = tracker.poll_request(Instant::now(), &mut deliver);
+            if let (Some(req), Some(socket), Some(addr)) = (request, &rereq, self.cfg.rerequest_addr) {
+                if self.cfg.verbose {
+                    println!("[client {}] re-requesting #{} (+{})", self.cfg.my_id, req.seqno, req.count);
+                }
+                if let Err(e) = socket.send_to(&req.encode(), addr) {
+                    eprintln!("Re-request send failed: {}", e);
+                }
+            }
+            let lost = tracker.lost();
+            if lost != lost_before {
+                eprintln!("[client {}] gave up on {} messages", self.cfg.my_id, lost - lost_before);
+                self.lost.store(lost, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Handles one in-order message from the stream.
+    fn deliver(&self, data: Vec<u8>) {
+        self.delivered.fetch_add(1, Ordering::SeqCst);
+        let Some(m) = SequencedMessage::decode(&data) else {
+            eprintln!("Malformed {} byte sequenced message", data.len());
+            return;
+        };
+        {
+            let mut targets = self.targets.lock().unwrap();
+            let target = targets.entry(m.target_id).or_default();
+            target.last_seq = target.last_seq.max(m.target_seq);
+            if m.sender_id == self.cfg.my_id {
+                target.outstanding.remove(&m.target_seq);
+            }
+        }
+        if m.target_id == self.cfg.my_id {
+            if let Some(cb) = self.callback.lock().unwrap().as_ref() {
+                cb(m.payload);
+            }
+        }
+    }
+
+    /// Receives NAK and REJECT feedback from the sequencer.
+    fn feedback_loop(&self) {
+        let mut buf = [0u8; 64];
+        while self.running.load(Ordering::SeqCst) {
+            let n = match self.socket.recv_from(&mut buf) {
+                Ok((n, _)) => n,
+                Err(e) if is_timeout(&e) => continue,
+                Err(e) => {
+                    eprintln!("Feedback listener error: {}", e);
+                    continue;
+                }
+            };
+            match Feedback::decode(&buf[..n]) {
+                Some(Feedback::Nak { expected }) => self.resend_from(expected),
+                Some(Feedback::Reject { target_id, rejected_target_seq, current_target_seq, sender_seqno }) => {
+                    let mut targets = self.targets.lock().unwrap();
+                    let target = targets.entry(target_id).or_default();
+                    match target.outstanding.get(&rejected_target_seq) {
+                        Some(o) if o.sender_seqno == sender_seqno => {}
+                        _ => continue, // stale or unknown reject
+                    }
+                    let o = target.outstanding.remove(&rejected_target_seq).unwrap();
+                    target.last_seq = target.last_seq.max(current_target_seq);
+                    if self.cfg.verbose {
+                        println!(
+                            "[client {}] lost slot {} on target {} (target at {}); retrying as {}",
+                            self.cfg.my_id,
+                            rejected_target_seq,
+                            target_id,
+                            current_target_seq,
+                            target.last_seq + 1
+                        );
+                    }
+                    self.claim_and_send(target_id, target, o.payload);
+                }
+                None => eprintln!("Feedback listener: malformed {} byte packet", n),
+            }
+        }
+    }
+
+    /// Resends every buffered message from sender seqno `expected` onward.
+    fn resend_from(&self, expected: u64) {
+        let sender = self.sender.lock().unwrap();
+        if sender.sent.first_key_value().is_none_or(|(&first, _)| first > expected) {
+            eprintln!("NAK for seqno {} which is no longer buffered; cannot recover", expected);
+            return;
+        }
+        for (seqno, bytes) in sender.sent.range(expected..) {
+            if self.cfg.verbose {
+                println!("[client {}] resending seqno {} after NAK", self.cfg.my_id, seqno);
+            }
+            if let Err(e) = self.socket.send_to(bytes, self.cfg.to_sequencer_addr) {
+                eprintln!("Resend failed: {}", e);
+            }
+        }
+    }
 }

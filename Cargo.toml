@@ -8,14 +8,9 @@ license = "MIT"
 
 [dependencies]
 crossbeam-channel = "0.5"
-dashmap = "5.0"
 clap = { version = "4.4", features = ["derive"] }
+socket2 = { version = "0.5", features = ["all"] }
+ctrlc = { version = "3", features = ["termination"] }
 
-# Define separate binaries
-[[bin]]
-name = "sequencer"
-path = "src/sequencer/sequencer.rs"
-
-[[bin]]
-name = "client1"
-path = "src/examples/client1.rs"
+[dev-dependencies]
+moldudp = "0.1.1"
