@@ -93,7 +93,7 @@ Columns:
 | W6 | **Done in `krusty-wire` 2026-11-14** (not yet used by the node). Big-endian hand-written upstream codecs | Little-endian fixed layouts (ADR-8); Kani-checked decoders | P, C | M | M1 |
 | W7 | MoldUDP64 is the only egress: no back pressure policy, no UNAVAILABLE answer, no cluster timestamp, multicast only | Native stream protocol (architecture §8.3) as the backbone; MoldUDP64 moved behind the adapter (§8.4) | C, P | M | M1 |
 | W8 | Seqno arithmetic on wire values overflows near `u64::MAX` (`p.seqno + i`, `next += 1`, `seqno + count` in `stream.rs`): panic in debug, wrap in release. Found by the Aeneas spike. **Fixed 2026-11-14:** `decode` rejects such packets; the tracker ignores them (`Outcome::Invalid`) | Range-validate at decode (`seqno + count ≤ u64::MAX`) or checked arithmetic; no-overflow preconditions in proofs | C | S | M1 |
-| W9 | Consumer reorder buffer is an unbounded `BTreeMap` (`stream.rs`): a hostile or buggy sender grows memory without limit | Fixed reorder window; messages beyond it recovered by re-request (prototype in `spikes/aeneas-stream/subset`) | C, P | S | M1 |
+| W9 | **Done in `krusty-stream` 2026-11-14** (not yet used by the node). Consumer reorder buffer is an unbounded `BTreeMap` (`stream.rs`): a hostile or buggy sender grows memory without limit | Fixed reorder window; messages beyond it recovered by re-request (prototype in `spikes/aeneas-stream/subset`) | C, P | S | M1 |
 
 ### 3.5 Storage
 

@@ -1,0 +1,9 @@
+[package]
+name = "krusty-stream"
+version = "0.1.0"
+description = "KrustyCast consumer stream tracker: ordering, gaps, recovery requests, explicit loss (sans-I/O)."
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
