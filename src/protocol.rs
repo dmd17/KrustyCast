@@ -237,9 +237,16 @@ impl MoldPacket {
         }
     }
 
-    /// The seqno the packet after this one should start at.
+    /// The seqno the packet after this one should start at (saturating; see
+    /// `has_valid_range`).
     pub fn next_seqno(&self) -> u64 {
-        self.seqno + self.message_count() as u64
+        self.seqno.saturating_add(self.message_count() as u64)
+    }
+
+    /// True if every seqno this packet covers, and the one after it, fits in a
+    /// u64. `decode` rejects packets for which this is false.
+    pub fn has_valid_range(&self) -> bool {
+        self.seqno.checked_add(self.message_count() as u64).is_some()
     }
 
     pub fn heartbeat(session: Session, next_seqno: u64) -> Vec<u8> {
@@ -310,7 +317,12 @@ impl MoldPacket {
                 MoldKind::Messages(msgs)
             }
         };
-        Some(MoldPacket { session, seqno, kind })
+        let p = MoldPacket { session, seqno, kind };
+        // Seqnos near u64::MAX would overflow the receiver's arithmetic.
+        if !p.has_valid_range() {
+            return None;
+        }
+        Some(p)
     }
 }
 
@@ -471,6 +483,20 @@ mod tests {
         assert!(Session::new("ELEVENCHARS").is_err());
         assert!(Session::new("has space").is_err());
         assert!(Session::new("TENCHARS10").is_ok());
+    }
+
+    #[test]
+    fn mold_decode_rejects_overflowing_seqno_range() {
+        let at = |seqno, n: usize| MoldPacket {
+            session: session(),
+            seqno,
+            kind: MoldKind::Messages(vec![b"x".to_vec(); n]),
+        };
+        let ok = at(u64::MAX - 2, 2);
+        assert_eq!(MoldPacket::decode(&ok.encode()), Some(ok));
+        assert_eq!(MoldPacket::decode(&at(u64::MAX - 1, 2).encode()), None);
+        let hb = MoldPacket { session: session(), seqno: u64::MAX, kind: MoldKind::Heartbeat };
+        assert_eq!(MoldPacket::decode(&hb.encode()), Some(hb));
     }
 
     #[test]

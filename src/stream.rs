@@ -45,6 +45,8 @@ pub enum Outcome {
     EndOfSession,
     /// Packet from a session we're not following; ignored.
     ForeignSession(Session),
+    /// Packet whose seqno range overflows u64 (never produced by `decode`); ignored.
+    Invalid,
 }
 
 #[derive(Debug)]
@@ -99,6 +101,9 @@ impl StreamTracker {
     /// Processes one downstream packet (live or retransmitted), calling
     /// `deliver(seqno, data)` for each message that is now in order.
     pub fn on_packet(&mut self, p: MoldPacket, mut deliver: impl FnMut(u64, Vec<u8>)) -> Outcome {
+        if !p.has_valid_range() {
+            return Outcome::Invalid;
+        }
         let mut outcome = Outcome::Accepted;
         match self.session {
             None => {
@@ -251,6 +256,19 @@ mod tests {
 
     fn texts(v: &[(u64, String)]) -> Vec<&str> {
         v.iter().map(|(_, s)| s.as_str()).collect()
+    }
+
+    #[test]
+    fn seqnos_at_the_top_of_the_range() {
+        // The last representable range is fine; one past it is ignored, not a panic.
+        let top = u64::MAX - 2;
+        let mut t = StreamTracker::new(TrackerConfig::default());
+        let got = feed(&mut t, vec![msgs(top, &["a", "b"])]);
+        assert_eq!(got, [(top, "a".to_string()), (top + 1, "b".to_string())]);
+        assert_eq!(t.next_seqno(), Some(u64::MAX));
+        assert_eq!(t.on_packet(msgs(u64::MAX, &["c"]), |_, _| panic!()), Outcome::Invalid);
+        assert_eq!(t.next_seqno(), Some(u64::MAX));
+        assert_eq!(t.on_packet(hb(u64::MAX), |_, _| panic!()), Outcome::Accepted);
     }
 
     #[test]

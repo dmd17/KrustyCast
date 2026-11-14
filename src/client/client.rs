@@ -339,7 +339,7 @@ impl Inner {
                         println!("[client {}] following session {} from #{}", self.cfg.my_id, session, start)
                     }
                     Outcome::EndOfSession => println!("[client {}] end of session", self.cfg.my_id),
-                    Outcome::ForeignSession(_) | Outcome::Accepted => {}
+                    Outcome::ForeignSession(_) | Outcome::Invalid | Outcome::Accepted => {}
                 },
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
