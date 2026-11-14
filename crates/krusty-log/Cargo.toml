@@ -1,0 +1,14 @@
+[package]
+name = "krusty-log"
+version = "0.1.0"
+description = "KrustyCast storage: segmented log of committed entries, seqno index, snapshots, retention."
+edition.workspace = true
+license.workspace = true
+
+# Not inheriting workspace lints: preallocation calls libc (unsafe).
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[dependencies]
+crc32c = "0.6"
+libc = "0.2"
