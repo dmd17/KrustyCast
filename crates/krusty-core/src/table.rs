@@ -25,8 +25,9 @@ fn hash(key: u64) -> u64 {
 impl IdMap {
     /// A map that holds up to `max_len` entries at most half full.
     pub fn new(max_len: usize) -> IdMap {
+        // Smallest power of two ≥ 2 · max_len (and ≥ 2).
         let mut n: usize = 2;
-        while n < max_len.saturating_mul(2) {
+        while n / 2 < max_len {
             n *= 2;
         }
         IdMap {

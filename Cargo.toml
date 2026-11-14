@@ -29,3 +29,6 @@ libc = "0.2.191"
 
 [dev-dependencies]
 moldudp = "0.1.1"
+
+# Explicitly not inheriting [workspace.lints]: loadgen pins threads with libc (unsafe).
+[lints]

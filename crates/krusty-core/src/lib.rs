@@ -96,6 +96,27 @@ struct Session {
     last_active_ns: u64,
 }
 
+/// The parts of a submission the core looks at (not the payload). Plain
+/// values, so the verified code holds no borrows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Request {
+    pub client_id: u32,
+    pub incarnation: u64,
+    pub client_seqno: u64,
+    pub append: Append,
+}
+
+impl Request {
+    pub fn of(s: &Submit<'_>) -> Request {
+        Request {
+            client_id: s.client_id,
+            incarnation: s.incarnation,
+            client_seqno: s.client_seqno,
+            append: s.append,
+        }
+    }
+}
+
 /// What one committed entry causes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Effects {
@@ -132,8 +153,9 @@ pub struct Core {
     sessions: Vec<Option<Session>>,
     /// `outcome_ring` slots per session, indexed by `client_seqno % outcome_ring`.
     ring: Vec<Option<RingSlot>>,
-    /// Session slots not in use.
-    free_sessions: Vec<u32>,
+    /// Session slots `0..unused` have been handed out; later ones never
+    /// have. (A slot is only ever reused by evicting its session.)
+    unused: usize,
 
     keys: IdMap,
     versions: Vec<u64>,
@@ -144,12 +166,6 @@ impl Core {
         assert!(cfg.max_clients >= 1 && cfg.max_clients <= u32::MAX as usize);
         assert!(cfg.outcome_ring >= 1);
         assert!(cfg.max_keys <= u32::MAX as usize);
-        let mut free_sessions = Vec::with_capacity(cfg.max_clients);
-        let mut i = cfg.max_clients;
-        while i > 0 {
-            i -= 1;
-            free_sessions.push(i as u32);
-        }
         Core {
             cfg,
             applied: 0,
@@ -159,7 +175,7 @@ impl Core {
             clients: IdMap::new(cfg.max_clients),
             sessions: vec![None; cfg.max_clients],
             ring: vec![None; cfg.max_clients * cfg.outcome_ring],
-            free_sessions,
+            unused: 0,
             keys: IdMap::new(cfg.max_keys),
             versions: Vec::with_capacity(cfg.max_keys),
         }
@@ -197,7 +213,7 @@ impl Core {
         timestamp_ns: u64,
         s: &Submit<'_>,
     ) -> Result<Effects, ApplyError> {
-        if self.applied.checked_add(1) != Some(log_index) {
+        if self.applied == u64::MAX || log_index != self.applied + 1 {
             return Err(ApplyError::OutOfOrder {
                 expected: self.applied.wrapping_add(1),
                 got: log_index,
@@ -207,10 +223,10 @@ impl Core {
         if timestamp_ns > self.now_ns {
             self.now_ns = timestamp_ns;
         }
-        Ok(self.decide(s))
+        Ok(self.decide(Request::of(s)))
     }
 
-    fn reply(s: &Submit<'_>, client_seqno: u64, outcome: Outcome) -> Effects {
+    fn reply(s: Request, client_seqno: u64, outcome: Outcome) -> Effects {
         Effects {
             publish: None,
             reply: Some(Feedback {
@@ -222,11 +238,11 @@ impl Core {
         }
     }
 
-    fn busy(s: &Submit<'_>) -> Effects {
+    fn busy(s: Request) -> Effects {
         Core::reply(s, s.client_seqno, Outcome::Busy { retry_after_us: 0 })
     }
 
-    fn decide(&mut self, s: &Submit<'_>) -> Effects {
+    fn decide(&mut self, s: Request) -> Effects {
         let found = self.clients.get(s.client_id as u64);
         match found {
             Some(slot) => {
@@ -280,8 +296,9 @@ impl Core {
     /// A free session slot, evicting the least recently active idle client
     /// if the table is full.
     fn allocate_session(&mut self) -> Option<u32> {
-        if let Some(slot) = self.free_sessions.pop() {
-            return Some(slot);
+        if self.unused < self.sessions.len() {
+            self.unused += 1;
+            return Some((self.unused - 1) as u32);
         }
         let mut victim: Option<(u32, Session)> = None;
         let mut i = 0;
@@ -313,16 +330,17 @@ impl Core {
         }
     }
 
-    fn start_session(&mut self, slot: u32, s: &Submit<'_>) {
+    fn start_session(&mut self, slot: u32, s: Request) {
         self.sessions[slot as usize] = Some(Session {
             client_id: s.client_id,
             incarnation: s.incarnation,
             next: 1,
             last_active_ns: self.now_ns,
         });
-        let base = slot as usize * self.cfg.outcome_ring;
+        let n = self.cfg.outcome_ring;
+        let base = slot as usize * n;
         let mut i = 0;
-        while i < self.cfg.outcome_ring {
+        while i < n {
             self.ring[base + i] = None;
             i += 1;
         }
@@ -333,7 +351,7 @@ impl Core {
             + (client_seqno % self.cfg.outcome_ring as u64) as usize
     }
 
-    fn in_session(&mut self, slot: u32, s: &Submit<'_>) -> Effects {
+    fn in_session(&mut self, slot: u32, s: Request) -> Effects {
         let sess = self.sessions[slot as usize].expect("session");
         if s.client_seqno < sess.next {
             // A resend of something decided: repeat its outcome if remembered.
@@ -374,42 +392,7 @@ impl Core {
             return Core::busy(s); // stream exhausted; cannot happen in practice
         }
 
-        let mut publish = None;
-        let decided = match s.append {
-            Append::Unconditional => {
-                publish = Some(MessageMeta {
-                    timestamp_ns: self.now_ns,
-                    client_id: s.client_id,
-                    conditional: None,
-                });
-                Some(Decided::Accepted {
-                    global_seqno: self.next_seqno,
-                })
-            }
-            Append::Conditional {
-                key,
-                expected_version,
-            } => {
-                let current = self.version(key);
-                if current != expected_version || current == u64::MAX {
-                    Some(Decided::Rejected {
-                        key,
-                        current_version: current,
-                    })
-                } else if self.set_version(key, current + 1) {
-                    publish = Some(MessageMeta {
-                        timestamp_ns: self.now_ns,
-                        client_id: s.client_id,
-                        conditional: Some((key, current + 1)),
-                    });
-                    Some(Decided::Accepted {
-                        global_seqno: self.next_seqno,
-                    })
-                } else {
-                    None // key table full: not decided, the client retries
-                }
-            }
-        };
+        let (decided, publish) = self.decide_append(s);
         match decided {
             None => Core::busy(s),
             Some(d) => {
@@ -437,6 +420,56 @@ impl Core {
                 let mut e = Core::reply(s, s.client_seqno, d.outcome());
                 e.publish = published;
                 e
+            }
+        }
+    }
+
+    /// Decides the next message of a session (updating the key version if
+    /// a conditional append wins), and what to publish. `None`: undecided
+    /// because the key table is full.
+    fn decide_append(&mut self, s: Request) -> (Option<Decided>, Option<MessageMeta>) {
+        match s.append {
+            Append::Unconditional => {
+                let meta = MessageMeta {
+                    timestamp_ns: self.now_ns,
+                    client_id: s.client_id,
+                    conditional: None,
+                };
+                (
+                    Some(Decided::Accepted {
+                        global_seqno: self.next_seqno,
+                    }),
+                    Some(meta),
+                )
+            }
+            Append::Conditional {
+                key,
+                expected_version,
+            } => {
+                let current = self.version(key);
+                if current != expected_version || current == u64::MAX {
+                    (
+                        Some(Decided::Rejected {
+                            key,
+                            current_version: current,
+                        }),
+                        None,
+                    )
+                } else if self.set_version(key, current + 1) {
+                    let meta = MessageMeta {
+                        timestamp_ns: self.now_ns,
+                        client_id: s.client_id,
+                        conditional: Some((key, current + 1)),
+                    };
+                    (
+                        Some(Decided::Accepted {
+                            global_seqno: self.next_seqno,
+                        }),
+                        Some(meta),
+                    )
+                } else {
+                    (None, None)
+                }
             }
         }
     }

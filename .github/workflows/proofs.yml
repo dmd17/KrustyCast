@@ -9,6 +9,9 @@ on:
   push:
     paths:
       - "spikes/aeneas-stream/**"
+      - "spec/lean/**"
+      - "crates/krusty-core/**"
+      - "crates/krusty-wire/**"
       - ".github/workflows/proofs.yml"
       - "scripts/check-axioms.sh"
   schedule:
@@ -42,5 +45,12 @@ jobs:
       - name: Build the Aeneas Lean library
         working-directory: ${{ runner.temp }}/aeneas/backends/lean
         run: lake exe cache get && lake build
-      - name: Check proofs
+      - name: Generated Lean matches the Rust sources
+        run: |
+          if [ "$(spec/lean/source-hash.sh)" != "$(cat spec/lean/KrustyCore/SOURCE_HASH)" ]; then
+            echo "krusty-core or krusty-wire changed: run spec/lean/regen.sh and re-check the proofs"; exit 1
+          fi
+      - name: Check proofs (krusty-core)
+        run: scripts/check-axioms.sh spec/lean
+      - name: Check proofs (stream tracker spike)
         run: scripts/check-axioms.sh spikes/aeneas-stream/proofs
