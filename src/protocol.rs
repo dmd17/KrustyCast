@@ -2,14 +2,20 @@
 //!
 //! ## Client → sequencer (unicast or multicast UDP)
 //! ```text
-//! sender_id: u32 | sender_seqno: u64 | target_id: u32 | target_seq: u64 | payload...
+//! sender_id: u32 | incarnation: u64 | sender_seqno: u64 | target_id: u32 | target_seq: u64 | payload...
 //! ```
+//! `incarnation` is random per client process, so a restarted client's
+//! sender seqnos (which start again at 1) are not mistaken for duplicates.
 //!
 //! ## Sequencer → client feedback (unicast UDP, back to the sending socket)
 //! ```text
 //! NAK:    0x01 | expected_sender_seqno: u64
-//! REJECT: 0x02 | target_id: u32 | rejected_target_seq: u64 | current_target_seq: u64 | sender_seqno: u64
+//! REJECT:   0x02 | target_id: u32 | rejected_target_seq: u64 | current_target_seq: u64 | sender_seqno: u64
+//! ACCEPTED: 0x03 | sender_seqno: u64 | global_seqno: u64
 //! ```
+//! A client that hears nothing back resends a message unchanged. The
+//! sequencer never sequences it twice: it answers a duplicate with the
+//! original outcome (REJECT again, or ACCEPTED with the message's seqno).
 //!
 //! ## Sequencer → all clients: standard MoldUDP64
 //! ```text
@@ -29,7 +35,7 @@
 use std::convert::TryInto;
 use std::fmt;
 
-pub const CLIENT_HEADER_SIZE: usize = 24;
+pub const CLIENT_HEADER_SIZE: usize = 32;
 pub const SESSION_LEN: usize = 10;
 pub const MOLD_HEADER_SIZE: usize = 20;
 pub const REQUEST_PACKET_SIZE: usize = 20;
@@ -44,6 +50,7 @@ pub const MAX_MESSAGES_PER_PACKET: usize = END_OF_SESSION_COUNT as usize - 1;
 
 const FEEDBACK_NAK: u8 = 0x01;
 const FEEDBACK_REJECT: u8 = 0x02;
+const FEEDBACK_ACCEPTED: u8 = 0x03;
 
 fn u16_at(b: &[u8], at: usize) -> u16 {
     u16::from_be_bytes(b[at..at + 2].try_into().unwrap())
@@ -63,6 +70,7 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientMessage {
     pub sender_id: u32,
+    pub incarnation: u64,
     pub sender_seqno: u64,
     pub target_id: u32,
     pub target_seq: u64,
@@ -73,6 +81,7 @@ impl ClientMessage {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(CLIENT_HEADER_SIZE + self.payload.len());
         out.extend_from_slice(&self.sender_id.to_be_bytes());
+        out.extend_from_slice(&self.incarnation.to_be_bytes());
         out.extend_from_slice(&self.sender_seqno.to_be_bytes());
         out.extend_from_slice(&self.target_id.to_be_bytes());
         out.extend_from_slice(&self.target_seq.to_be_bytes());
@@ -86,9 +95,10 @@ impl ClientMessage {
         }
         Some(ClientMessage {
             sender_id: u32_at(b, 0),
-            sender_seqno: u64_at(b, 4),
-            target_id: u32_at(b, 12),
-            target_seq: u64_at(b, 16),
+            incarnation: u64_at(b, 4),
+            sender_seqno: u64_at(b, 12),
+            target_id: u32_at(b, 20),
+            target_seq: u64_at(b, 24),
             payload: b[CLIENT_HEADER_SIZE..].to_vec(),
         })
     }
@@ -107,6 +117,9 @@ pub enum Feedback {
         current_target_seq: u64,
         sender_seqno: u64,
     },
+    /// The message with `sender_seqno` was sequenced as `global_seqno`
+    /// (sent in reply to a resend of an already-sequenced message).
+    Accepted { sender_seqno: u64, global_seqno: u64 },
 }
 
 impl Feedback {
@@ -127,6 +140,13 @@ impl Feedback {
                 out.extend_from_slice(&sender_seqno.to_be_bytes());
                 out
             }
+            Feedback::Accepted { sender_seqno, global_seqno } => {
+                let mut out = Vec::with_capacity(17);
+                out.push(FEEDBACK_ACCEPTED);
+                out.extend_from_slice(&sender_seqno.to_be_bytes());
+                out.extend_from_slice(&global_seqno.to_be_bytes());
+                out
+            }
         }
     }
 
@@ -139,6 +159,9 @@ impl Feedback {
                 current_target_seq: u64_at(b, 13),
                 sender_seqno: u64_at(b, 21),
             }),
+            &FEEDBACK_ACCEPTED if b.len() == 17 => {
+                Some(Feedback::Accepted { sender_seqno: u64_at(b, 1), global_seqno: u64_at(b, 9) })
+            }
             _ => None,
         }
     }
@@ -414,6 +437,7 @@ mod tests {
     fn client_message_round_trip() {
         let m = ClientMessage {
             sender_id: 7,
+            incarnation: 0xfeedface_cafebabe,
             sender_seqno: 0x0102030405060708,
             target_id: 0xdeadbeef,
             target_seq: 42,
@@ -430,6 +454,7 @@ mod tests {
         for f in [
             Feedback::Nak { expected: 99 },
             Feedback::Reject { target_id: 3, rejected_target_seq: 5, current_target_seq: 8, sender_seqno: 11 },
+            Feedback::Accepted { sender_seqno: 4, global_seqno: 1234 },
         ] {
             assert_eq!(Feedback::decode(&f.encode()), Some(f));
         }

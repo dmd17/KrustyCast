@@ -1,8 +1,18 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use krustycast::journal::FsyncPolicy;
 use krustycast::protocol::Session;
 use krustycast::sequencer::{self, SequencerConfig};
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::path::PathBuf;
 use std::time::Duration;
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Fsync {
+    /// fsync every batch before publishing it (survives power loss)
+    Batch,
+    /// never fsync (survives a process crash, not a machine crash)
+    Never,
+}
 
 /// Command-line argument parser
 #[derive(Parser, Debug)]
@@ -41,6 +51,15 @@ struct Args {
     #[arg(long, default_value_t = 2)]
     end_of_session_secs: u64,
 
+    /// Journal file for crash recovery. Restarting with the same --session and
+    /// journal resumes the session.
+    #[arg(long)]
+    journal: Option<PathBuf>,
+
+    /// When the journal is synced to disk
+    #[arg(long, value_enum, default_value_t = Fsync::Batch)]
+    fsync: Fsync,
+
     /// Log every sequenced and rejected message
     #[arg(long, short)]
     verbose: bool,
@@ -56,6 +75,11 @@ fn main() -> std::io::Result<()> {
         history_limit: args.history,
         max_packet_size: args.max_packet_size,
         end_of_session_linger: Duration::from_secs(args.end_of_session_secs),
+        journal: args.journal,
+        fsync: match args.fsync {
+            Fsync::Batch => FsyncPolicy::EveryBatch,
+            Fsync::Never => FsyncPolicy::Never,
+        },
         verbose: args.verbose,
         ..SequencerConfig::new(args.session)
     };
@@ -66,14 +90,24 @@ fn main() -> std::io::Result<()> {
     })
     .expect("could not install Ctrl-C handler");
 
-    let handle = sequencer::start(cfg)?;
+    let handle = sequencer::start(cfg).unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    });
     println!(
         "Listening on {}, publishing to {}, re-requests on {} (Ctrl-C to end the session)",
         handle.input_local_addr(),
         args.from_sequencer_addr,
         handle.rerequest_local_addr()
     );
-    let _ = stop_rx.recv();
-    handle.shutdown();
-    Ok(())
+    loop {
+        if stop_rx.recv_timeout(Duration::from_millis(200)).is_ok() {
+            handle.shutdown();
+            return Ok(());
+        }
+        if handle.has_failed() {
+            handle.abort();
+            std::process::exit(1);
+        }
+    }
 }

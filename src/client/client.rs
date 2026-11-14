@@ -16,6 +16,8 @@ const SENT_BUFFER_LIMIT: usize = 65536;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// How often the stream processor wakes up to retry re-requests.
 const RETRY_TICK: Duration = Duration::from_millis(20);
+/// How often the feedback listener checks for messages to resend.
+const RESEND_TICK: Duration = Duration::from_millis(20);
 
 type Callback = Box<dyn Fn(Vec<u8>) + Send>;
 
@@ -36,6 +38,14 @@ pub struct ClientConfig {
     /// Replay the session from this seqno via re-requests. None = start at the
     /// first live packet (messages sent before the client joined are not delivered).
     pub start_seqno: Option<u64>,
+    /// Identifies this client process to the sequencer. None = random, so a
+    /// restarted client is never confused with its previous run.
+    pub incarnation: Option<u64>,
+    /// Resend a message if the sequencer hasn't answered it (on the stream or
+    /// with feedback) within this long. Doubles per attempt, up to 16×.
+    pub resend_after: Duration,
+    /// Give up on a message after this many resends.
+    pub max_resends: u32,
     pub verbose: bool,
 }
 
@@ -49,6 +59,9 @@ impl ClientConfig {
             interface: Ipv4Addr::UNSPECIFIED,
             session: None,
             start_seqno: None,
+            incarnation: None,
+            resend_after: Duration::from_millis(200),
+            max_resends: 10,
             verbose: false,
         }
     }
@@ -59,6 +72,10 @@ impl ClientConfig {
 struct Outstanding {
     sender_seqno: u64,
     payload: Vec<u8>,
+    sent_at: Instant,
+    resends: u32,
+    /// Global seqno, once the sequencer has confirmed it was sequenced.
+    accepted_as: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -78,6 +95,7 @@ struct SenderState {
 
 struct Inner {
     cfg: ClientConfig,
+    incarnation: u64,
     /// Sends to the sequencer and receives its NAK/REJECT feedback.
     socket: UdpSocket,
     // Lock order: `targets` before `sender`.
@@ -87,6 +105,7 @@ struct Inner {
     running: AtomicBool,
     delivered: AtomicU64,
     lost: AtomicU64,
+    failed: AtomicU64,
 }
 
 /// A KrustyCast client: sends messages to targets through the sequencer and
@@ -100,9 +119,10 @@ pub struct KrustyClient {
 impl KrustyClient {
     pub fn new(cfg: ClientConfig) -> io::Result<Self> {
         let socket = bind_sender(cfg.to_sequencer_addr, cfg.interface)?;
-        socket.set_read_timeout(Some(POLL_INTERVAL))?;
+        socket.set_read_timeout(Some(RESEND_TICK))?;
         Ok(KrustyClient {
             inner: Arc::new(Inner {
+                incarnation: cfg.incarnation.unwrap_or_else(new_incarnation),
                 cfg,
                 socket,
                 targets: Mutex::new(HashMap::new()),
@@ -111,6 +131,7 @@ impl KrustyClient {
                 running: AtomicBool::new(false),
                 delivered: AtomicU64::new(0),
                 lost: AtomicU64::new(0),
+                failed: AtomicU64::new(0),
             }),
             threads: Mutex::new(Vec::new()),
         })
@@ -147,6 +168,17 @@ impl KrustyClient {
     /// Stream messages given up on after recovery failed.
     pub fn lost(&self) -> u64 {
         self.inner.lost.load(Ordering::SeqCst)
+    }
+
+    /// Messages this client sent that were abandoned after `max_resends`
+    /// resends went unanswered.
+    pub fn failed(&self) -> u64 {
+        self.inner.failed.load(Ordering::SeqCst)
+    }
+
+    /// This client process's incarnation ID.
+    pub fn incarnation(&self) -> u64 {
+        self.inner.incarnation
     }
 
     /// Joins the sequenced stream and starts the listener threads.
@@ -215,6 +247,16 @@ impl Drop for KrustyClient {
     }
 }
 
+fn new_incarnation() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // RandomState is seeded randomly per process.
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
+    h.write_u32(std::process::id());
+    h.finish()
+}
+
 fn is_timeout(e: &io::Error) -> bool {
     matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
 }
@@ -229,7 +271,14 @@ impl Inner {
         let mut sender = self.sender.lock().unwrap();
         let sender_seqno = sender.next_seqno;
         sender.next_seqno += 1;
-        let msg = ClientMessage { sender_id: self.cfg.my_id, sender_seqno, target_id, target_seq, payload };
+        let msg = ClientMessage {
+            sender_id: self.cfg.my_id,
+            incarnation: self.incarnation,
+            sender_seqno,
+            target_id,
+            target_seq,
+            payload,
+        };
         let bytes = msg.encode();
         // Send while holding the lock so sender seqnos hit the wire in order.
         if let Err(e) = self.socket.send_to(&bytes, self.cfg.to_sequencer_addr) {
@@ -242,7 +291,10 @@ impl Inner {
         }
         drop(sender);
 
-        target.outstanding.insert(target_seq, Outstanding { sender_seqno, payload: msg.payload });
+        target.outstanding.insert(
+            target_seq,
+            Outstanding { sender_seqno, payload: msg.payload, sent_at: Instant::now(), resends: 0, accepted_as: None },
+        );
     }
 
     /// Receives MoldUDP64 packets on `socket` (the multicast stream, or
@@ -305,6 +357,13 @@ impl Inner {
             if lost != lost_before {
                 eprintln!("[client {}] gave up on {} messages", self.cfg.my_id, lost - lost_before);
                 self.lost.store(lost, Ordering::SeqCst);
+                // Our own messages that were sequenced into the skipped range
+                // will never be seen; stop waiting for them.
+                if let Some(next) = tracker.next_seqno() {
+                    for t in self.targets.lock().unwrap().values_mut() {
+                        t.outstanding.retain(|_, o| o.accepted_as.is_none_or(|g| g >= next));
+                    }
+                }
             }
         }
     }
@@ -331,10 +390,16 @@ impl Inner {
         }
     }
 
-    /// Receives NAK and REJECT feedback from the sequencer.
+    /// Receives NAK, REJECT and ACCEPTED feedback from the sequencer, and
+    /// resends messages it hasn't answered.
     fn feedback_loop(&self) {
         let mut buf = [0u8; 64];
+        let mut last_scan = Instant::now();
         while self.running.load(Ordering::SeqCst) {
+            if last_scan.elapsed() >= RESEND_TICK {
+                self.resend_unanswered();
+                last_scan = Instant::now();
+            }
             let n = match self.socket.recv_from(&mut buf) {
                 Ok((n, _)) => n,
                 Err(e) if is_timeout(&e) => continue,
@@ -366,7 +431,70 @@ impl Inner {
                     }
                     self.claim_and_send(target_id, target, o.payload);
                 }
+                Some(Feedback::Accepted { sender_seqno, global_seqno }) => {
+                    // A resent message had already been sequenced; the stream
+                    // (or a re-request) will deliver it. Stop resending.
+                    let mut targets = self.targets.lock().unwrap();
+                    if let Some(o) = targets
+                        .values_mut()
+                        .flat_map(|t| t.outstanding.values_mut())
+                        .find(|o| o.sender_seqno == sender_seqno)
+                    {
+                        o.accepted_as = Some(global_seqno);
+                    }
+                }
                 None => eprintln!("Feedback listener: malformed {} byte packet", n),
+            }
+        }
+    }
+
+    /// Resends, unchanged, every outstanding message the sequencer hasn't
+    /// answered within the (backed-off) resend interval. This recovers a lost
+    /// message (including the last one, which no later message would expose
+    /// with a NAK) and a lost REJECT; the sequencer answers resends of
+    /// already-decided messages with their original outcome.
+    fn resend_unanswered(&self) {
+        let now = Instant::now();
+        let mut targets = self.targets.lock().unwrap();
+        for (&target_id, target) in targets.iter_mut() {
+            let mut abandoned = Vec::new();
+            for (&target_seq, o) in target.outstanding.iter_mut() {
+                let backoff = self.cfg.resend_after * (1 << o.resends.min(4));
+                if o.accepted_as.is_some() || now.duration_since(o.sent_at) < backoff {
+                    continue;
+                }
+                if o.resends >= self.cfg.max_resends {
+                    abandoned.push(target_seq);
+                    continue;
+                }
+                o.resends += 1;
+                o.sent_at = now;
+                if self.cfg.verbose {
+                    println!(
+                        "[client {}] no answer for seqno {}; resending (attempt {})",
+                        self.cfg.my_id, o.sender_seqno, o.resends
+                    );
+                }
+                let bytes = ClientMessage {
+                    sender_id: self.cfg.my_id,
+                    incarnation: self.incarnation,
+                    sender_seqno: o.sender_seqno,
+                    target_id,
+                    target_seq,
+                    payload: o.payload.clone(),
+                }
+                .encode();
+                if let Err(e) = self.socket.send_to(&bytes, self.cfg.to_sequencer_addr) {
+                    eprintln!("Resend failed: {}", e);
+                }
+            }
+            for target_seq in abandoned {
+                target.outstanding.remove(&target_seq);
+                self.failed.fetch_add(1, Ordering::SeqCst);
+                eprintln!(
+                    "[client {}] giving up on message to target {} after {} resends",
+                    self.cfg.my_id, target_id, self.cfg.max_resends
+                );
             }
         }
     }

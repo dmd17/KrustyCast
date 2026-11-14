@@ -234,3 +234,209 @@ fn interop_our_client_against_moldudp_server() {
     assert_eq!(client.lost(), 0);
     h.shutdown();
 }
+
+// ---------------------------------------------------------------------------
+// Client restarts, upstream loss, sequencer crash recovery
+// ---------------------------------------------------------------------------
+
+use krustycast::protocol::{ClientMessage, Feedback};
+use std::sync::{Arc, Mutex};
+
+/// A UDP proxy between one client and the sequencer that drops packets for
+/// which `drop(upstream, bytes)` returns true. Returns its address and a log
+/// of every packet seen (upstream?, bytes).
+fn lossy_proxy(
+    sequencer: SocketAddr,
+    mut drop: impl FnMut(bool, &[u8]) -> bool + Send + 'static,
+) -> (SocketAddrV4, Arc<Mutex<Vec<(bool, Vec<u8>)>>>) {
+    let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr = v4(sock.local_addr().unwrap());
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let log2 = Arc::clone(&log);
+    thread::spawn(move || {
+        let mut client: Option<SocketAddr> = None;
+        let mut buf = [0u8; 65536];
+        loop {
+            let Ok((n, src)) = sock.recv_from(&mut buf) else { return };
+            // The client sends first; anything else is sequencer feedback.
+            let upstream = *client.get_or_insert(src) == src;
+            log2.lock().unwrap().push((upstream, buf[..n].to_vec()));
+            if drop(upstream, &buf[..n]) {
+                continue;
+            }
+            let dest = if upstream { sequencer } else { client.unwrap() };
+            let _ = sock.send_to(&buf[..n], dest);
+        }
+    });
+    (addr, log)
+}
+
+fn upstream_seqnos(log: &Mutex<Vec<(bool, Vec<u8>)>>) -> Vec<u64> {
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter(|(up, _)| *up)
+        .map(|(_, b)| ClientMessage::decode(b).unwrap().sender_seqno)
+        .collect()
+}
+
+#[test]
+fn restarted_client_with_same_id_is_not_treated_as_duplicate() {
+    const OUT: &str = "239.77.0.6:17106";
+    let seq = start_sequencer("RESTART", OUT);
+    let (_rx_client, rx) = collecting_client(client_config(9, &seq, OUT));
+    thread::sleep(Duration::from_millis(100));
+
+    for run in 0..2 {
+        let c = KrustyClient::new(client_config(5, &seq, OUT)).unwrap();
+        c.start_listener().unwrap();
+        thread::sleep(Duration::from_millis(100));
+        for i in 0..3 {
+            c.send_message(9, format!("run{run}-{i}").as_bytes());
+        }
+        assert!(wait_until(Duration::from_secs(2), || c.pending() == 0), "run {run} not sequenced");
+        // Dropped here: the next run is a new process as far as the sequencer knows.
+    }
+    let got = collect(&rx, 6, Duration::from_secs(2));
+    assert_eq!(got, ["run0-0", "run0-1", "run0-2", "run1-0", "run1-1", "run1-2"]);
+}
+
+#[test]
+fn lost_last_message_is_resent() {
+    const OUT: &str = "239.77.0.7:17107";
+    let seq = start_sequencer("LOSTTAIL", OUT);
+    let (_r, rx) = collecting_client(client_config(9, &seq, OUT));
+    let mut dropped = false;
+    let (proxy, log) = lossy_proxy(seq.input_local_addr(), move |up, b| {
+        // Drop the first copy of the last message: no later message exposes the gap.
+        if up && !dropped && ClientMessage::decode(b).unwrap().sender_seqno == 3 {
+            dropped = true;
+            return true;
+        }
+        false
+    });
+    let c = KrustyClient::new(ClientConfig { to_sequencer_addr: proxy, ..client_config(1, &seq, OUT) }).unwrap();
+    c.start_listener().unwrap();
+    thread::sleep(Duration::from_millis(100));
+    for i in 0..3 {
+        c.send_message(9, format!("m{i}").as_bytes());
+    }
+    assert_eq!(collect(&rx, 3, Duration::from_secs(3)), ["m0", "m1", "m2"]);
+    assert!(wait_until(Duration::from_secs(1), || c.pending() == 0));
+    assert_eq!(upstream_seqnos(&log), [1, 2, 3, 3]);
+    assert_eq!(c.failed(), 0);
+}
+
+#[test]
+fn lost_middle_message_is_naked_and_resent_in_order() {
+    const OUT: &str = "239.77.0.8:17108";
+    let seq = start_sequencer("LOSTMID", OUT);
+    let (_r, rx) = collecting_client(client_config(9, &seq, OUT));
+    let mut dropped = false;
+    let (proxy, log) = lossy_proxy(seq.input_local_addr(), move |up, b| {
+        if up && !dropped && ClientMessage::decode(b).unwrap().sender_seqno == 2 {
+            dropped = true;
+            return true;
+        }
+        false
+    });
+    let c = KrustyClient::new(ClientConfig { to_sequencer_addr: proxy, ..client_config(1, &seq, OUT) }).unwrap();
+    c.start_listener().unwrap();
+    thread::sleep(Duration::from_millis(100));
+    for i in 0..3 {
+        c.send_message(9, format!("m{i}").as_bytes());
+    }
+    assert_eq!(collect(&rx, 3, Duration::from_secs(3)), ["m0", "m1", "m2"]);
+    assert!(collect(&rx, 1, Duration::from_millis(300)).is_empty(), "duplicate delivered");
+    let saw_nak = log.lock().unwrap().iter().any(|(up, b)| !up && matches!(Feedback::decode(b), Some(Feedback::Nak { expected: 2 })));
+    assert!(saw_nak, "sequencer did not NAK the gap");
+}
+
+#[test]
+fn lost_reject_is_recovered_by_resend() {
+    const OUT: &str = "239.77.0.9:17109";
+    let seq = start_sequencer("LOSTREJ", OUT);
+    let (_r, rx) = collecting_client(client_config(9, &seq, OUT));
+
+    // A takes target 9's slot 1 before B is listening, so B also claims slot 1.
+    let a = KrustyClient::new(client_config(1, &seq, OUT)).unwrap();
+    a.start_listener().unwrap();
+    a.send_message(9, b"from A");
+    assert!(wait_until(Duration::from_secs(2), || a.pending() == 0));
+
+    let mut dropped = false;
+    let (proxy, log) = lossy_proxy(seq.input_local_addr(), move |up, b| {
+        if !up && !dropped && matches!(Feedback::decode(b), Some(Feedback::Reject { .. })) {
+            dropped = true;
+            return true;
+        }
+        false
+    });
+    let b = KrustyClient::new(ClientConfig { to_sequencer_addr: proxy, ..client_config(2, &seq, OUT) }).unwrap();
+    b.start_listener().unwrap();
+    b.send_message(9, b"from B");
+
+    assert_eq!(collect(&rx, 2, Duration::from_secs(3)), ["from A", "from B"]);
+    assert!(wait_until(Duration::from_secs(1), || b.pending() == 0));
+    // B's message 1 was sent, resent (its REJECT was lost), then retried as message 2.
+    assert_eq!(upstream_seqnos(&log), [1, 1, 2]);
+    let rejects = log.lock().unwrap().iter().filter(|(up, b)| !up && matches!(Feedback::decode(b), Some(Feedback::Reject { .. }))).count();
+    assert_eq!(rejects, 2, "the resend should get the original REJECT again");
+}
+
+struct TempPath(std::path::PathBuf);
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[test]
+fn sequencer_crash_resumes_from_journal() {
+    const OUT: &str = "239.77.0.10:17110";
+    let journal = TempPath(std::env::temp_dir().join(format!("krustycast-e2e-{}.journal", std::process::id())));
+    let _ = std::fs::remove_file(&journal.0);
+    let cfg = SequencerConfig {
+        input_addr: "127.0.0.1:17111".parse().unwrap(),
+        output_addr: OUT.parse().unwrap(),
+        rerequest_addr: "127.0.0.1:17112".parse().unwrap(),
+        heartbeat_interval: Duration::from_millis(200),
+        end_of_session_linger: Duration::from_millis(200),
+        journal: Some(journal.0.clone()),
+        ..SequencerConfig::new(Session::new("CRASH").unwrap())
+    };
+    let seq = sequencer::start(cfg.clone()).unwrap();
+    let (_r, rx) = collecting_client(client_config(9, &seq, OUT));
+    let sender = KrustyClient::new(client_config(1, &seq, OUT)).unwrap();
+    sender.start_listener().unwrap();
+    thread::sleep(Duration::from_millis(100));
+    for i in 0..5 {
+        sender.send_message(9, format!("m{i}").as_bytes());
+    }
+    assert!(wait_until(Duration::from_secs(2), || sender.pending() == 0));
+
+    // Crash, and keep sending while the sequencer is down.
+    seq.abort();
+    for i in 5..10 {
+        sender.send_message(9, format!("m{i}").as_bytes());
+    }
+    thread::sleep(Duration::from_millis(300));
+    let seq = sequencer::start(cfg.clone()).unwrap();
+    assert_eq!(seq.next_seqno_at_start(), 6);
+
+    // The live receiver sees all ten, in order, exactly once.
+    let expected: Vec<String> = (0..10).map(|i| format!("m{i}")).collect();
+    assert_eq!(collect(&rx, 10, Duration::from_secs(5)), expected);
+    assert!(collect(&rx, 1, Duration::from_millis(300)).is_empty(), "duplicate delivered");
+    assert!(wait_until(Duration::from_secs(2), || sender.pending() == 0));
+    assert_eq!(sender.failed(), 0);
+
+    // History was rebuilt: a replaying client gets the whole session.
+    let (_late, late_rx) = collecting_client(ClientConfig { start_seqno: Some(1), ..client_config(9, &seq, OUT) });
+    assert_eq!(collect(&late_rx, 10, Duration::from_secs(3)), expected);
+
+    // A cleanly ended session can't be resumed.
+    seq.shutdown();
+    let err = sequencer::start(cfg).err().expect("resumed an ended session");
+    assert!(err.to_string().contains("already ended"), "{err}");
+}

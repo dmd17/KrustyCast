@@ -102,10 +102,11 @@ fn main() -> std::io::Result<()> {
 
     thread::sleep(Duration::from_secs(args.linger_secs));
     println!(
-        "[client {}] processed {} stream messages, lost {}",
+        "[client {}] processed {} stream messages, lost {}, failed to send {}",
         my_id,
         client.delivered(),
-        client.lost()
+        client.lost(),
+        client.failed()
     );
     client.stop();
     Ok(())

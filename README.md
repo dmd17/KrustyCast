@@ -12,12 +12,14 @@ client ──UDP──▶ sequencer ──MoldUDP64 multicast──▶ all clien
 
 - **Per-sender reliability:** clients number their messages; the sequencer NAKs gaps and the client resends.
 - **Per-target optimistic concurrency:** each message claims the next sequence number of its target. The first claim wins; losers get a REJECT and retry automatically.
+- **Idempotent resends:** a client resends anything the sequencer hasn't answered (covering a lost message or a lost REJECT). The sequencer answers a resend of an already-decided message with its original outcome and never sequences it twice. Each client process has a random incarnation ID, so a restarted client isn't mistaken for a duplicate.
+- **Crash recovery:** with `--journal FILE`, every decision is journaled (and by default fsynced) before it is published. A sequencer restarted with the same `--session` and journal resumes where it left off. A cleanly ended session can't be resumed.
 - **Downstream:** MoldUDP64 (10-byte session, heartbeats, end-of-session, re-requests). Each MoldUDP64 message is `sender_id: u32 | target_id: u32 | target_seq: u64 | payload`. See `src/protocol.rs`.
 
 ## Running
 
 ```sh
-cargo run --bin sequencer -- --session 20261106A          # Ctrl-C ends the session
+cargo run --bin sequencer -- --session 20261106A --journal 20261106A.journal   # Ctrl-C ends the session
 cargo run --bin client1 -- --my-id 3 --target-id 1 --count 0 --linger-secs 30
 cargo run --bin client1 -- --my-id 1 --target-id 3
 ```
