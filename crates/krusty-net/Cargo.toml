@@ -1,0 +1,13 @@
+[package]
+name = "krusty-net"
+version = "0.1.0"
+description = "KrustyCast batched UDP I/O: recvmmsg/sendmmsg with preallocated buffers (Linux)."
+edition.workspace = true
+license.workspace = true
+
+# Not inheriting workspace lints: the syscall wrappers need unsafe.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[dependencies]
+libc = "0.2"

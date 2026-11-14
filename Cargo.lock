@@ -571,6 +571,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "krusty-net"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "krusty-ring"
 version = "0.1.0"
 
