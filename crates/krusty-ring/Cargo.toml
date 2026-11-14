@@ -1,0 +1,11 @@
+[package]
+name = "krusty-ring"
+version = "0.1.0"
+description = "KrustyCast lock-free SPSC rings and a published history, for connecting pinned stages."
+edition.workspace = true
+license.workspace = true
+
+# Not inheriting workspace lints: this crate is where the node's `unsafe`
+# lives (ARCHITECTURE: rings are checked with Miri, and with Verus later).
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
