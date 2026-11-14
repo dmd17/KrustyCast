@@ -32,3 +32,9 @@ the session from its first message.
 `cargo test` runs unit tests and end-to-end tests over local multicast,
 including interop in both directions with the
 [`moldudp`](https://docs.rs/moldudp) crate.
+
+## Design documents
+
+- [Product requirements](docs/PRD.md): scope, guarantees, performance targets
+- [Architecture](docs/ARCHITECTURE.md): target design and verification strategy
+- [Gap analysis](docs/GAP-ANALYSIS.md): current code against the target, with roadmap
