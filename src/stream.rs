@@ -1,7 +1,7 @@
 //! Receiver-side MoldUDP64 stream state: in-order delivery, gap detection,
 //! re-request scheduling and session handling. Pure logic, no sockets.
 
-use crate::protocol::{MoldKind, MoldPacket, RequestPacket, Session, MAX_MESSAGES_PER_PACKET};
+use crate::protocol::{MAX_MESSAGES_PER_PACKET, MoldKind, MoldPacket, RequestPacket, Session};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -40,7 +40,10 @@ impl Default for TrackerConfig {
 pub enum Outcome {
     Accepted,
     /// First packet of a session we just locked onto; delivery starts at `start`.
-    NewSession { session: Session, start: u64 },
+    NewSession {
+        session: Session,
+        start: u64,
+    },
     /// End-of-session marker (first time seen).
     EndOfSession,
     /// Packet from a session we're not following; ignored.
@@ -113,7 +116,10 @@ impl StreamTracker {
                 self.session = Some(p.session);
                 let start = self.cfg.start_seqno.unwrap_or(p.seqno);
                 self.next = Some(start);
-                outcome = Outcome::NewSession { session: p.session, start };
+                outcome = Outcome::NewSession {
+                    session: p.session,
+                    start,
+                };
             }
             Some(s) if s != p.session => {
                 // Follow a new session only after the current one has ended (and isn't pinned).
@@ -121,10 +127,16 @@ impl StreamTracker {
                     return Outcome::ForeignSession(p.session);
                 }
                 self.lost += self.outstanding();
-                *self = StreamTracker { lost: self.lost, ..StreamTracker::new(self.cfg.clone()) };
+                *self = StreamTracker {
+                    lost: self.lost,
+                    ..StreamTracker::new(self.cfg.clone())
+                };
                 self.session = Some(p.session);
                 self.next = Some(1);
-                outcome = Outcome::NewSession { session: p.session, start: 1 };
+                outcome = Outcome::NewSession {
+                    session: p.session,
+                    start: 1,
+                };
             }
             _ => {}
         }
@@ -170,7 +182,11 @@ impl StreamTracker {
 
     /// The re-request to send now, if any. Call after each packet and periodically.
     /// May skip a gap (delivering what follows it) after too many retries.
-    pub fn poll_request(&mut self, now: Instant, mut deliver: impl FnMut(u64, Vec<u8>)) -> Option<RequestPacket> {
+    pub fn poll_request(
+        &mut self,
+        now: Instant,
+        mut deliver: impl FnMut(u64, Vec<u8>),
+    ) -> Option<RequestPacket> {
         if !self.cfg.recover || !self.has_gap() {
             self.last_request = None;
             return None;
@@ -191,9 +207,18 @@ impl StreamTracker {
             _ => 1,
         };
         self.last_request = Some((next, now, attempts));
-        let gap_end = self.buffered.keys().next().copied().unwrap_or(self.high_water);
+        let gap_end = self
+            .buffered
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(self.high_water);
         let count = (gap_end - next).min(MAX_MESSAGES_PER_PACKET as u64) as u16;
-        Some(RequestPacket { session, seqno: next, count })
+        Some(RequestPacket {
+            session,
+            seqno: next,
+            count,
+        })
     }
 
     fn has_gap(&self) -> bool {
@@ -207,7 +232,12 @@ impl StreamTracker {
     /// Abandons the gap at `next` and delivers whatever is buffered after it.
     fn skip_gap(&mut self, deliver: &mut impl FnMut(u64, Vec<u8>)) {
         let Some(mut next) = self.next else { return };
-        let resume = self.buffered.keys().next().copied().unwrap_or(self.high_water);
+        let resume = self
+            .buffered
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(self.high_water);
         if resume <= next {
             return;
         }
@@ -238,11 +268,19 @@ mod tests {
     }
 
     fn hb(seqno: u64) -> MoldPacket {
-        MoldPacket { session: s("A"), seqno, kind: MoldKind::Heartbeat }
+        MoldPacket {
+            session: s("A"),
+            seqno,
+            kind: MoldKind::Heartbeat,
+        }
     }
 
     fn eos(seqno: u64) -> MoldPacket {
-        MoldPacket { session: s("A"), seqno, kind: MoldKind::EndOfSession }
+        MoldPacket {
+            session: s("A"),
+            seqno,
+            kind: MoldKind::EndOfSession,
+        }
     }
 
     /// Feeds packets, returning the delivered (seqno, text) pairs.
@@ -266,9 +304,15 @@ mod tests {
         let got = feed(&mut t, vec![msgs(top, &["a", "b"])]);
         assert_eq!(got, [(top, "a".to_string()), (top + 1, "b".to_string())]);
         assert_eq!(t.next_seqno(), Some(u64::MAX));
-        assert_eq!(t.on_packet(msgs(u64::MAX, &["c"]), |_, _| panic!()), Outcome::Invalid);
+        assert_eq!(
+            t.on_packet(msgs(u64::MAX, &["c"]), |_, _| panic!()),
+            Outcome::Invalid
+        );
         assert_eq!(t.next_seqno(), Some(u64::MAX));
-        assert_eq!(t.on_packet(hb(u64::MAX), |_, _| panic!()), Outcome::Accepted);
+        assert_eq!(
+            t.on_packet(hb(u64::MAX), |_, _| panic!()),
+            Outcome::Accepted
+        );
     }
 
     #[test]
@@ -284,13 +328,19 @@ mod tests {
     fn gap_is_requested_then_filled_in_order() {
         let mut t = StreamTracker::new(TrackerConfig::default());
         let now = Instant::now();
-        let out = feed(&mut t, vec![msgs(1, &["a"]), msgs(4, &["d"]), msgs(5, &["e"])]);
+        let out = feed(
+            &mut t,
+            vec![msgs(1, &["a"]), msgs(4, &["d"]), msgs(5, &["e"])],
+        );
         assert_eq!(texts(&out), ["a"]);
         let req = t.poll_request(now, |_, _| {}).unwrap();
         assert_eq!((req.seqno, req.count), (2, 2));
         // Rate-limited until the retry interval passes.
         assert_eq!(t.poll_request(now, |_, _| {}), None);
-        assert!(t.poll_request(now + Duration::from_millis(150), |_, _| {}).is_some());
+        assert!(
+            t.poll_request(now + Duration::from_millis(150), |_, _| {})
+                .is_some()
+        );
 
         // Partial retransmission: only 2 arrives. Next request asks for 3.
         let out = feed(&mut t, vec![msgs(2, &["b"])]);
@@ -315,7 +365,10 @@ mod tests {
 
     #[test]
     fn replay_from_start() {
-        let cfg = TrackerConfig { start_seqno: Some(1), ..Default::default() };
+        let cfg = TrackerConfig {
+            start_seqno: Some(1),
+            ..Default::default()
+        };
         let mut t = StreamTracker::new(cfg);
         assert!(feed(&mut t, vec![hb(10)]).is_empty());
         let req = t.poll_request(Instant::now(), |_, _| {}).unwrap();
@@ -340,25 +393,47 @@ mod tests {
     fn session_switching() {
         let mut t = StreamTracker::new(TrackerConfig::default());
         feed(&mut t, vec![msgs(1, &["a"])]);
-        let b = MoldPacket { session: s("B"), seqno: 1, kind: MoldKind::Messages(vec![b"x".to_vec()]) };
+        let b = MoldPacket {
+            session: s("B"),
+            seqno: 1,
+            kind: MoldKind::Messages(vec![b"x".to_vec()]),
+        };
         // Session A is still live: B is ignored.
-        assert_eq!(t.on_packet(b.clone(), |_, _| {}), Outcome::ForeignSession(s("B")));
+        assert_eq!(
+            t.on_packet(b.clone(), |_, _| {}),
+            Outcome::ForeignSession(s("B"))
+        );
         // After A ends, B is followed from seqno 1.
         t.on_packet(eos(2), |_, _| {});
         let mut got = vec![];
-        assert_eq!(t.on_packet(b, |n, d| got.push((n, d))), Outcome::NewSession { session: s("B"), start: 1 });
+        assert_eq!(
+            t.on_packet(b, |n, d| got.push((n, d))),
+            Outcome::NewSession {
+                session: s("B"),
+                start: 1
+            }
+        );
         assert_eq!(got, vec![(1, b"x".to_vec())]);
 
         // A pinned session never switches.
-        let cfg = TrackerConfig { session: Some(s("B")), ..Default::default() };
+        let cfg = TrackerConfig {
+            session: Some(s("B")),
+            ..Default::default()
+        };
         let mut t = StreamTracker::new(cfg);
-        assert_eq!(t.on_packet(msgs(1, &["a"]), |_, _| {}), Outcome::ForeignSession(s("A")));
+        assert_eq!(
+            t.on_packet(msgs(1, &["a"]), |_, _| {}),
+            Outcome::ForeignSession(s("A"))
+        );
         assert_eq!(t.session(), None);
     }
 
     #[test]
     fn no_recovery_skips_gaps() {
-        let cfg = TrackerConfig { recover: false, ..Default::default() };
+        let cfg = TrackerConfig {
+            recover: false,
+            ..Default::default()
+        };
         let mut t = StreamTracker::new(cfg);
         let out = feed(&mut t, vec![msgs(1, &["a"]), msgs(4, &["d"]), hb(7)]);
         assert_eq!(texts(&out), ["a", "d"]);
@@ -369,7 +444,10 @@ mod tests {
 
     #[test]
     fn gives_up_after_max_retries() {
-        let cfg = TrackerConfig { max_retries: 2, ..Default::default() };
+        let cfg = TrackerConfig {
+            max_retries: 2,
+            ..Default::default()
+        };
         let mut t = StreamTracker::new(cfg);
         feed(&mut t, vec![msgs(1, &["a"]), msgs(3, &["c"])]);
         let mut now = Instant::now();
@@ -385,9 +463,20 @@ mod tests {
 
     #[test]
     fn buffer_cap_skips_gap() {
-        let cfg = TrackerConfig { max_buffered: 2, ..Default::default() };
+        let cfg = TrackerConfig {
+            max_buffered: 2,
+            ..Default::default()
+        };
         let mut t = StreamTracker::new(cfg);
-        let out = feed(&mut t, vec![msgs(1, &["a"]), msgs(3, &["c"]), msgs(4, &["d"]), msgs(5, &["e"])]);
+        let out = feed(
+            &mut t,
+            vec![
+                msgs(1, &["a"]),
+                msgs(3, &["c"]),
+                msgs(4, &["d"]),
+                msgs(5, &["e"]),
+            ],
+        );
         assert_eq!(texts(&out), ["a", "c", "d", "e"]);
         assert_eq!(t.lost(), 1);
     }

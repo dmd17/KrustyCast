@@ -1,7 +1,7 @@
-use crate::net::{bind_receiver, bind_sender, RECV_BUFFER_SIZE};
+use crate::net::{RECV_BUFFER_SIZE, bind_receiver, bind_sender};
 use crate::protocol::{ClientMessage, Feedback, MoldPacket, SequencedMessage, Session};
 use crate::stream::{Outcome, StreamTracker, TrackerConfig};
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
@@ -126,7 +126,10 @@ impl KrustyClient {
                 cfg,
                 socket,
                 targets: Mutex::new(HashMap::new()),
-                sender: Mutex::new(SenderState { next_seqno: 1, sent: BTreeMap::new() }),
+                sender: Mutex::new(SenderState {
+                    next_seqno: 1,
+                    sent: BTreeMap::new(),
+                }),
                 callback: Mutex::new(None),
                 running: AtomicBool::new(false),
                 delivered: AtomicU64::new(0),
@@ -152,12 +155,19 @@ impl KrustyClient {
     pub fn send_message(&self, target_id: u32, payload: &[u8]) {
         let mut targets = self.inner.targets.lock().unwrap();
         let target = targets.entry(target_id).or_default();
-        self.inner.claim_and_send(target_id, target, payload.to_vec());
+        self.inner
+            .claim_and_send(target_id, target, payload.to_vec());
     }
 
     /// Number of messages sent but not yet seen on the sequenced stream.
     pub fn pending(&self) -> usize {
-        self.inner.targets.lock().unwrap().values().map(|t| t.outstanding.len()).sum()
+        self.inner
+            .targets
+            .lock()
+            .unwrap()
+            .values()
+            .map(|t| t.outstanding.len())
+            .sum()
     }
 
     /// Messages from the stream processed so far (all targets).
@@ -187,7 +197,8 @@ impl KrustyClient {
             return Ok(()); // already running
         }
         let sockets = (|| -> io::Result<_> {
-            let stream = bind_receiver(self.inner.cfg.from_sequencer_addr, self.inner.cfg.interface)?;
+            let stream =
+                bind_receiver(self.inner.cfg.from_sequencer_addr, self.inner.cfg.interface)?;
             stream.set_read_timeout(Some(POLL_INTERVAL))?;
             let rereq = match self.inner.cfg.rerequest_addr {
                 Some(addr) => {
@@ -212,13 +223,17 @@ impl KrustyClient {
         {
             let inner = Arc::clone(&self.inner);
             let tx = pkt_tx.clone();
-            threads.push(thread::spawn(move || inner.packet_recv_loop(stream, tx, "stream")));
+            threads.push(thread::spawn(move || {
+                inner.packet_recv_loop(stream, tx, "stream")
+            }));
         }
         if let Some(rereq) = &rereq {
             let inner = Arc::clone(&self.inner);
             let socket = rereq.try_clone()?;
             let tx = pkt_tx.clone();
-            threads.push(thread::spawn(move || inner.packet_recv_loop(socket, tx, "retransmission")));
+            threads.push(thread::spawn(move || {
+                inner.packet_recv_loop(socket, tx, "retransmission")
+            }));
         }
         drop(pkt_tx);
         {
@@ -252,13 +267,21 @@ fn new_incarnation() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     // RandomState is seeded randomly per process.
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u128(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
+    h.write_u128(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    );
     h.write_u32(std::process::id());
     h.finish()
 }
 
 fn is_timeout(e: &io::Error) -> bool {
-    matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+    matches!(
+        e.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
 }
 
 impl Inner {
@@ -293,7 +316,13 @@ impl Inner {
 
         target.outstanding.insert(
             target_seq,
-            Outstanding { sender_seqno, payload: msg.payload, sent_at: Instant::now(), resends: 0, accepted_as: None },
+            Outstanding {
+                sender_seqno,
+                payload: msg.payload,
+                sent_at: Instant::now(),
+                resends: 0,
+                accepted_as: None,
+            },
         );
     }
 
@@ -336,7 +365,10 @@ impl Inner {
             match rx.recv_timeout(RETRY_TICK) {
                 Ok(p) => match tracker.on_packet(p, &mut deliver) {
                     Outcome::NewSession { session, start } => {
-                        println!("[client {}] following session {} from #{}", self.cfg.my_id, session, start)
+                        println!(
+                            "[client {}] following session {} from #{}",
+                            self.cfg.my_id, session, start
+                        )
                     }
                     Outcome::EndOfSession => println!("[client {}] end of session", self.cfg.my_id),
                     Outcome::ForeignSession(_) | Outcome::Invalid | Outcome::Accepted => {}
@@ -345,9 +377,14 @@ impl Inner {
                 Err(RecvTimeoutError::Disconnected) => return,
             }
             let request = tracker.poll_request(Instant::now(), &mut deliver);
-            if let (Some(req), Some(socket), Some(addr)) = (request, &rereq, self.cfg.rerequest_addr) {
+            if let (Some(req), Some(socket), Some(addr)) =
+                (request, &rereq, self.cfg.rerequest_addr)
+            {
                 if self.cfg.verbose {
-                    println!("[client {}] re-requesting #{} (+{})", self.cfg.my_id, req.seqno, req.count);
+                    println!(
+                        "[client {}] re-requesting #{} (+{})",
+                        self.cfg.my_id, req.seqno, req.count
+                    );
                 }
                 if let Err(e) = socket.send_to(&req.encode(), addr) {
                     eprintln!("Re-request send failed: {}", e);
@@ -355,13 +392,18 @@ impl Inner {
             }
             let lost = tracker.lost();
             if lost != lost_before {
-                eprintln!("[client {}] gave up on {} messages", self.cfg.my_id, lost - lost_before);
+                eprintln!(
+                    "[client {}] gave up on {} messages",
+                    self.cfg.my_id,
+                    lost - lost_before
+                );
                 self.lost.store(lost, Ordering::SeqCst);
                 // Our own messages that were sequenced into the skipped range
                 // will never be seen; stop waiting for them.
                 if let Some(next) = tracker.next_seqno() {
                     for t in self.targets.lock().unwrap().values_mut() {
-                        t.outstanding.retain(|_, o| o.accepted_as.is_none_or(|g| g >= next));
+                        t.outstanding
+                            .retain(|_, o| o.accepted_as.is_none_or(|g| g >= next));
                     }
                 }
             }
@@ -410,7 +452,12 @@ impl Inner {
             };
             match Feedback::decode(&buf[..n]) {
                 Some(Feedback::Nak { expected }) => self.resend_from(expected),
-                Some(Feedback::Reject { target_id, rejected_target_seq, current_target_seq, sender_seqno }) => {
+                Some(Feedback::Reject {
+                    target_id,
+                    rejected_target_seq,
+                    current_target_seq,
+                    sender_seqno,
+                }) => {
                     let mut targets = self.targets.lock().unwrap();
                     let target = targets.entry(target_id).or_default();
                     match target.outstanding.get(&rejected_target_seq) {
@@ -431,7 +478,10 @@ impl Inner {
                     }
                     self.claim_and_send(target_id, target, o.payload);
                 }
-                Some(Feedback::Accepted { sender_seqno, global_seqno }) => {
+                Some(Feedback::Accepted {
+                    sender_seqno,
+                    global_seqno,
+                }) => {
                     // A resent message had already been sequenced; the stream
                     // (or a re-request) will deliver it. Stop resending.
                     let mut targets = self.targets.lock().unwrap();
@@ -502,13 +552,23 @@ impl Inner {
     /// Resends every buffered message from sender seqno `expected` onward.
     fn resend_from(&self, expected: u64) {
         let sender = self.sender.lock().unwrap();
-        if sender.sent.first_key_value().is_none_or(|(&first, _)| first > expected) {
-            eprintln!("NAK for seqno {} which is no longer buffered; cannot recover", expected);
+        if sender
+            .sent
+            .first_key_value()
+            .is_none_or(|(&first, _)| first > expected)
+        {
+            eprintln!(
+                "NAK for seqno {} which is no longer buffered; cannot recover",
+                expected
+            );
             return;
         }
         for (seqno, bytes) in sender.sent.range(expected..) {
             if self.cfg.verbose {
-                println!("[client {}] resending seqno {} after NAK", self.cfg.my_id, seqno);
+                println!(
+                    "[client {}] resending seqno {} after NAK",
+                    self.cfg.my_id, seqno
+                );
             }
             if let Err(e) = self.socket.send_to(bytes, self.cfg.to_sequencer_addr) {
                 eprintln!("Resend failed: {}", e);

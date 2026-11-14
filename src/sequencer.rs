@@ -4,11 +4,11 @@
 //! decision so a restarted sequencer resumes the session where it left off.
 
 use crate::journal::{FsyncPolicy, Journal, Record, SenderKey};
-use crate::net::{bind_receiver, bind_sender, RECV_BUFFER_SIZE};
+use crate::net::{RECV_BUFFER_SIZE, bind_receiver, bind_sender};
 use crate::protocol::{
     ClientMessage, Feedback, MoldPacket, PacketBuilder, RequestPacket, SequencedMessage, Session,
 };
-use crossbeam_channel::{bounded, select, tick, unbounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, bounded, select, tick, unbounded};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
@@ -111,7 +111,11 @@ struct SenderRecord {
 
 impl SenderRecord {
     fn new() -> Self {
-        SenderRecord { last: 0, first_outcome: 1, outcomes: VecDeque::new() }
+        SenderRecord {
+            last: 0,
+            first_outcome: 1,
+            outcomes: VecDeque::new(),
+        }
     }
 
     /// Records the outcome of sender seqno `last + 1`.
@@ -125,7 +129,8 @@ impl SenderRecord {
     }
 
     fn outcome(&self, sender_seqno: u64) -> Option<&Feedback> {
-        self.outcomes.get(sender_seqno.checked_sub(self.first_outcome)? as usize)
+        self.outcomes
+            .get(sender_seqno.checked_sub(self.first_outcome)? as usize)
     }
 }
 
@@ -155,24 +160,46 @@ impl Core {
         let mut history = self.history.lock().unwrap();
         for rec in records {
             match rec {
-                Record::Accepted { key, sender_seqno, data } => {
-                    let m = SequencedMessage::decode(&data)
-                        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad message in journal"))?;
+                Record::Accepted {
+                    key,
+                    sender_seqno,
+                    data,
+                } => {
+                    let m = SequencedMessage::decode(&data).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "bad message in journal")
+                    })?;
                     self.targets.insert(m.target_id, m.target_seq);
                     let sender = self.senders.entry(key).or_insert_with(SenderRecord::new);
                     debug_assert_eq!(sender.last + 1, sender_seqno);
-                    sender.record(Feedback::Accepted { sender_seqno, global_seqno: self.next_seqno });
+                    sender.record(Feedback::Accepted {
+                        sender_seqno,
+                        global_seqno: self.next_seqno,
+                    });
                     history.push(data);
                     self.next_seqno += 1;
                 }
-                Record::Rejected { key, sender_seqno, target_id, rejected_target_seq, current_target_seq } => {
+                Record::Rejected {
+                    key,
+                    sender_seqno,
+                    target_id,
+                    rejected_target_seq,
+                    current_target_seq,
+                } => {
                     let sender = self.senders.entry(key).or_insert_with(SenderRecord::new);
-                    sender.record(Feedback::Reject { target_id, rejected_target_seq, current_target_seq, sender_seqno });
+                    sender.record(Feedback::Reject {
+                        target_id,
+                        rejected_target_seq,
+                        current_target_seq,
+                        sender_seqno,
+                    });
                 }
                 Record::EndOfSession => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("session {} has already ended; start a new session", self.session),
+                        format!(
+                            "session {} has already ended; start a new session",
+                            self.session
+                        ),
                     ));
                 }
             }
@@ -195,7 +222,10 @@ impl Core {
         let mut batch = PacketBuilder::new(self.session, self.next_seqno, self.max_packet_size);
 
         for (msg, src) in msgs {
-            let key = SenderKey { sender_id: msg.sender_id, incarnation: msg.incarnation };
+            let key = SenderKey {
+                sender_id: msg.sender_id,
+                incarnation: msg.incarnation,
+            };
             let sender = self.senders.entry(key).or_insert_with(SenderRecord::new);
 
             if msg.sender_seqno <= sender.last {
@@ -212,7 +242,13 @@ impl Core {
                     sender.last + 1,
                     msg.sender_seqno
                 );
-                out.feedback.push((Feedback::Nak { expected: sender.last + 1 }.encode(), src));
+                out.feedback.push((
+                    Feedback::Nak {
+                        expected: sender.last + 1,
+                    }
+                    .encode(),
+                    src,
+                ));
                 continue;
             }
 
@@ -226,7 +262,10 @@ impl Core {
                         global_seqno, msg.sender_id, msg.target_id, msg.target_seq
                     );
                 }
-                sender.record(Feedback::Accepted { sender_seqno: msg.sender_seqno, global_seqno });
+                sender.record(Feedback::Accepted {
+                    sender_seqno: msg.sender_seqno,
+                    global_seqno,
+                });
                 let data = SequencedMessage {
                     sender_id: msg.sender_id,
                     target_id: msg.target_id,
@@ -234,7 +273,11 @@ impl Core {
                     payload: msg.payload,
                 }
                 .encode();
-                self.journal(&Record::Accepted { key, sender_seqno: msg.sender_seqno, data: data.clone() })?;
+                self.journal(&Record::Accepted {
+                    key,
+                    sender_seqno: msg.sender_seqno,
+                    data: data.clone(),
+                })?;
                 if !batch.try_push(&data) {
                     let full = std::mem::replace(
                         &mut batch,
@@ -338,7 +381,9 @@ impl SequencerHandle {
     }
 
     fn stop(&mut self, how: Stop) {
-        let Some(tx) = self.shutdown_tx.take() else { return };
+        let Some(tx) = self.shutdown_tx.take() else {
+            return;
+        };
         let _ = tx.send(how);
         // The sequencing thread (first) may linger sending end-of-session; the
         // others keep serving until it is done.
@@ -378,12 +423,18 @@ pub fn start(cfg: SequencerConfig) -> io::Result<SequencerHandle> {
     if let Some(path) = &cfg.journal {
         let (journal, recovered) = Journal::open(path, cfg.session, cfg.fsync)?;
         if recovered.truncated_bytes > 0 {
-            eprintln!("Journal: discarded {} bytes of torn/corrupt tail", recovered.truncated_bytes);
+            eprintln!(
+                "Journal: discarded {} bytes of torn/corrupt tail",
+                recovered.truncated_bytes
+            );
         }
         let n = recovered.records.len();
         core.replay(recovered.records)?;
         if n > 0 {
-            println!("Journal: resumed session {} at seqno {} ({} records)", cfg.session, core.next_seqno, n);
+            println!(
+                "Journal: resumed session {} at seqno {} ({} records)",
+                cfg.session, core.next_seqno, n
+            );
         }
         core.journal = Some(journal);
     }
@@ -427,11 +478,18 @@ pub fn start(cfg: SequencerConfig) -> io::Result<SequencerHandle> {
 }
 
 fn is_timeout(e: &io::Error) -> bool {
-    matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+    matches!(
+        e.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
 }
 
 /// Parses client messages and hands them to the sequencing thread.
-fn receive_loop(socket: UdpSocket, tx: Sender<(ClientMessage, SocketAddr)>, running: Arc<AtomicBool>) {
+fn receive_loop(
+    socket: UdpSocket,
+    tx: Sender<(ClientMessage, SocketAddr)>,
+    running: Arc<AtomicBool>,
+) {
     let mut buf = vec![0u8; RECV_BUFFER_SIZE];
     while running.load(Ordering::SeqCst) {
         let (n, src) = match socket.recv_from(&mut buf) {
@@ -563,20 +621,29 @@ fn rerequest_loop(
             continue;
         };
         if req.session != session {
-            eprintln!("Re-request from {} for unknown session {}", src, req.session);
+            eprintln!(
+                "Re-request from {} for unknown session {}",
+                src, req.session
+            );
             continue;
         }
         let response = history.lock().unwrap().response(&req, max_packet_size);
         match response {
             Some(pkt) => {
                 if verbose {
-                    println!("Retransmitting from #{} (asked for {}) to {}", req.seqno, req.count, src);
+                    println!(
+                        "Retransmitting from #{} (asked for {}) to {}",
+                        req.seqno, req.count, src
+                    );
                 }
                 if let Err(e) = socket.send_to(&pkt, src) {
                     eprintln!("Retransmission to {} failed: {}", src, e);
                 }
             }
-            None => eprintln!("Re-request from {} for #{} (+{}) not in history", src, req.seqno, req.count),
+            None => eprintln!(
+                "Re-request from {} for #{} (+{}) not in history",
+                src, req.seqno, req.count
+            ),
         }
     }
 }
@@ -589,13 +656,21 @@ mod tests {
     #[test]
     fn history_eviction_and_responses() {
         let session = Session::new("H").unwrap();
-        let mut h = History { first_seqno: 1, msgs: VecDeque::new(), limit: 3 };
+        let mut h = History {
+            first_seqno: 1,
+            msgs: VecDeque::new(),
+            limit: 3,
+        };
         for i in 1..=5u8 {
             h.push(vec![i; 4]);
         }
         // Holds seqnos 3, 4, 5.
         assert_eq!(h.first_seqno, 3);
-        let req = |seqno, count| RequestPacket { session, seqno, count };
+        let req = |seqno, count| RequestPacket {
+            session,
+            seqno,
+            count,
+        };
         assert_eq!(h.response(&req(2, 1), 1400), None); // evicted
         assert_eq!(h.response(&req(6, 1), 1400), None); // not yet sequenced
         assert_eq!(h.response(&req(3, 0), 1400), None);
@@ -617,39 +692,77 @@ mod tests {
             senders: HashMap::new(),
             targets: HashMap::new(),
             next_seqno: 1,
-            history: Arc::new(Mutex::new(History { first_seqno: 1, msgs: VecDeque::new(), limit: 100 })),
+            history: Arc::new(Mutex::new(History {
+                first_seqno: 1,
+                msgs: VecDeque::new(),
+                limit: 100,
+            })),
             journal: None,
         }
     }
 
-    fn msg(sender_id: u32, incarnation: u64, sender_seqno: u64, target_seq: u64) -> (ClientMessage, SocketAddr) {
-        let m = ClientMessage { sender_id, incarnation, sender_seqno, target_id: 9, target_seq, payload: vec![] };
+    fn msg(
+        sender_id: u32,
+        incarnation: u64,
+        sender_seqno: u64,
+        target_seq: u64,
+    ) -> (ClientMessage, SocketAddr) {
+        let m = ClientMessage {
+            sender_id,
+            incarnation,
+            sender_seqno,
+            target_id: 9,
+            target_seq,
+            payload: vec![],
+        };
         (m, "127.0.0.1:1".parse().unwrap())
     }
 
     fn feedback(out: &Outgoing) -> Vec<Feedback> {
-        out.feedback.iter().map(|(b, _)| Feedback::decode(b).unwrap()).collect()
+        out.feedback
+            .iter()
+            .map(|(b, _)| Feedback::decode(b).unwrap())
+            .collect()
     }
 
     #[test]
     fn duplicates_get_their_original_outcome() {
         let mut c = core();
-        let out = c.process_batch(vec![msg(1, 7, 1, 1), msg(1, 7, 2, 1)]).unwrap();
+        let out = c
+            .process_batch(vec![msg(1, 7, 1, 1), msg(1, 7, 2, 1)])
+            .unwrap();
         assert_eq!(out.packets.len(), 1);
-        let reject = Feedback::Reject { target_id: 9, rejected_target_seq: 1, current_target_seq: 1, sender_seqno: 2 };
+        let reject = Feedback::Reject {
+            target_id: 9,
+            rejected_target_seq: 1,
+            current_target_seq: 1,
+            sender_seqno: 2,
+        };
         assert_eq!(feedback(&out), [reject.clone()]);
 
         // Resends of both: nothing new is sequenced, outcomes are repeated.
-        let out = c.process_batch(vec![msg(1, 7, 1, 1), msg(1, 7, 2, 1)]).unwrap();
+        let out = c
+            .process_batch(vec![msg(1, 7, 1, 1), msg(1, 7, 2, 1)])
+            .unwrap();
         assert!(out.packets.is_empty());
-        assert_eq!(feedback(&out), [Feedback::Accepted { sender_seqno: 1, global_seqno: 1 }, reject]);
+        assert_eq!(
+            feedback(&out),
+            [
+                Feedback::Accepted {
+                    sender_seqno: 1,
+                    global_seqno: 1
+                },
+                reject
+            ]
+        );
         assert_eq!(c.next_seqno, 2);
     }
 
     #[test]
     fn new_incarnation_starts_fresh_and_gaps_are_naked() {
         let mut c = core();
-        c.process_batch(vec![msg(1, 7, 1, 1), msg(1, 7, 2, 2)]).unwrap();
+        c.process_batch(vec![msg(1, 7, 1, 1), msg(1, 7, 2, 2)])
+            .unwrap();
         // Same sender ID, restarted: seqno 1 again is a new message, not a duplicate.
         let out = c.process_batch(vec![msg(1, 8, 1, 3)]).unwrap();
         assert_eq!(out.packets.len(), 1);
@@ -664,19 +777,41 @@ mod tests {
         let mut a = core();
         let records: Vec<Record> = {
             // Run some traffic and capture what would be journaled.
-            let key = SenderKey { sender_id: 1, incarnation: 7 };
-            a.process_batch(vec![msg(1, 7, 1, 1), msg(1, 7, 2, 1), msg(1, 7, 3, 2)]).unwrap();
+            let key = SenderKey {
+                sender_id: 1,
+                incarnation: 7,
+            };
+            a.process_batch(vec![msg(1, 7, 1, 1), msg(1, 7, 2, 1), msg(1, 7, 3, 2)])
+                .unwrap();
             vec![
                 Record::Accepted {
                     key,
                     sender_seqno: 1,
-                    data: SequencedMessage { sender_id: 1, target_id: 9, target_seq: 1, payload: vec![] }.encode(),
+                    data: SequencedMessage {
+                        sender_id: 1,
+                        target_id: 9,
+                        target_seq: 1,
+                        payload: vec![],
+                    }
+                    .encode(),
                 },
-                Record::Rejected { key, sender_seqno: 2, target_id: 9, rejected_target_seq: 1, current_target_seq: 1 },
+                Record::Rejected {
+                    key,
+                    sender_seqno: 2,
+                    target_id: 9,
+                    rejected_target_seq: 1,
+                    current_target_seq: 1,
+                },
                 Record::Accepted {
                     key,
                     sender_seqno: 3,
-                    data: SequencedMessage { sender_id: 1, target_id: 9, target_seq: 2, payload: vec![] }.encode(),
+                    data: SequencedMessage {
+                        sender_id: 1,
+                        target_id: 9,
+                        target_seq: 2,
+                        payload: vec![],
+                    }
+                    .encode(),
                 },
             ]
         };
@@ -684,10 +819,19 @@ mod tests {
         b.replay(records).unwrap();
         assert_eq!(b.next_seqno, a.next_seqno);
         assert_eq!(b.targets, a.targets);
-        assert_eq!(b.history.lock().unwrap().msgs, a.history.lock().unwrap().msgs);
+        assert_eq!(
+            b.history.lock().unwrap().msgs,
+            a.history.lock().unwrap().msgs
+        );
         // A resend after "restart" gets the original answer.
         let out = b.process_batch(vec![msg(1, 7, 3, 2)]).unwrap();
-        assert_eq!(feedback(&out), [Feedback::Accepted { sender_seqno: 3, global_seqno: 2 }]);
+        assert_eq!(
+            feedback(&out),
+            [Feedback::Accepted {
+                sender_seqno: 3,
+                global_seqno: 2
+            }]
+        );
 
         let mut c = core();
         assert!(c.replay(vec![Record::EndOfSession]).is_err());

@@ -46,7 +46,11 @@ pub struct SenderKey {
 pub enum Record {
     /// A message was sequenced; `data` is its MoldUDP64 message data. Its
     /// global seqno is implied by its position among Accepted records.
-    Accepted { key: SenderKey, sender_seqno: u64, data: Vec<u8> },
+    Accepted {
+        key: SenderKey,
+        sender_seqno: u64,
+        data: Vec<u8>,
+    },
     /// A message lost its target slot.
     Rejected {
         key: SenderKey,
@@ -69,12 +73,22 @@ impl Record {
             out.extend_from_slice(&seqno.to_be_bytes());
         };
         match self {
-            Record::Accepted { key, sender_seqno, data } => {
+            Record::Accepted {
+                key,
+                sender_seqno,
+                data,
+            } => {
                 out.push(REC_ACCEPTED);
                 key_bytes(out, key, *sender_seqno);
                 out.extend_from_slice(data);
             }
-            Record::Rejected { key, sender_seqno, target_id, rejected_target_seq, current_target_seq } => {
+            Record::Rejected {
+                key,
+                sender_seqno,
+                target_id,
+                rejected_target_seq,
+                current_target_seq,
+            } => {
                 out.push(REC_REJECTED);
                 key_bytes(out, key, *sender_seqno);
                 out.extend_from_slice(&target_id.to_be_bytes());
@@ -93,11 +107,16 @@ impl Record {
     fn decode(body: &[u8]) -> Option<Self> {
         let u32_at = |at: usize| u32::from_be_bytes(body[at..at + 4].try_into().unwrap());
         let u64_at = |at: usize| u64::from_be_bytes(body[at..at + 8].try_into().unwrap());
-        let key = || SenderKey { sender_id: u32_at(1), incarnation: u64_at(5) };
+        let key = || SenderKey {
+            sender_id: u32_at(1),
+            incarnation: u64_at(5),
+        };
         match *body.first()? {
-            REC_ACCEPTED if body.len() >= 21 => {
-                Some(Record::Accepted { key: key(), sender_seqno: u64_at(13), data: body[21..].to_vec() })
-            }
+            REC_ACCEPTED if body.len() >= 21 => Some(Record::Accepted {
+                key: key(),
+                sender_seqno: u64_at(13),
+                data: body[21..].to_vec(),
+            }),
             REC_REJECTED if body.len() == 41 => Some(Record::Rejected {
                 key: key(),
                 sender_seqno: u64_at(13),
@@ -127,8 +146,17 @@ pub struct Recovered {
 impl Journal {
     /// Opens (creating if needed) the journal for `session`, returning the
     /// existing records. Fails if the file belongs to a different session.
-    pub fn open(path: &Path, session: Session, fsync: FsyncPolicy) -> io::Result<(Journal, Recovered)> {
-        let mut file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+    pub fn open(
+        path: &Path,
+        session: Session,
+        fsync: FsyncPolicy,
+    ) -> io::Result<(Journal, Recovered)> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
         let file_len = file.metadata()?.len();
         let mut records = Vec::new();
         let mut good_len = FILE_HEADER_SIZE;
@@ -140,13 +168,17 @@ impl Journal {
         } else {
             let mut r = BufReader::new(&mut file);
             let mut header = [0u8; FILE_HEADER_SIZE as usize];
-            r.read_exact(&mut header).map_err(|_| invalid(path, "too short to be a journal"))?;
+            r.read_exact(&mut header)
+                .map_err(|_| invalid(path, "too short to be a journal"))?;
             if &header[..8] != MAGIC {
                 return Err(invalid(path, "not a KrustyCast journal"));
             }
             let found = Session(header[8..].try_into().unwrap());
             if found != session {
-                return Err(invalid(path, &format!("belongs to session {found}, not {session}")));
+                return Err(invalid(
+                    path,
+                    &format!("belongs to session {found}, not {session}"),
+                ));
             }
             let mut head = [0u8; 8];
             let mut body = Vec::new();
@@ -165,7 +197,9 @@ impl Journal {
                 if r.read_exact(&mut body).is_err() || crc32fast::hash(&body) != crc {
                     break;
                 }
-                let Some(rec) = Record::decode(&body) else { break };
+                let Some(rec) = Record::decode(&body) else {
+                    break;
+                };
                 records.push(rec);
                 good_len += 8 + len as u64;
             }
@@ -177,8 +211,18 @@ impl Journal {
             file.sync_all()?;
         }
         file.seek(SeekFrom::End(0))?;
-        let journal = Journal { file: BufWriter::with_capacity(1 << 16, file), fsync, buf: Vec::new() };
-        Ok((journal, Recovered { records, truncated_bytes }))
+        let journal = Journal {
+            file: BufWriter::with_capacity(1 << 16, file),
+            fsync,
+            buf: Vec::new(),
+        };
+        Ok((
+            journal,
+            Recovered {
+                records,
+                truncated_bytes,
+            },
+        ))
     }
 
     /// Buffers a record; it is durable only after `commit`.
@@ -199,7 +243,10 @@ impl Journal {
 }
 
 fn invalid(path: &Path, why: &str) -> io::Error {
-    io::Error::new(ErrorKind::InvalidData, format!("journal {}: {}", path.display(), why))
+    io::Error::new(
+        ErrorKind::InvalidData,
+        format!("journal {}: {}", path.display(), why),
+    )
 }
 
 #[cfg(test)]
@@ -210,7 +257,8 @@ mod tests {
     struct TempFile(PathBuf);
     impl TempFile {
         fn new(name: &str) -> Self {
-            let p = std::env::temp_dir().join(format!("krustycast-{}-{}", name, std::process::id()));
+            let p =
+                std::env::temp_dir().join(format!("krustycast-{}-{}", name, std::process::id()));
             let _ = std::fs::remove_file(&p);
             TempFile(p)
         }
@@ -226,11 +274,28 @@ mod tests {
     }
 
     fn sample() -> Vec<Record> {
-        let key = SenderKey { sender_id: 1, incarnation: 99 };
+        let key = SenderKey {
+            sender_id: 1,
+            incarnation: 99,
+        };
         vec![
-            Record::Accepted { key, sender_seqno: 1, data: b"hello".to_vec() },
-            Record::Rejected { key, sender_seqno: 2, target_id: 3, rejected_target_seq: 4, current_target_seq: 5 },
-            Record::Accepted { key, sender_seqno: 3, data: vec![] },
+            Record::Accepted {
+                key,
+                sender_seqno: 1,
+                data: b"hello".to_vec(),
+            },
+            Record::Rejected {
+                key,
+                sender_seqno: 2,
+                target_id: 3,
+                rejected_target_seq: 4,
+                current_target_seq: 5,
+            },
+            Record::Accepted {
+                key,
+                sender_seqno: 3,
+                data: vec![],
+            },
             Record::EndOfSession,
         ]
     }
@@ -303,8 +368,13 @@ mod tests {
     fn rejects_wrong_session_and_foreign_files() {
         let f = TempFile::new("wrong");
         drop(Journal::open(&f.0, session(), FsyncPolicy::Never).unwrap());
-        let err = Journal::open(&f.0, Session::new("OTHER").unwrap(), FsyncPolicy::Never).err().unwrap();
-        assert!(err.to_string().contains("belongs to session JTEST"), "{err}");
+        let err = Journal::open(&f.0, Session::new("OTHER").unwrap(), FsyncPolicy::Never)
+            .err()
+            .unwrap();
+        assert!(
+            err.to_string().contains("belongs to session JTEST"),
+            "{err}"
+        );
 
         std::fs::write(&f.0, b"definitely not a journal").unwrap();
         assert!(Journal::open(&f.0, session(), FsyncPolicy::Never).is_err());

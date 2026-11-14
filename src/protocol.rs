@@ -119,7 +119,10 @@ pub enum Feedback {
     },
     /// The message with `sender_seqno` was sequenced as `global_seqno`
     /// (sent in reply to a resend of an already-sequenced message).
-    Accepted { sender_seqno: u64, global_seqno: u64 },
+    Accepted {
+        sender_seqno: u64,
+        global_seqno: u64,
+    },
 }
 
 impl Feedback {
@@ -131,7 +134,12 @@ impl Feedback {
                 out.extend_from_slice(&expected.to_be_bytes());
                 out
             }
-            Feedback::Reject { target_id, rejected_target_seq, current_target_seq, sender_seqno } => {
+            Feedback::Reject {
+                target_id,
+                rejected_target_seq,
+                current_target_seq,
+                sender_seqno,
+            } => {
                 let mut out = Vec::with_capacity(29);
                 out.push(FEEDBACK_REJECT);
                 out.extend_from_slice(&target_id.to_be_bytes());
@@ -140,7 +148,10 @@ impl Feedback {
                 out.extend_from_slice(&sender_seqno.to_be_bytes());
                 out
             }
-            Feedback::Accepted { sender_seqno, global_seqno } => {
+            Feedback::Accepted {
+                sender_seqno,
+                global_seqno,
+            } => {
                 let mut out = Vec::with_capacity(17);
                 out.push(FEEDBACK_ACCEPTED);
                 out.extend_from_slice(&sender_seqno.to_be_bytes());
@@ -152,16 +163,19 @@ impl Feedback {
 
     pub fn decode(b: &[u8]) -> Option<Self> {
         match b.first()? {
-            &FEEDBACK_NAK if b.len() == 9 => Some(Feedback::Nak { expected: u64_at(b, 1) }),
+            &FEEDBACK_NAK if b.len() == 9 => Some(Feedback::Nak {
+                expected: u64_at(b, 1),
+            }),
             &FEEDBACK_REJECT if b.len() == 29 => Some(Feedback::Reject {
                 target_id: u32_at(b, 1),
                 rejected_target_seq: u64_at(b, 5),
                 current_target_seq: u64_at(b, 13),
                 sender_seqno: u64_at(b, 21),
             }),
-            &FEEDBACK_ACCEPTED if b.len() == 17 => {
-                Some(Feedback::Accepted { sender_seqno: u64_at(b, 1), global_seqno: u64_at(b, 9) })
-            }
+            &FEEDBACK_ACCEPTED if b.len() == 17 => Some(Feedback::Accepted {
+                sender_seqno: u64_at(b, 1),
+                global_seqno: u64_at(b, 9),
+            }),
             _ => None,
         }
     }
@@ -179,7 +193,9 @@ impl Session {
     /// Builds a session from up to 10 printable ASCII characters, right-padded with spaces.
     pub fn new(s: &str) -> Result<Self, String> {
         if s.is_empty() || s.len() > SESSION_LEN || !s.bytes().all(|c| c.is_ascii_graphic()) {
-            return Err(format!("session {s:?} must be 1-10 printable ASCII characters, no spaces"));
+            return Err(format!(
+                "session {s:?} must be 1-10 printable ASCII characters, no spaces"
+            ));
         }
         let mut out = [b' '; SESSION_LEN];
         out[..s.len()].copy_from_slice(s.as_bytes());
@@ -246,7 +262,9 @@ impl MoldPacket {
     /// True if every seqno this packet covers, and the one after it, fits in a
     /// u64. `decode` rejects packets for which this is false.
     pub fn has_valid_range(&self) -> bool {
-        self.seqno.checked_add(self.message_count() as u64).is_some()
+        self.seqno
+            .checked_add(self.message_count() as u64)
+            .is_some()
     }
 
     pub fn heartbeat(session: Session, next_seqno: u64) -> Vec<u8> {
@@ -294,7 +312,11 @@ impl MoldPacket {
                 if b.len() != MOLD_HEADER_SIZE {
                     return None;
                 }
-                if count == HEARTBEAT_COUNT { MoldKind::Heartbeat } else { MoldKind::EndOfSession }
+                if count == HEARTBEAT_COUNT {
+                    MoldKind::Heartbeat
+                } else {
+                    MoldKind::EndOfSession
+                }
             }
             n => {
                 let mut msgs = Vec::with_capacity(n as usize);
@@ -317,7 +339,11 @@ impl MoldPacket {
                 MoldKind::Messages(msgs)
             }
         };
-        let p = MoldPacket { session, seqno, kind };
+        let p = MoldPacket {
+            session,
+            seqno,
+            kind,
+        };
         // Seqnos near u64::MAX would overflow the receiver's arithmetic.
         if !p.has_valid_range() {
             return None;
@@ -342,13 +368,19 @@ impl PacketBuilder {
         buf.extend_from_slice(&session.0);
         buf.extend_from_slice(&seqno.to_be_bytes());
         buf.extend_from_slice(&0u16.to_be_bytes());
-        PacketBuilder { buf, count: 0, max_size }
+        PacketBuilder {
+            buf,
+            count: 0,
+            max_size,
+        }
     }
 
     /// Appends a message if it fits. Returns false (and leaves the packet
     /// unchanged) if it doesn't.
     pub fn try_push(&mut self, data: &[u8]) -> bool {
-        let Ok(len) = u16::try_from(data.len()) else { return false };
+        let Ok(len) = u16::try_from(data.len()) else {
+            return false;
+        };
         if self.count >= MAX_MESSAGES_PER_PACKET
             || (self.count > 0 && self.buf.len() + 2 + data.len() > self.max_size)
         {
@@ -458,15 +490,26 @@ mod tests {
         let bytes = m.encode();
         assert_eq!(bytes.len(), CLIENT_HEADER_SIZE + 5);
         assert_eq!(ClientMessage::decode(&bytes), Some(m));
-        assert_eq!(ClientMessage::decode(&bytes[..CLIENT_HEADER_SIZE - 1]), None);
+        assert_eq!(
+            ClientMessage::decode(&bytes[..CLIENT_HEADER_SIZE - 1]),
+            None
+        );
     }
 
     #[test]
     fn feedback_round_trip() {
         for f in [
             Feedback::Nak { expected: 99 },
-            Feedback::Reject { target_id: 3, rejected_target_seq: 5, current_target_seq: 8, sender_seqno: 11 },
-            Feedback::Accepted { sender_seqno: 4, global_seqno: 1234 },
+            Feedback::Reject {
+                target_id: 3,
+                rejected_target_seq: 5,
+                current_target_seq: 8,
+                sender_seqno: 11,
+            },
+            Feedback::Accepted {
+                sender_seqno: 4,
+                global_seqno: 1234,
+            },
         ] {
             assert_eq!(Feedback::decode(&f.encode()), Some(f));
         }
@@ -495,7 +538,11 @@ mod tests {
         let ok = at(u64::MAX - 2, 2);
         assert_eq!(MoldPacket::decode(&ok.encode()), Some(ok));
         assert_eq!(MoldPacket::decode(&at(u64::MAX - 1, 2).encode()), None);
-        let hb = MoldPacket { session: session(), seqno: u64::MAX, kind: MoldKind::Heartbeat };
+        let hb = MoldPacket {
+            session: session(),
+            seqno: u64::MAX,
+            kind: MoldKind::Heartbeat,
+        };
         assert_eq!(MoldPacket::decode(&hb.encode()), Some(hb));
     }
 
@@ -506,10 +553,18 @@ mod tests {
             MoldKind::Heartbeat,
             MoldKind::EndOfSession,
         ] {
-            let p = MoldPacket { session: session(), seqno: 10, kind };
+            let p = MoldPacket {
+                session: session(),
+                seqno: 10,
+                kind,
+            };
             assert_eq!(MoldPacket::decode(&p.encode()), Some(p));
         }
-        let p = MoldPacket { session: session(), seqno: 10, kind: MoldKind::Messages(vec![b"abc".to_vec()]) };
+        let p = MoldPacket {
+            session: session(),
+            seqno: 10,
+            kind: MoldKind::Messages(vec![b"abc".to_vec()]),
+        };
         let bytes = p.encode();
         assert_eq!(bytes.len(), 20 + 2 + 3);
         assert_eq!(p.next_seqno(), 11);
@@ -518,7 +573,11 @@ mod tests {
 
     #[test]
     fn mold_packet_rejects_malformed() {
-        let p = MoldPacket { session: session(), seqno: 1, kind: MoldKind::Messages(vec![b"xyz".to_vec()]) };
+        let p = MoldPacket {
+            session: session(),
+            seqno: 1,
+            kind: MoldKind::Messages(vec![b"xyz".to_vec()]),
+        };
         let bytes = p.encode();
         for n in 0..bytes.len() {
             assert_eq!(MoldPacket::decode(&bytes[..n]), None, "truncated to {n}");
@@ -547,16 +606,28 @@ mod tests {
         assert!(b.try_push(&[0; 100]));
         assert!(!b.try_push(&[0; 1]));
 
-        assert_eq!(PacketBuilder::new(session(), 7, 100).finish(), MoldPacket::heartbeat(session(), 7));
+        assert_eq!(
+            PacketBuilder::new(session(), 7, 100).finish(),
+            MoldPacket::heartbeat(session(), 7)
+        );
     }
 
     #[test]
     fn request_and_sequenced_round_trip() {
-        let r = RequestPacket { session: session(), seqno: 123, count: 45 };
+        let r = RequestPacket {
+            session: session(),
+            seqno: 123,
+            count: 45,
+        };
         assert_eq!(RequestPacket::decode(&r.encode()), Some(r));
         assert_eq!(RequestPacket::decode(&r.encode()[..19]), None);
 
-        let m = SequencedMessage { sender_id: 1, target_id: 2, target_seq: 3, payload: b"hi".to_vec() };
+        let m = SequencedMessage {
+            sender_id: 1,
+            target_id: 2,
+            target_seq: 3,
+            payload: b"hi".to_vec(),
+        };
         assert_eq!(SequencedMessage::decode(&m.encode()), Some(m));
         assert_eq!(SequencedMessage::decode(&[0; 15]), None);
     }
@@ -567,10 +638,27 @@ mod tests {
         use moldudp::{Packet, PacketKind};
 
         let msgs = vec![
-            SequencedMessage { sender_id: 1, target_id: 2, target_seq: 3, payload: b"one".to_vec() }.encode(),
-            SequencedMessage { sender_id: 4, target_id: 5, target_seq: 6, payload: b"two!".to_vec() }.encode(),
+            SequencedMessage {
+                sender_id: 1,
+                target_id: 2,
+                target_seq: 3,
+                payload: b"one".to_vec(),
+            }
+            .encode(),
+            SequencedMessage {
+                sender_id: 4,
+                target_id: 5,
+                target_seq: 6,
+                payload: b"two!".to_vec(),
+            }
+            .encode(),
         ];
-        let bytes = MoldPacket { session: session(), seqno: 77, kind: MoldKind::Messages(msgs.clone()) }.encode();
+        let bytes = MoldPacket {
+            session: session(),
+            seqno: 77,
+            kind: MoldKind::Messages(msgs.clone()),
+        }
+        .encode();
         let theirs = Packet::new(&bytes);
         assert_eq!(theirs.session_ident(), "TEST1     ");
         assert_eq!(theirs.seq_num(), 77);
@@ -585,6 +673,9 @@ mod tests {
         assert_eq!(theirs.seq_num(), 9);
 
         let eos = MoldPacket::end_of_session(session(), 9);
-        assert!(matches!(Packet::new(&eos).packet_kind(), PacketKind::EndOfSession));
+        assert!(matches!(
+            Packet::new(&eos).packet_kind(),
+            PacketKind::EndOfSession
+        ));
     }
 }

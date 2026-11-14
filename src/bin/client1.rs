@@ -79,7 +79,11 @@ fn main() -> std::io::Result<()> {
     })?;
 
     client.register_callback(move |msg: Vec<u8>| {
-        println!("[client {}] received: {}", my_id, String::from_utf8_lossy(&msg));
+        println!(
+            "[client {}] received: {}",
+            my_id,
+            String::from_utf8_lossy(&msg)
+        );
     });
 
     client.start_listener()?;
@@ -97,7 +101,10 @@ fn main() -> std::io::Result<()> {
     }
     match client.pending() {
         0 => println!("[client {}] all {} messages sequenced", my_id, args.count),
-        n => eprintln!("[client {}] {} messages still unsequenced after 5s", my_id, n),
+        n => eprintln!(
+            "[client {}] {} messages still unsequenced after 5s",
+            my_id, n
+        ),
     }
 
     thread::sleep(Duration::from_secs(args.linger_secs));
