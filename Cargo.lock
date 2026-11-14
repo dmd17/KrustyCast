@@ -578,6 +578,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "krusty-node"
+version = "0.1.0"
+dependencies = [
+ "ctrlc",
+ "hdrhistogram",
+ "krusty-core",
+ "krusty-net",
+ "krusty-ring",
+ "krusty-session",
+ "krusty-stream",
+ "krusty-wire",
+ "libc",
+ "socket2 0.5.10",
+]
+
+[[package]]
 name = "krusty-ring"
 version = "0.1.0"
 

@@ -57,8 +57,8 @@ Columns:
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
 | A1 | Logic mixed with I/O. The client sends on the socket while holding its state locks (`client.rs:267`, `:284`). The sequencer core writes the journal inside `process_batch` (`sequencer.rs:279`). | Pure sans-I/O cores plus thin I/O shells (architecture §5) | C, P | L | M1 |
-| A2 | One crate with mixed concerns | Crate layout in architecture §4; `forbid(unsafe_code)` in pure crates | O, C | M | M1 |
-| A3 | Ad-hoc shutdown: `AtomicBool` flags plus 20–100 ms read timeouts | Staged runtime with explicit stage lifecycle (`krusty-rt`) | P, O | M | M1 |
+| A2 | **Started 2026-11-14:** workspace with `krusty-wire`, `-core`, `-session`, `-stream`, `-sim`, `-ring`, `-net`, `-node`; the old crate remains until the node replaces it. One crate with mixed concerns | Crate layout in architecture §4; `forbid(unsafe_code)` in pure crates | O, C | M | M1 |
+| A3 | **Done in `krusty-node` 2026-11-14:** explicit stage lifecycle (stop → END_OF_SESSION → egress drains). Ad-hoc shutdown: `AtomicBool` flags plus 20–100 ms read timeouts | Staged runtime with explicit stage lifecycle (`krusty-rt`) | P, O | M | M1 |
 
 ### 3.2 Replication and availability
 
@@ -73,10 +73,10 @@ Columns:
 
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
-| P1 | Unbounded crossbeam channels (`sequencer.rs:401`, `client.rs:210`) | Bounded SPSC rings; BUSY when full (G9) | C, P | M | M1 |
-| P2 | Mutexes on the hot path: `Arc<Mutex<History>>` (`sequencer.rs:148`, locked per batch); client state in three mutexes (`client.rs:102–104`) | Single writer per state; history readable by the re-request thread through a lock-free published index | P | M | M1 |
-| P3 | Allocation per message: decoders copy payloads (`protocol.rs:102`, `:304`, `:423`); history stores a `Vec<u8>` per message; encoders allocate | Zero-copy views (`zerocopy`), preallocated slots and slabs; zero allocations enforced in CI (NFR-7) | P | M | M1 |
-| P4 | One `recv_from`/`send_to` syscall per datagram; blocking reads with timeouts (`client.rs:122`, `:191`) | `recvmmsg`/`sendmmsg`, busy-poll, pinned threads, spin/back-off strategies | P | M | M1 |
+| P1 | **Done in `krusty-node` 2026-11-14:** byte rings between stages; BUSY from ingress when full. Unbounded crossbeam channels (`sequencer.rs:401`, `client.rs:210`) | Bounded SPSC rings; BUSY when full (G9) | C, P | M | M1 |
+| P2 | **Done in `krusty-node` 2026-11-14:** single writer per state; the history is read by recovery through per-slot seqlocks. Mutexes on the hot path: `Arc<Mutex<History>>` (`sequencer.rs:148`, locked per batch); client state in three mutexes (`client.rs:102–104`) | Single writer per state; history readable by the re-request thread through a lock-free published index | P | M | M1 |
+| P3 | **Done in `krusty-node` 2026-11-14:** zero-copy views, preallocated buffers; a test fails on any allocation in the stage threads after warm-up. Allocation per message: decoders copy payloads (`protocol.rs:102`, `:304`, `:423`); history stores a `Vec<u8>` per message; encoders allocate | Zero-copy views (`zerocopy`), preallocated slots and slabs; zero allocations enforced in CI (NFR-7) | P | M | M1 |
+| P4 | **Done in `krusty-node` 2026-11-14:** `recvmmsg`/`sendmmsg`, pinned spinning stages (`--spin`). One `recv_from`/`send_to` syscall per datagram; blocking reads with timeouts (`client.rs:122`, `:191`) | `recvmmsg`/`sendmmsg`, busy-poll, pinned threads, spin/back-off strategies | P | M | M1 |
 | P5 | Synchronous fsync on the sequencing thread: `j.commit()` blocks sequencing on every batch | Storage on its own thread (io_uring); durability mode (a) takes fsync off the latency path | P | M | M2 |
 | P6 | No kernel-bypass path | Transport trait; Onload compatibility; AF_XDP (Tier B) | P | L | M4 |
 | P7 | **Done in `krusty-core` 2026-11-14.** `std::collections::HashMap` for sender and target state (`sequencer.rs:144`) | Fixed-capacity tables: predictable and verifiable | P, C | M | M1 |

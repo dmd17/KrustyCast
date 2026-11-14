@@ -1,0 +1,22 @@
+[package]
+name = "krusty-node"
+version = "0.1.0"
+description = "KrustyCast node: pinned ingress, core, egress and recovery stages around the pure cores."
+edition.workspace = true
+license.workspace = true
+
+# Not inheriting workspace lints: thread pinning calls libc (unsafe).
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[dependencies]
+krusty-wire = { path = "../krusty-wire" }
+krusty-core = { path = "../krusty-core" }
+krusty-ring = { path = "../krusty-ring" }
+krusty-net = { path = "../krusty-net" }
+krusty-session = { path = "../krusty-session" }
+krusty-stream = { path = "../krusty-stream" }
+libc = "0.2"
+socket2 = { version = "0.5", features = ["all"] }
+ctrlc = { version = "3", features = ["termination"] }
+hdrhistogram = { version = "7.5.4", default-features = false }

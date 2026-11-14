@@ -85,6 +85,55 @@ use `--senders` above that.
    expected without power-loss protection. Durability mode (b) needs
    enterprise drives; mode (a) relies on quorum replication instead.
 
+## M1 node (krusty-node), 2026-11-14
+
+The new node: pinned ingress, core and egress stages connected by lock-free
+rings, `recvmmsg`/`sendmmsg`, no allocation after start-up (enforced by a
+test), and a session-based load generator (`krusty-load`).
+
+**This machine has `isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5`.** Core 1
+carries the IRQ threads (SCHED_FIFO 50), and any thread placed there,
+node stage or load generator, picks up millisecond tails. The numbers
+below put the node's three spinning stages on isolated cores 2–4 and the
+generator on isolated core 5, sending and reading the feed in the same
+thread (`--combined`).
+
+```
+./target/release/krusty-load --rate 100000 --duration 5 --warmup 1 --spin \
+    --node-cores 2,3,4 --pin-senders 5 --combined
+```
+
+Latency from the scheduled send time, µs (unicast loopback feed, 64-byte
+payloads, one client with a window of 64):
+
+| Offered msg/s | Path | p50 | p90 | p99 | p99.9 | p99.99 | max |
+|---|---|---|---|---|---|---|---|
+| 10 000 | to feed | 14.6 | 15.5 | 17.5 | 21.7 | 35.2 | 47.5 |
+| 10 000 | to ACCEPTED | 12.4 | 13.7 | 15.3 | 19.5 | 33.2 | 43.9 |
+| 100 000 | to feed | 18.5 | 19.3 | 19.6 | 25.2 | 59.8 | 126.8 |
+| 100 000 | to ACCEPTED | 16.7 | 17.6 | 17.9 | 21.3 | 55.5 | 116.1 |
+| 150 000 | to feed | 33.1 | 38.9 | 45.2 | 68.1 | 139.0 | 193.9 |
+
+Against the old node at 100 k msg/s (p50 20.5, p99 40.6, p99.99 130 µs),
+p99 halves and the tail stays below 130 µs. This is within the PRD Tier A
+latency targets (p50 ≤ 40, p99 ≤ 80, p99.99 ≤ 200 µs), but on loopback,
+without a NIC hop, and without replication; the servers decide.
+
+**Throughput could not be measured here.** Above about 150 k msg/s the
+generator needs more cores than the laptop has isolated: extra senders
+on cores 0–1 are descheduled for milliseconds, their windows stall, and
+the result swings between 44 k and 170 k msg/s from run to run. In those
+runs the node was not saturated: with idle sleeping enabled, the stages
+used 40% (ingress), 18% (core) and 22% (egress) of a core at about
+165 k msg/s. Ingress, at roughly 2.4 µs of CPU per datagram, would
+saturate near 400 k msg/s, so the PRD's 1 M msg/s on kernel UDP will need
+several ingress threads (or Tier B kernel bypass). That needs the servers
+to confirm.
+
+The egress stage sends one feedback datagram per message, which also
+costs kernel time per datagram. Batching outcomes per client and core
+batch is the obvious next protocol optimization.
+
 ## Next
 
 - Run the same tool on the reference servers (real NICs, multicast, isolated
