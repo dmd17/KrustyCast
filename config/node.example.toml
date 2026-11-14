@@ -1,0 +1,21 @@
+ingress = "0.0.0.0:7000"
+feed = "239.1.1.1:7001"
+interface = "10.0.0.5"
+recovery = "0.0.0.0:7002"
+stream_id = 1
+spin = true
+cores = [2, 3, 4, 5]          # ingress, core, egress, recovery
+
+[limits]
+mtu = 1472
+max_payload = 1024
+history = 65536               # messages kept for recovery (power of two)
+max_clients = 4096
+outcome_ring = 64             # clients' windows must not exceed this
+max_keys = 65536
+evict_idle_ms = 60000
+
+[mold]                        # optional MoldUDP64 adapter
+session = "KC20261114"
+feed = "239.1.1.2:7004"
+rerequest = "0.0.0.0:7003"

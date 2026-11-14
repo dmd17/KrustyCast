@@ -19,6 +19,7 @@
 //! Nothing on these paths allocates after startup. State is in memory only
 //! (durability arrives with storage and replication, M2/M3).
 
+pub mod config;
 pub mod stages;
 
 use krusty_core::Config as CoreConfig;

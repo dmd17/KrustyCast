@@ -140,7 +140,7 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
-| O1 | CLI flags only | TOML config; static membership | O | S | M1 |
+| O1 | **Config file done 2026-11-14** (`krusty-node --config`, `config/node.example.toml`; unknown keys rejected, values validated); static membership comes with Raft. CLI flags only | TOML config; static membership | O | S | M1 |
 | O2 | `println!`/`eprintln!` logging | Shared-memory counters, per-stage histograms, binary event ring, `krusty-stat` | O, P | M | M1 |
 | O3 | No cluster tooling | Status, snapshot, session roll, leader handoff from the CLI | O | M | M4 |
 | O4 | No authentication | Pre-shared-key MAC on ingress and replication (FR-14) | C | M | P1 |

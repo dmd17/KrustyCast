@@ -21,6 +21,8 @@ libc = "0.2"
 socket2 = { version = "0.5", features = ["all"] }
 ctrlc = { version = "3", features = ["termination"] }
 hdrhistogram = { version = "7.5.4", default-features = false }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
 
 [dev-dependencies]
 # The interop-tested MoldUDP64 decoder of the old crate.
