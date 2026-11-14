@@ -2,7 +2,8 @@
 //!
 //!   krusty-node --ingress 0.0.0.0:7000 --feed 239.1.1.1:7001 --interface 10.0.0.5 \
 //!               --recovery 0.0.0.0:7002 [--spin] [--cores 2,3,4,5]
-use krusty_node::{Idle, NodeConfig};
+//!               [--mold-session NAME --mold-feed 239.1.1.2:7004 [--mold-rerequest 0.0.0.0:7003]]
+use krusty_node::{Idle, MoldConfig, NodeConfig};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -15,6 +16,9 @@ fn main() {
     let mut spin = false;
     let mut cores = [None; 4];
     let mut stream_id = 1u64;
+    let mut mold_session: Option<krusty_mold::Session> = None;
+    let mut mold_feed: Option<SocketAddrV4> = None;
+    let mut mold_rerequest: SocketAddrV4 = "0.0.0.0:7003".parse().unwrap();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut val = || args.next().unwrap_or_else(|| panic!("{a} needs a value"));
@@ -25,6 +29,14 @@ fn main() {
             "--interface" => interface = val().parse().expect("--interface ip"),
             "--stream-id" => stream_id = val().parse().expect("--stream-id u64"),
             "--spin" => spin = true,
+            "--mold-session" => {
+                mold_session = Some(
+                    krusty_mold::Session::new(&val())
+                        .expect("--mold-session: 1-10 printable ASCII"),
+                )
+            }
+            "--mold-feed" => mold_feed = Some(val().parse().expect("--mold-feed ip:port")),
+            "--mold-rerequest" => mold_rerequest = val().parse().expect("--mold-rerequest ip:port"),
             "--cores" => {
                 for (i, c) in val().split(',').enumerate().take(4) {
                     cores[i] = Some(c.parse().expect("--cores a,b,c,d"));
@@ -46,6 +58,20 @@ fn main() {
     cfg.cores = cores;
     if spin {
         cfg.idle = Idle::Spin;
+    }
+    match (mold_session, mold_feed) {
+        (Some(session), Some(feed)) => {
+            cfg.mold = Some(MoldConfig {
+                session,
+                feed,
+                rerequest: mold_rerequest,
+            });
+        }
+        (None, None) => {}
+        _ => {
+            eprintln!("error: the MoldUDP64 adapter needs both --mold-session and --mold-feed");
+            std::process::exit(2);
+        }
     }
     let node = krusty_node::start(cfg).expect("start node");
     println!(

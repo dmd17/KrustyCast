@@ -26,7 +26,7 @@ Invariants (PRD §5):
 |---|---|---|---|
 | `SequencerRace.cfg` (CI) | 2 clients, 1 incarnation, 2 msgs, log 4, ≤2 in flight | 450 k | ~20 s |
 | `SequencerRestart.cfg` (CI) | 1 client, 2 incarnations, 2 msgs, log 4 | 748 k | ~20 s |
-| `SequencerLarge.cfg` | 2 clients, 2 incarnations, 2 versions, log 5, ≤3 in flight | not yet run to completion | hours |
+| `SequencerLarge.cfg` | 2 clients, 2 incarnations, 2 versions, log 5, ≤3 in flight | 157 M explored in 3 h without a violation, not exhausted | > 3 h |
 
 Run: `spec/tla/check.sh` (add `--large` for the big configs). It needs Java 11+
 and `tla2tools.jar` v1.8.0, which goes in `~/.local/share/krusty-tools/tla/`

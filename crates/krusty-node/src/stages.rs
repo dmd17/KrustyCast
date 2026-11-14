@@ -35,6 +35,11 @@ pub struct Stats {
     pub frames: AtomicU64,
     pub feedback: AtomicU64,
     pub recover_requests: AtomicU64,
+    pub mold_published: AtomicU64,
+    /// Messages the Mold adapter could not publish because it fell further
+    /// behind than the history keeps.
+    pub mold_lost: AtomicU64,
+    pub mold_rerequests: AtomicU64,
 }
 
 pub struct Node {
@@ -42,6 +47,7 @@ pub struct Node {
     threads: Vec<JoinHandle<()>>,
     ingress_addr: SocketAddrV4,
     recovery_addr: SocketAddrV4,
+    mold_rerequest_addr: Option<SocketAddrV4>,
     pub stats: Arc<Stats>,
 }
 
@@ -52,6 +58,11 @@ impl Node {
 
     pub fn recovery_addr(&self) -> SocketAddrV4 {
         self.recovery_addr
+    }
+
+    /// The MoldUDP64 re-request server's bound address, if the adapter runs.
+    pub fn mold_rerequest_addr(&self) -> Option<SocketAddrV4> {
+        self.mold_rerequest_addr
     }
 
     /// Ends the stream (END_OF_SESSION) and stops all stages.
@@ -206,11 +217,27 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             recovery(cfg, recovery_sock, h, stop, stats)
         }));
     }
+    let mut mold_rerequest_addr = None;
+    if let Some(m) = cfg.mold {
+        let rereq = bind(m.rerequest, cfg.interface)?;
+        mold_rerequest_addr = Some(v4(rereq.local_addr()?));
+        let out = sender(m.feed, cfg.interface)?;
+        let (cfg, done, h, stats) = (
+            cfg.clone(),
+            core_done.clone(),
+            history.clone(),
+            stats.clone(),
+        );
+        threads.push(spawn("krusty-mold", cfg.stage_init, move || {
+            mold(cfg, m, out, rereq, h, done, stats)
+        }));
+    }
     Ok(Node {
         stop,
         threads,
         ingress_addr,
         recovery_addr,
+        mold_rerequest_addr,
         stats,
     })
 }
@@ -557,5 +584,134 @@ fn recovery(
             );
         }
         let _ = sb.flush(&sock);
+    }
+}
+
+/// Packs history messages `from..to` into MoldUDP64 packets for `dest`.
+/// Returns how many seqnos were no longer in the history.
+#[allow(clippy::too_many_arguments)]
+fn mold_range(
+    m: &crate::MoldConfig,
+    history: &History,
+    from: u64,
+    to: u64,
+    dest: SocketAddrV4,
+    pkt: &mut [u8],
+    entry: &mut [u8],
+    sb: &mut SendBatch,
+    sock: &UdpSocket,
+) -> u64 {
+    let mut lost = 0;
+    let mut s = from;
+    while s < to {
+        let mut w = krusty_mold::PacketWriter::new(pkt, m.session, s).expect("mtu ≥ header");
+        while s < to {
+            match history.read(s, entry) {
+                Ok(n) => {
+                    if !w.push(&entry[HIST_HEADER..n]) {
+                        break;
+                    }
+                    s += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        if w.count() == 0 {
+            // Not in the history any more: lost for Mold consumers.
+            lost += 1;
+            s += 1;
+            continue;
+        }
+        let n = w.finish();
+        if sb.is_full() {
+            let _ = sb.flush(sock);
+        }
+        let p = &pkt[..n];
+        sb.push(dest, |b| {
+            b[..p.len()].copy_from_slice(p);
+            p.len()
+        });
+    }
+    let _ = sb.flush(sock);
+    lost
+}
+
+/// The MoldUDP64 adapter: follows the history and republishes it as
+/// MoldUDP64 with the same seqnos, serves re-requests, and ends the session
+/// after the core has.
+fn mold(
+    cfg: NodeConfig,
+    m: crate::MoldConfig,
+    sock: UdpSocket,
+    rereq: UdpSocket,
+    history: Arc<History>,
+    core_done: Arc<AtomicBool>,
+    stats: Arc<Stats>,
+) {
+    let mut next = 1u64;
+    let mut pkt = vec![0u8; cfg.mtu];
+    let mut entry = vec![0u8; HIST_HEADER + cfg.max_payload];
+    let mut sb = SendBatch::new(64, cfg.mtu);
+    let mut rb = RecvBatch::new(16, 64);
+    let heartbeat = Duration::from_micros(cfg.heartbeat_us);
+    let mut last_sent = Instant::now();
+    let mut empty = 0;
+    loop {
+        let done = core_done.load(Ordering::Acquire);
+        let committed = history.committed();
+        let mut busy = false;
+        if next <= committed {
+            let lost = mold_range(
+                &m,
+                &history,
+                next,
+                committed + 1,
+                m.feed,
+                &mut pkt,
+                &mut entry,
+                &mut sb,
+                &sock,
+            );
+            stats
+                .mold_published
+                .fetch_add(committed + 1 - next - lost, Ordering::Relaxed);
+            stats.mold_lost.fetch_add(lost, Ordering::Relaxed);
+            next = committed + 1;
+            last_sent = Instant::now();
+            busy = true;
+        } else if done {
+            let n = krusty_mold::encode_end_of_session(&mut pkt, m.session, next);
+            let _ = sock.send_to(&pkt[..n], m.feed);
+            return;
+        } else if last_sent.elapsed() >= heartbeat {
+            let n = krusty_mold::encode_heartbeat(&mut pkt, m.session, next);
+            let _ = sock.send_to(&pkt[..n], m.feed);
+            last_sent = Instant::now();
+        }
+        let k = rb.recv(&rereq).unwrap_or_default();
+        for i in 0..k {
+            let (b, src) = rb.get(i);
+            let Some(r) = krusty_mold::Request::decode(b) else {
+                continue;
+            };
+            if r.session != m.session || r.seqno == 0 || r.count == 0 {
+                continue;
+            }
+            stats.mold_rerequests.fetch_add(1, Ordering::Relaxed);
+            let end = r
+                .seqno
+                .saturating_add(r.count.min(1024) as u64)
+                .min(history.committed() + 1);
+            let start = r.seqno.max(history.earliest());
+            mold_range(
+                &m, &history, start, end, src, &mut pkt, &mut entry, &mut sb, &rereq,
+            );
+            busy = true;
+        }
+        if busy {
+            empty = 0;
+        } else {
+            idle(Idle::Sleep { sleep_us: 100 }, &mut empty);
+        }
     }
 }

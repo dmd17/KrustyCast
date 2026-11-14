@@ -33,6 +33,17 @@ pub enum Idle {
     Sleep { sleep_us: u64 },
 }
 
+/// The optional MoldUDP64 adapter (ADR-11): the same committed sequence
+/// and global seqnos, published as standard MoldUDP64, off the latency path.
+#[derive(Clone, Copy, Debug)]
+pub struct MoldConfig {
+    pub session: krusty_mold::Session,
+    /// Where MoldUDP64 packets go (usually a multicast group).
+    pub feed: SocketAddrV4,
+    /// The standard re-request server's address.
+    pub rerequest: SocketAddrV4,
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
     /// Where clients send SUBMITs.
@@ -58,6 +69,8 @@ pub struct NodeConfig {
     pub idle: Idle,
     /// Cores for ingress, core, egress, recovery (None: not pinned).
     pub cores: [Option<usize>; 4],
+    /// MoldUDP64 adapter (None: off).
+    pub mold: Option<MoldConfig>,
     /// Called at the start of every stage thread (tests use it to mark the
     /// threads whose allocations they count).
     pub stage_init: Option<fn()>,
@@ -80,6 +93,7 @@ impl NodeConfig {
             heartbeat_us: 100_000,
             idle: Idle::Sleep { sleep_us: 50 },
             cores: [None; 4],
+            mold: None,
             stage_init: None,
         }
     }

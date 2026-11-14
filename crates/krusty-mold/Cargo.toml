@@ -1,0 +1,13 @@
+[package]
+name = "krusty-mold"
+version = "0.1.0"
+description = "MoldUDP64 codec for the KrustyCast adapter: zero-copy views, writes into caller buffers."
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# The old crate's MoldUDP64 codec, interop-tested against the `moldudp` crate.
+krustycast = { path = "../.." }

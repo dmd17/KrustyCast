@@ -571,6 +571,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "krusty-mold"
+version = "0.1.0"
+dependencies = [
+ "krustycast",
+]
+
+[[package]]
 name = "krusty-net"
 version = "0.1.0"
 dependencies = [
@@ -584,11 +591,13 @@ dependencies = [
  "ctrlc",
  "hdrhistogram",
  "krusty-core",
+ "krusty-mold",
  "krusty-net",
  "krusty-ring",
  "krusty-session",
  "krusty-stream",
  "krusty-wire",
+ "krustycast",
  "libc",
  "socket2 0.5.10",
 ]
