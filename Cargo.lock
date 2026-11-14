@@ -635,6 +635,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "krusty-raft"
+version = "0.1.0"
+
+[[package]]
 name = "krusty-ring"
 version = "0.1.0"
 

@@ -1,0 +1,9 @@
+[package]
+name = "krusty-raft"
+version = "0.1.0"
+description = "KrustyCast Raft: a sans-I/O consensus core (pre-vote, check-quorum, pipelined batched replication)."
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

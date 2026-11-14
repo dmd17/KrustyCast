@@ -27,6 +27,10 @@ jobs:
           # A different 20 000-seed window each day; failures print their seed.
           base=$(( $(date +%s) / 86400 * 20000 ))
           ./target/release/krusty-sim --seeds "$base..$((base + 20000))"
+      - name: Raft cluster sweep (harsh faults, new seeds every night)
+        run: |
+          base=$(( $(date +%s) / 86400 * 20000 ))
+          KRUSTY_RAFT_SEEDS=20000 KRUSTY_RAFT_BASE=$base cargo test --release -p krusty-raft --test cluster harsh_sweep -- --ignored
 
   tla-large:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.tla_large }}
