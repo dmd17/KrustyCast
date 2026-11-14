@@ -70,7 +70,7 @@ Translation needed two more source changes, both now in the code:
 2. **Aeneas bug:** `self.window[i] = None` *inside a loop* is translated to
    `Array.update self.window i ()`, which Lean rejects as ill-typed. The same
    assignment outside a loop is translated correctly. Workaround:
-   `self.window = [None; WINDOW]`. This should be reported upstream with a minimal repro.
+   `self.window = [None; WINDOW]`. Minimal reproduction in `bug-repro/`; not yet reported upstream.
 
 After that, 3 external axioms remain, all from `#[derive(Debug, Clone)]` on
 `Option` and none used by the tracker logic.
