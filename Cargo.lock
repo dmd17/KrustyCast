@@ -571,6 +571,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "krusty-session"
+version = "0.1.0"
+dependencies = [
+ "krusty-core",
+ "krusty-wire",
+]
+
+[[package]]
 name = "krusty-stream"
 version = "0.1.0"
 

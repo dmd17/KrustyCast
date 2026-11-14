@@ -1,0 +1,15 @@
+[package]
+name = "krusty-session"
+version = "0.1.0"
+description = "KrustyCast client session core: seqnos, window, resends, outcomes (sans-I/O)."
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+krusty-wire = { path = "../krusty-wire" }
+
+[dev-dependencies]
+krusty-core = { path = "../krusty-core" }

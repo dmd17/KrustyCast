@@ -109,8 +109,8 @@ Columns:
 |---|---|---|---|---|---|
 | K1 | Re-requests sent immediately to one server address (storm risk) | Delayed, randomized recovery spread across nodes, with multicast suppression (architecture §8.5) | P | M | M2 |
 | K2 | Callback API `Fn(Vec<u8>)`: copies, runs under a mutex, no position | Zero-copy delivery with seqno and position; replay-from-position; deterministic-consumer API (FR-10) | P | M | M2 |
-| K3 | Abandoned sends only counted and logged (`failed()`) | Explicit failure delivered to the application | C | S | M2 |
-| K4 | Client logic lives in the I/O shell | `krusty-session` sans-I/O core | C | M | M1 |
+| K3 | **Core done in `krusty-session` 2026-11-14:** every message ends in exactly one Accepted, Rejected or Failed event. Abandoned sends only counted and logged (`failed()`) | Explicit failure delivered to the application | C | S | M2 |
+| K4 | **Done in `krusty-session` 2026-11-14** (not yet used by the SDK shell). Client logic lives in the I/O shell | `krusty-session` sans-I/O core | C | M | M1 |
 | K5 | Multicast-only egress | Unicast fan-out on the native stream (FR-6b) | O | M | M4 |
 
 ### 3.7 Assurance
