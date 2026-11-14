@@ -87,6 +87,10 @@ pub struct NodeConfig {
     pub mold: Option<MoldConfig>,
     /// Durable storage (None: in memory only).
     pub storage: Option<StorageConfig>,
+    /// Suppression (ARCHITECTURE §8.5): when a second consumer asks for the
+    /// same range within this window, retransmit once on the feed instead
+    /// of answering each one (0: always answer unicast).
+    pub recover_suppress_us: u64,
     /// Shared-memory metrics file for `krusty-stat` (None: private memory).
     pub metrics_path: Option<std::path::PathBuf>,
     /// Called at the start of every stage thread (tests use it to mark the
@@ -113,6 +117,7 @@ impl NodeConfig {
             cores: [None; 4],
             mold: None,
             storage: None,
+            recover_suppress_us: 1_000,
             metrics_path: None,
             stage_init: None,
         }

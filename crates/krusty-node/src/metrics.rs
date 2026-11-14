@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAGIC: u64 = 0x5354_4154_534B_434B; // "KCKSTATS"
-pub const LAYOUT_VERSION: u64 = 2;
+pub const LAYOUT_VERSION: u64 = 3;
 pub const BUCKETS: usize = 64;
 
 /// log2 histogram: bucket `b` counts values in `[2^(b-1), 2^b)` ns (bucket 0: 0).
@@ -105,6 +105,8 @@ counters! {
     stored: "Log entries made durable.",
     snapshots: "Core snapshots written.",
     recovered_from_disk: "Messages served to RECOVER from disk.",
+    recover_on_feed: "RECOVERs answered once on the feed because several consumers asked.",
+    recover_suppressed: "RECOVERs ignored: the range was just retransmitted on the feed.",
 }
 
 /// The node's metrics: a shared mapping (or private memory when no path is

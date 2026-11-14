@@ -107,9 +107,9 @@ Columns:
 
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
-| K1 | Re-requests sent immediately to one server address (storm risk) | Delayed, randomized recovery spread across nodes, with multicast suppression (architecture §8.5) | P | M | M2 |
-| K2 | Callback API `Fn(Vec<u8>)`: copies, runs under a mutex, no position | Zero-copy delivery with seqno and position; replay-from-position; deterministic-consumer API (FR-10) | P | M | M2 |
-| K3 | **Core done in `krusty-session` 2026-11-14:** every message ends in exactly one Accepted, Rejected or Failed event. Abandoned sends only counted and logged (`failed()`) | Explicit failure delivered to the application | C | S | M2 |
+| K1 | **Done 2026-11-14:** `krusty-client` delays a first RECOVER randomly and rotates nodes, cancels it if a retransmission arrives; the node answers on the feed once when several consumers ask for the same range. Per-consumer rate limits still to do. Re-requests sent immediately to one server address (storm risk) | Delayed, randomized recovery spread across nodes, with multicast suppression (architecture §8.5) | P | M | M2 |
+| K2 | **Done 2026-11-14:** `krusty-client::Consumer` delivers seqno, leader timestamp, client and payload (borrowed from the receive buffer when in order); replay from any position, recovered from disk. Callback API `Fn(Vec<u8>)`: copies, runs under a mutex, no position | Zero-copy delivery with seqno and position; replay-from-position; deterministic-consumer API (FR-10) | P | M | M2 |
+| K3 | **Done 2026-11-14:** `krusty-client::Publisher` reports Accepted/Rejected/Failed per message and restarts on SESSION_EXPIRED. **Core done in `krusty-session` 2026-11-14:** every message ends in exactly one Accepted, Rejected or Failed event. Abandoned sends only counted and logged (`failed()`) | Explicit failure delivered to the application | C | S | M2 |
 | K4 | **Done in `krusty-session` 2026-11-14** (not yet used by the SDK shell). Client logic lives in the I/O shell | `krusty-session` sans-I/O core | C | M | M1 |
 | K5 | Multicast-only egress | Unicast fan-out on the native stream (FR-6b) | O | M | M4 |
 

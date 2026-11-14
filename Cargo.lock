@@ -572,6 +572,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "krusty-client"
+version = "0.1.0"
+dependencies = [
+ "krusty-log",
+ "krusty-node",
+ "krusty-session",
+ "krusty-stream",
+ "krusty-wire",
+ "socket2 0.5.10",
+]
+
+[[package]]
 name = "krusty-core"
 version = "0.1.0"
 dependencies = [

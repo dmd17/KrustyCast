@@ -1,0 +1,19 @@
+[package]
+name = "krusty-client"
+version = "0.1.0"
+description = "KrustyCast client SDK: a publisher (krusty-session) and a consumer (krusty-stream) over UDP."
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+krusty-wire = { path = "../krusty-wire" }
+krusty-session = { path = "../krusty-session" }
+krusty-stream = { path = "../krusty-stream" }
+socket2 = { version = "0.5", features = ["all"] }
+
+[dev-dependencies]
+krusty-node = { path = "../krusty-node" }
+krusty-log = { path = "../krusty-log" }

@@ -280,6 +280,7 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
         }));
     }
     {
+        let feed_sock = sender(cfg.feed, cfg.interface)?;
         let (cfg, stop, h, stats, d) = (
             cfg.clone(),
             stop.clone(),
@@ -288,7 +289,7 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             disk.clone(),
         );
         threads.push(spawn("krusty-recovery", cfg.stage_init, move || {
-            recovery(cfg, recovery_sock, h, d, stop, stats)
+            recovery(cfg, recovery_sock, feed_sock, h, d, stop, stats)
         }));
     }
     let mut mold_rerequest_addr = None;
@@ -753,6 +754,7 @@ fn fetch(
 fn recovery(
     cfg: NodeConfig,
     sock: UdpSocket,
+    feed_sock: UdpSocket,
     history: Arc<History>,
     disk: Option<krusty_log::LogReader>,
     stop: Arc<AtomicBool>,
@@ -766,6 +768,14 @@ fn recovery(
     let mut entry = vec![0u8; HIST_HEADER + cfg.max_payload];
     let mut raw = Vec::with_capacity(2048);
     let mut empty = 0;
+    // Recent requests: (from, requester, time); and ranges just put on the
+    // feed: (from, until).
+    let window = cfg.recover_suppress_us * 1000;
+    let mut recent: [(u64, SocketAddrV4, u64); 32] =
+        [(0, SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0), 0); 32];
+    let mut recent_at = 0;
+    let mut on_feed: [(u64, u64); 16] = [(0, 0); 16];
+    let mut on_feed_at = 0;
     while !stop.load(Ordering::Acquire) {
         let n = rb.recv(&sock).unwrap_or(0);
         if n == 0 {
@@ -781,6 +791,28 @@ fn recovery(
             };
             stats.recover_requests.fetch_add(1, Ordering::Relaxed);
             let t0 = mono_ns();
+            // Suppression: just retransmitted on the feed? Then this
+            // consumer will see it there.
+            if window > 0 && on_feed.iter().any(|&(f, until)| f == from && t0 < until) {
+                stats.recover_suppressed.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            // A second consumer asking for the same range: answer on the feed.
+            let shared = window > 0
+                && recent
+                    .iter()
+                    .any(|&(f, who, at)| f == from && who != src && t0.saturating_sub(at) < window);
+            recent[recent_at % recent.len()] = (from, src, t0);
+            recent_at += 1;
+            let dest = if shared {
+                on_feed[on_feed_at % on_feed.len()] = (from, t0 + window);
+                on_feed_at += 1;
+                stats.recover_on_feed.fetch_add(1, Ordering::Relaxed);
+                cfg.feed
+            } else {
+                src
+            };
+            let out_sock = if shared { &feed_sock } else { &sock };
             // What is retained: on disk if there is storage, else in memory.
             let (earliest, last) = match &disk {
                 // Mode (b): only what is durable may leave the node.
@@ -792,7 +824,7 @@ fn recovery(
                 let k =
                     stream::encode_unavailable(&mut frame, cfg.stream_id, from, earliest).unwrap();
                 let f = &frame[..k];
-                sb.push(src, |b| {
+                sb.push(dest, |b| {
                     b[..f.len()].copy_from_slice(f);
                     f.len()
                 });
@@ -824,14 +856,16 @@ fn recovery(
                 }
                 let k = w.finish().unwrap();
                 if sb.is_full() {
-                    let _ = sb.flush(&sock);
+                    let _ = sb.flush(out_sock);
                 }
                 let f = &frame[..k];
-                sb.push(src, |b| {
+                sb.push(dest, |b| {
                     b[..f.len()].copy_from_slice(f);
                     f.len()
                 });
             }
+            // Answers go out per request (feed or requester).
+            let _ = sb.flush(out_sock);
             stats.recovery_service.record(mono_ns() - t0);
         }
         let _ = sb.flush(&sock);
