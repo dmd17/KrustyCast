@@ -26,6 +26,10 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Tests (unit + end to end over loopback UDP and multicast)
         run: cargo test
+      - name: Perf smoke test (no loss at 10k msg/s; latency not judged on shared runners)
+        run: |
+          cargo build --release --bin loadgen
+          ./target/release/loadgen --feed 127.0.0.1:17201 --rate 10000 --duration 2 --warmup 1
       - name: Aeneas spike crate (unit + differential tests)
         working-directory: spikes/aeneas-stream/subset
         run: cargo test
@@ -72,5 +76,5 @@ jobs:
       - name: Miri on the erased code (4 scheduling seeds)
         working-directory: spikes/verus-ring
         run: |
-          rustup toolchain install nightly --component miri rust-src --profile minimal
+          rustup toolchain install nightly --profile minimal -c miri -c rust-src
           MIRIFLAGS="-Zmiri-many-seeds=0..4" cargo +nightly miri test

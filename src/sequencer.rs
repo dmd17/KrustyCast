@@ -236,12 +236,16 @@ impl Core {
                 continue;
             }
             if msg.sender_seqno > sender.last + 1 {
-                eprintln!(
-                    "Gap from sender {}: expected {}, got {}; sending NAK",
-                    msg.sender_id,
-                    sender.last + 1,
-                    msg.sender_seqno
-                );
+                // After one lost message every later one is NAKed until the
+                // client goes back: logging each would stall this thread.
+                if self.verbose {
+                    eprintln!(
+                        "Gap from sender {}: expected {}, got {}; sending NAK",
+                        msg.sender_id,
+                        sender.last + 1,
+                        msg.sender_seqno
+                    );
+                }
                 out.feedback.push((
                     Feedback::Nak {
                         expected: sender.last + 1,

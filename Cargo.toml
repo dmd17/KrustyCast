@@ -12,6 +12,8 @@ clap = { version = "4.4", features = ["derive"] }
 socket2 = { version = "0.5", features = ["all"] }
 ctrlc = { version = "3", features = ["termination"] }
 crc32fast = "1"
+hdrhistogram = { version = "7.5.4", default-features = false }
+libc = "0.2.191"
 
 [dev-dependencies]
 moldudp = "0.1.1"

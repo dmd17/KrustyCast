@@ -38,3 +38,5 @@ including interop in both directions with the
 - [Product requirements](docs/PRD.md): scope, guarantees, performance targets
 - [Architecture](docs/ARCHITECTURE.md): target design and verification strategy
 - [Gap analysis](docs/GAP-ANALYSIS.md): current code against the target, with roadmap
+- [Baseline](docs/BASELINE.md): laptop benchmark of the current single node
+- [Specs](spec/README.md): TLA+ model of the sequencer and sessions; spike reports in `spikes/`

@@ -132,8 +132,8 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
-| E1 | No benchmark at all | Open-loop load generator; coordinated-omission-correct histograms; submit-to-feed round trip (PRD §7) | P | M | M0 |
-| E2 | No reference hardware | Defined reference setup; tuning guide (isolated cores, IRQ affinity, busy-poll) | P | S | M0 |
+| E1 | **Started 2026-11-14:** open-loop `loadgen` with HDR histograms and CO-correct latency; laptop baseline in `docs/BASELINE.md` | Open-loop load generator; coordinated-omission-correct histograms; submit-to-feed round trip (PRD §7) | P | M | M0 |
+| E2 | No reference hardware. Found on the laptop: multicast via the default route went over Wi-Fi and capped the node near 5–10 k msg/s | Defined reference setup; tuning guide (isolated cores, IRQ affinity, busy-poll) | P | S | M0 |
 | E3 | No comparison | Aeron Cluster baseline on the same hardware and workload | P | M | M0 / M4 |
 
 ### 3.9 Operations and security

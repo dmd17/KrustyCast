@@ -7,6 +7,13 @@ use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 /// Large enough for any UDP datagram.
 pub const RECV_BUFFER_SIZE: usize = 65536;
 
+/// Kernel receive buffer requested for every receiving socket. The default
+/// (`net.core.rmem_default`, often 208 KiB) holds only a few hundred small
+/// datagrams, since each costs about 1 KiB of kernel accounting, so a short
+/// scheduling stall drops packets. The kernel caps the request at
+/// `net.core.rmem_max`.
+pub const SOCKET_RECV_BUFFER: usize = 8 << 20;
+
 /// Opens a socket that receives datagrams sent to `addr`.
 ///
 /// For a multicast address the socket binds `0.0.0.0:<port>` with
@@ -15,6 +22,8 @@ pub const RECV_BUFFER_SIZE: usize = 65536;
 /// `addr` directly.
 pub fn bind_receiver(addr: SocketAddrV4, interface: Ipv4Addr) -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    // Best effort: a smaller buffer still works, it just drops sooner.
+    let _ = socket.set_recv_buffer_size(SOCKET_RECV_BUFFER);
     if addr.ip().is_multicast() {
         socket.set_reuse_address(true)?;
         socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, addr.port()).into())?;
