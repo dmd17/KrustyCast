@@ -78,6 +78,8 @@ jobs:
         run: |
           rustup toolchain install nightly --profile minimal -c miri -c rust-src
           MIRIFLAGS="-Zmiri-many-seeds=0..4" cargo +nightly miri test
+      - name: Miri on krusty-ring (the node's unsafe; 4 scheduling seeds)
+        run: MIRIFLAGS="-Zmiri-many-seeds=0..4" cargo +nightly miri test -p krusty-ring
 
   fuzz:
     runs-on: ubuntu-latest
@@ -92,5 +94,3 @@ jobs:
       - name: Fuzz the wire decoders (60 s)
         working-directory: crates/krusty-wire
         run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu decode -- -max_total_time=60
-      - name: Miri on krusty-ring (the node's unsafe; 4 scheduling seeds)
-        run: MIRIFLAGS="-Zmiri-many-seeds=0..4" cargo +nightly miri test -p krusty-ring
