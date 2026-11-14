@@ -87,6 +87,8 @@ struct Shared {
     flushed_index: AtomicU64,
     /// Highest seqno whose index entry is readable (flushed).
     flushed_seqno: AtomicU64,
+    /// Highest seqno whose entry is durable (fsynced).
+    synced_seqno: AtomicU64,
     /// Lowest seqno still retained.
     earliest_seqno: AtomicU64,
 }
@@ -104,6 +106,7 @@ pub struct Log {
     next_index: u64,
     next_seqno: u64,
     idx_buf: Vec<(u64, Pos)>,
+    idx_bytes: Vec<u8>,
     /// Segments rolled since the last sync (they still need an fsync).
     unsynced: Vec<Arc<File>>,
     latest_snapshot: u64,
@@ -354,6 +357,7 @@ impl Log {
             indexes: RwLock::new(indexes),
             flushed_index: AtomicU64::new(last_index),
             flushed_seqno: AtomicU64::new(next_seqno - 1),
+            synced_seqno: AtomicU64::new(next_seqno - 1),
             earliest_seqno: AtomicU64::new(earliest_seqno),
         });
         let log = Log {
@@ -367,6 +371,7 @@ impl Log {
             next_index,
             next_seqno,
             idx_buf: Vec::with_capacity(4096),
+            idx_bytes: Vec::with_capacity(4096 * IDX_SLOT as usize),
             unsynced: Vec::new(),
             latest_snapshot,
         };
@@ -395,9 +400,9 @@ impl Log {
         self.next_seqno
     }
 
-    /// Calls `f(log_index, timestamp, payload)` for every entry from `from`
-    /// to the end (for recovery replay). Entries must be contiguous.
-    pub fn replay(&self, from: u64, mut f: impl FnMut(u64, u64, &[u8])) -> io::Result<()> {
+    /// Calls `f(pos, timestamp, payload)` for every entry from `from` to the
+    /// end (for recovery replay). Entries must be contiguous.
+    pub fn replay(&self, from: u64, mut f: impl FnMut(Pos, u64, &[u8])) -> io::Result<()> {
         let segs = self.shared.segments.read().unwrap();
         let mut payload = Vec::new();
         let start = segs
@@ -416,7 +421,14 @@ impl Log {
                 match read_record(&s.file, off, expect, self.cfg.segment_bytes, &mut payload)? {
                     Some(ts) => {
                         if expect >= from {
-                            f(expect, ts, &payload);
+                            f(
+                                Pos {
+                                    log_index: expect,
+                                    offset: off,
+                                },
+                                ts,
+                                &payload,
+                            );
                         }
                         off += record_len(payload.len());
                         expect += 1;
@@ -477,6 +489,7 @@ impl Log {
         self.shared
             .flushed_seqno
             .store(seqno - 1, Ordering::Release);
+        self.shared.synced_seqno.store(seqno - 1, Ordering::Release);
     }
 
     fn roll(&mut self) -> io::Result<()> {
@@ -518,12 +531,13 @@ impl Log {
             let k = seqno - file.0;
             // Write the run of entries that falls in this index file at once.
             let run = (self.cfg.index_entries - k).min((self.idx_buf.len() - i) as u64) as usize;
-            let mut bytes = Vec::with_capacity(run * IDX_SLOT as usize);
+            self.idx_bytes.clear();
             for (_, p) in &self.idx_buf[i..i + run] {
-                bytes.extend_from_slice(&p.log_index.to_le_bytes());
-                bytes.extend_from_slice(&p.offset.to_le_bytes());
+                self.idx_bytes.extend_from_slice(&p.log_index.to_le_bytes());
+                self.idx_bytes.extend_from_slice(&p.offset.to_le_bytes());
             }
-            file.1.write_all_at(&bytes, FILE_HEADER + k * IDX_SLOT)?;
+            file.1
+                .write_all_at(&self.idx_bytes, FILE_HEADER + k * IDX_SLOT)?;
             i += run;
         }
         self.idx_buf.clear();
@@ -584,6 +598,9 @@ impl Log {
         if let Some(ix) = self.shared.indexes.read().unwrap().last() {
             ix.file.sync_data()?;
         }
+        self.shared
+            .synced_seqno
+            .store(self.next_seqno - 1, Ordering::Release);
         Ok(())
     }
 
@@ -690,6 +707,11 @@ impl LogReader {
     /// Highest seqno readable.
     pub fn last_seqno(&self) -> u64 {
         self.shared.flushed_seqno.load(Ordering::Acquire)
+    }
+
+    /// Highest seqno that is durable (fsynced).
+    pub fn durable_seqno(&self) -> u64 {
+        self.shared.synced_seqno.load(Ordering::Acquire)
     }
 
     /// Lowest seqno still retained.

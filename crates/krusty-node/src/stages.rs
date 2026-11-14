@@ -13,6 +13,7 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,7 +24,7 @@ const REC_TO: u32 = 2;
 /// time the record was queued (8), for the dwell histograms.
 const REC_HDR: usize = 16;
 /// History entry header: timestamp, client, flags, key, version.
-const HIST_HEADER: usize = 32;
+pub(crate) const HIST_HEADER: usize = 32;
 /// Most messages one RECOVER is answered with.
 const MAX_RECOVER_ANSWER: u64 = 1024;
 
@@ -102,7 +103,7 @@ fn pin(core: Option<usize>) {
 }
 
 /// Waits after an empty poll: spin, or spin a little and then sleep.
-fn idle(how: Idle, empty_polls: &mut u32) {
+pub(crate) fn idle(how: Idle, empty_polls: &mut u32) {
     *empty_polls += 1;
     match how {
         Idle::Spin => std::hint::spin_loop(),
@@ -162,10 +163,8 @@ fn sender(feed: SocketAddrV4, interface: Ipv4Addr) -> io::Result<UdpSocket> {
 }
 
 pub fn start(cfg: NodeConfig) -> io::Result<Node> {
-    assert!(
-        stream::HEADER_LEN + DataFrameWriter::block_len(cfg.max_payload) <= cfg.mtu,
-        "max_payload must fit one message per frame"
-    );
+    cfg.validate()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let ingress_sock = bind(cfg.ingress, cfg.interface)?;
     let recovery_sock = bind(cfg.recovery, cfg.interface)?;
     let egress_sock = sender(cfg.feed, cfg.interface)?;
@@ -174,12 +173,88 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
 
     let (a_tx, a_rx) = byte_ring(cfg.ring_bytes);
     let (b_tx, b_rx) = byte_ring(cfg.ring_bytes);
-    let history = Arc::new(History::new(cfg.history, HIST_HEADER + cfg.max_payload));
     let stop = Arc::new(AtomicBool::new(false));
     let core_done = Arc::new(AtomicBool::new(false));
+    let store_done = Arc::new(AtomicBool::new(false));
     let stats = Arc::new(Metrics::create(cfg.metrics_path.as_deref(), cfg.stream_id)?);
-
     let mut threads = Vec::new();
+
+    // Who feeds ring B, and when egress may finish.
+    let mut disk: Option<krusty_log::LogReader> = None;
+    let (history, core_start, out, egress_done) = match &cfg.storage {
+        None => (
+            History::new(cfg.history, HIST_HEADER + cfg.max_payload),
+            CoreStart {
+                core: Core::new(cfg.core),
+                log_index: 0,
+                last_ts: 0,
+                snapshots: None,
+            },
+            Out {
+                b: b_tx,
+                s: None,
+                through_storage: false,
+            },
+            core_done.clone(),
+        ),
+        Some(st) => {
+            // Restore from snapshot + log before anything runs.
+            let r = crate::storage::restore(&cfg, st)?;
+            eprintln!(
+                "krusty-node: restored to log index {} (snapshot at {}, {} entries replayed), next seqno {}",
+                r.log_index,
+                r.snapshot_index,
+                r.replayed,
+                r.core.next_seqno()
+            );
+            disk = Some(r.log.reader());
+            let sync = st.durability == crate::Durability::Sync;
+            let (s_tx, s_rx) = byte_ring(cfg.ring_bytes);
+            let (snap_tx, snap_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+            let (back_tx, back_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+            let core_start = CoreStart {
+                core: r.core,
+                log_index: r.log_index,
+                last_ts: r.last_ts,
+                snapshots: Some((snap_tx, back_rx, st.snapshot_every.max(1))),
+            };
+            // Mode (b): only the storage stage feeds ring B (after fsync).
+            let (core_b, store_b) = if sync {
+                (byte_ring(64).0, b_tx)
+            } else {
+                (b_tx, byte_ring(64).0)
+            };
+            let log = r.log;
+            let (c2, done, sdone, st2) = (
+                cfg.clone(),
+                core_done.clone(),
+                store_done.clone(),
+                stats.clone(),
+            );
+            threads.push(spawn("krusty-store", cfg.stage_init, move || {
+                crate::storage::store_stage(
+                    c2, log, s_rx, store_b, snap_rx, back_tx, done, sdone, st2,
+                )
+            }));
+            let egress_done = if sync {
+                store_done.clone()
+            } else {
+                core_done.clone()
+            };
+            (
+                r.history,
+                core_start,
+                Out {
+                    b: core_b,
+                    s: Some(s_tx),
+                    through_storage: sync,
+                },
+                egress_done,
+            )
+        }
+    };
+    let history = Arc::new(history);
+
     {
         let (cfg, stop, stats) = (cfg.clone(), stop.clone(), stats.clone());
         threads.push(spawn("krusty-ingress", cfg.stage_init, move || {
@@ -195,19 +270,25 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             stats.clone(),
         );
         threads.push(spawn("krusty-core", cfg.stage_init, move || {
-            core_stage(cfg, a_rx, b_tx, h, stop, done, stats)
+            core_stage(cfg, a_rx, out, h, core_start, stop, done, stats)
         }));
     }
     {
-        let (cfg, done, stats) = (cfg.clone(), core_done.clone(), stats.clone());
+        let (cfg, stats, done) = (cfg.clone(), stats.clone(), egress_done.clone());
         threads.push(spawn("krusty-egress", cfg.stage_init, move || {
             egress(cfg, egress_sock, b_rx, done, stats)
         }));
     }
     {
-        let (cfg, stop, h, stats) = (cfg.clone(), stop.clone(), history.clone(), stats.clone());
+        let (cfg, stop, h, stats, d) = (
+            cfg.clone(),
+            stop.clone(),
+            history.clone(),
+            stats.clone(),
+            disk.clone(),
+        );
         threads.push(spawn("krusty-recovery", cfg.stage_init, move || {
-            recovery(cfg, recovery_sock, h, stop, stats)
+            recovery(cfg, recovery_sock, h, d, stop, stats)
         }));
     }
     let mut mold_rerequest_addr = None;
@@ -215,14 +296,20 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
         let rereq = bind(m.rerequest, cfg.interface)?;
         mold_rerequest_addr = Some(v4(rereq.local_addr()?));
         let out = sender(m.feed, cfg.interface)?;
+        // Ends after whatever feeds egress has finished (the storage stage in mode b).
         let (cfg, done, h, stats) = (
             cfg.clone(),
-            core_done.clone(),
+            egress_done.clone(),
             history.clone(),
             stats.clone(),
         );
+        // Mode (b): Mold may publish only what is durable.
+        let durable = match &cfg.storage {
+            Some(st) if st.durability == crate::Durability::Sync => disk.clone(),
+            _ => None,
+        };
         threads.push(spawn("krusty-mold", cfg.stage_init, move || {
-            mold(cfg, m, out, rereq, h, done, stats)
+            mold(cfg, m, out, rereq, h, durable, done, stats)
         }));
     }
     Ok(Node {
@@ -305,7 +392,13 @@ fn ingress(
 }
 
 /// History entry: the message's metadata, then its payload.
-fn put_history(h: &History, seqno: u64, meta: &MessageMeta, payload: &[u8], scratch: &mut [u8]) {
+pub(crate) fn put_history(
+    h: &History,
+    seqno: u64,
+    meta: &MessageMeta,
+    payload: &[u8],
+    scratch: &mut [u8],
+) {
     let (cond, key, ver) = match meta.conditional {
         Some((k, v)) => (1u32, k, v),
         None => (0, 0, 0),
@@ -334,18 +427,60 @@ fn parse_history(b: &[u8]) -> (MessageMeta, &[u8]) {
     (meta, &b[HIST_HEADER..])
 }
 
+/// Where the core stage's output goes: egress-bound records straight to
+/// ring B, or (durability mode b) through the storage stage, which forwards
+/// them after the batch's fsync; log entries to the storage stage.
+pub(crate) struct Out {
+    b: Producer,
+    s: Option<Producer>,
+    through_storage: bool,
+}
+
+impl Out {
+    fn egress(&mut self, kind: u32, len: usize, fill: impl FnMut(&mut [u8])) {
+        if self.through_storage {
+            write_ring(
+                self.s.as_mut().unwrap(),
+                crate::storage::S_EGRESS + kind,
+                len,
+                fill,
+            );
+        } else {
+            write_ring(&mut self.b, kind, len, fill);
+        }
+    }
+
+    fn store(&mut self, kind: u32, len: usize, fill: impl FnMut(&mut [u8])) {
+        if let Some(s) = self.s.as_mut() {
+            write_ring(s, kind, len, fill);
+        }
+    }
+
+    fn publish(&mut self) {
+        self.b.publish();
+        if let Some(s) = self.s.as_mut() {
+            s.publish();
+        }
+    }
+}
+
 /// Queues a frame for the feed.
-fn feed_record(out: &mut Producer, frame: &[u8]) {
+fn feed_record(out: &mut Out, frame: &[u8]) {
     let t = mono_ns();
-    write_b(out, REC_FEED, REC_HDR + frame.len(), |b| {
+    out.egress(REC_FEED, REC_HDR + frame.len(), |b| {
         b[..8].fill(0);
         put_ts(b, t);
         b[REC_HDR..].copy_from_slice(frame);
     });
 }
 
-/// Writes a record to ring B, waiting for egress if it is full.
-fn write_b(out: &mut Producer, kind: u32, len: usize, mut fill: impl FnMut(&mut [u8])) {
+/// Writes a record, waiting for the consumer if the ring is full.
+pub(crate) fn write_ring(
+    out: &mut Producer,
+    kind: u32,
+    len: usize,
+    mut fill: impl FnMut(&mut [u8]),
+) {
     loop {
         if out.try_write(kind, len, &mut fill) {
             return;
@@ -393,18 +528,39 @@ fn emit_frames(
     frames
 }
 
+/// Snapshot hand-off: buffers to the storage stage, buffers coming back,
+/// and the cadence in log entries.
+pub(crate) type SnapshotLink = (SyncSender<Vec<u8>>, Receiver<Vec<u8>>, u64);
+
+/// What the core stage starts from (fresh, or restored from storage).
+pub(crate) struct CoreStart {
+    pub core: Core,
+    pub log_index: u64,
+    pub last_ts: u64,
+    /// Snapshot hand-off to the storage stage: (send, buffers coming back).
+    pub snapshots: Option<SnapshotLink>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn core_stage(
     cfg: NodeConfig,
     mut input: Consumer,
-    mut out: Producer,
+    mut out: Out,
     history: Arc<History>,
+    start: CoreStart,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
     stats: Arc<Metrics>,
 ) {
     pin(cfg.cores[1]);
-    let mut core = Core::new(cfg.core);
-    let mut log_index = 0u64;
+    let CoreStart {
+        mut core,
+        mut log_index,
+        mut last_ts,
+        snapshots,
+    } = start;
+    let mut last_snapshot = log_index;
+    let mut snap_buf: Option<Vec<u8>> = Some(Vec::new());
     let mut scratch = vec![0u8; HIST_HEADER + cfg.max_payload];
     let mut entry = vec![0u8; HIST_HEADER + cfg.max_payload];
     let mut frame = vec![0u8; cfg.mtu];
@@ -415,7 +571,10 @@ fn core_stage(
     let mut replies = 0u64;
     loop {
         let first = core.next_seqno();
-        let ts = now_ns();
+        // The leader's clock, made monotonic here so the time logged with an
+        // entry is the time the core used (replay reproduces it exactly).
+        let ts = now_ns().max(last_ts);
+        last_ts = ts;
         let batch_start = mono_ns();
         let n = input.read(cfg.batch, |_, rec| {
             let src = get_addr(rec);
@@ -429,22 +588,25 @@ fn core_stage(
             let e = core
                 .apply(log_index, ts, &s)
                 .expect("entries are applied in order");
+            let raw = &rec[REC_HDR..];
+            out.store(crate::storage::S_ENTRY, 8 + raw.len(), |b| {
+                b[..8].copy_from_slice(&ts.to_le_bytes());
+                b[8..].copy_from_slice(raw);
+            });
             if let Some(p) = e.publish {
                 put_history(&history, p.seqno, &p.meta, s.payload, &mut scratch);
+                out.store(crate::storage::S_PUBLISHED, 8, |b| {
+                    b.copy_from_slice(&p.seqno.to_le_bytes())
+                });
             }
             if let Some(f) = e.reply {
                 replies += 1;
-                write_b(
-                    &mut out,
-                    REC_TO,
-                    REC_HDR + krusty_wire::feedback::LEN,
-                    |b| {
-                        put_addr(b, src);
-                        put_ts(b, batch_start);
-                        f.encode(&mut fb).unwrap();
-                        b[REC_HDR..].copy_from_slice(&fb);
-                    },
-                );
+                out.egress(REC_TO, REC_HDR + krusty_wire::feedback::LEN, |b| {
+                    put_addr(b, src);
+                    put_ts(b, batch_start);
+                    f.encode(&mut fb).unwrap();
+                    b[REC_HDR..].copy_from_slice(&fb);
+                });
             }
         });
         let last = core.next_seqno();
@@ -463,6 +625,24 @@ fn core_stage(
             stats.published.fetch_add(last - first, Ordering::Relaxed);
             stats.frames.fetch_add(frames, Ordering::Relaxed);
             last_sent = Instant::now();
+        }
+        if let Some((tx, back, every)) = &snapshots
+            && log_index >= last_snapshot + every
+        {
+            // Hand a snapshot to the storage stage (skipped while it is
+            // still writing the previous one).
+            if snap_buf.is_none() {
+                snap_buf = back.try_recv().ok();
+            }
+            if let Some(mut buf) = snap_buf.take() {
+                buf.clear();
+                core.snapshot(&mut buf);
+                out.store(crate::storage::S_SNAPSHOT, 8, |b| {
+                    b.copy_from_slice(&log_index.to_le_bytes())
+                });
+                let _ = tx.send(buf);
+                last_snapshot = log_index;
+            }
         }
         if n > 0 {
             stats.core_batch.record(mono_ns() - batch_start);
@@ -539,18 +719,52 @@ fn egress(
     }
 }
 
+/// Message `seqno` from the history, or else from disk, into `entry`.
+fn fetch(
+    seqno: u64,
+    history: &History,
+    disk: Option<&krusty_log::LogReader>,
+    entry: &mut [u8],
+    raw: &mut Vec<u8>,
+) -> Option<(MessageMeta, usize, usize)> {
+    if let Ok(n) = history.read(seqno, entry) {
+        let (meta, _) = parse_history(&entry[..n]);
+        return Some((meta, HIST_HEADER, n));
+    }
+    let stored = disk?.read_published(seqno, raw).ok()??;
+    let s = Submit::decode(raw).ok()?;
+    let meta = MessageMeta {
+        timestamp_ns: stored.timestamp_ns,
+        client_id: s.client_id,
+        // An accepted conditional append always reaches expected + 1.
+        conditional: match s.append {
+            krusty_wire::ingress::Append::Conditional {
+                key,
+                expected_version,
+            } => Some((key, expected_version + 1)),
+            krusty_wire::ingress::Append::Unconditional => None,
+        },
+    };
+    let len = s.payload.len();
+    entry[HIST_HEADER..HIST_HEADER + len].copy_from_slice(s.payload);
+    Some((meta, HIST_HEADER, HIST_HEADER + len))
+}
+
 fn recovery(
     cfg: NodeConfig,
     sock: UdpSocket,
     history: Arc<History>,
+    disk: Option<krusty_log::LogReader>,
     stop: Arc<AtomicBool>,
     stats: Arc<Metrics>,
 ) {
     pin(cfg.cores[3]);
+    let durable_only = matches!(&cfg.storage, Some(st) if st.durability == crate::Durability::Sync);
     let mut rb = RecvBatch::new(16, 256);
     let mut sb = SendBatch::new(64, cfg.mtu);
     let mut frame = vec![0u8; cfg.mtu];
     let mut entry = vec![0u8; HIST_HEADER + cfg.max_payload];
+    let mut raw = Vec::with_capacity(2048);
     let mut empty = 0;
     while !stop.load(Ordering::Acquire) {
         let n = rb.recv(&sock).unwrap_or(0);
@@ -567,7 +781,13 @@ fn recovery(
             };
             stats.recover_requests.fetch_add(1, Ordering::Relaxed);
             let t0 = mono_ns();
-            let earliest = history.earliest();
+            // What is retained: on disk if there is storage, else in memory.
+            let (earliest, last) = match &disk {
+                // Mode (b): only what is durable may leave the node.
+                Some(d) if durable_only => (d.earliest_seqno(), d.durable_seqno()),
+                Some(d) => (d.earliest_seqno(), history.committed().max(d.last_seqno())),
+                None => (history.earliest(), history.committed()),
+            };
             if from < earliest {
                 let k =
                     stream::encode_unavailable(&mut frame, cfg.stream_id, from, earliest).unwrap();
@@ -577,28 +797,41 @@ fn recovery(
                     f.len()
                 });
             }
-            let start = from.max(earliest);
+            let mut s = from.max(earliest);
             let end = from
                 .saturating_add(count.min(MAX_RECOVER_ANSWER))
-                .min(history.committed() + 1);
-            emit_frames(
-                &cfg,
-                &history,
-                start,
-                end,
-                true,
-                &mut frame,
-                &mut entry,
-                |f| {
-                    if sb.is_full() {
-                        let _ = sb.flush(&sock);
+                .min(last + 1);
+            let history_from = history.earliest();
+            while s < end {
+                let mut w =
+                    DataFrameWriter::new(&mut frame[..cfg.mtu], cfg.stream_id, s, true).unwrap();
+                while s < end {
+                    let Some((meta, a, b)) =
+                        fetch(s, &history, disk.as_ref(), &mut entry, &mut raw)
+                    else {
+                        break;
+                    };
+                    if w.push(&meta, &entry[a..b]).is_err() {
+                        break; // frame full
                     }
-                    sb.push(src, |b| {
-                        b[..f.len()].copy_from_slice(f);
-                        f.len()
-                    });
-                },
-            );
+                    if s < history_from {
+                        stats.recovered_from_disk.fetch_add(1, Ordering::Relaxed);
+                    }
+                    s += 1;
+                }
+                if w.count() == 0 {
+                    break;
+                }
+                let k = w.finish().unwrap();
+                if sb.is_full() {
+                    let _ = sb.flush(&sock);
+                }
+                let f = &frame[..k];
+                sb.push(src, |b| {
+                    b[..f.len()].copy_from_slice(f);
+                    f.len()
+                });
+            }
             stats.recovery_service.record(mono_ns() - t0);
         }
         let _ = sb.flush(&sock);
@@ -657,16 +890,18 @@ fn mold_range(
 /// The MoldUDP64 adapter: follows the history and republishes it as
 /// MoldUDP64 with the same seqnos, serves re-requests, and ends the session
 /// after the core has.
+#[allow(clippy::too_many_arguments)]
 fn mold(
     cfg: NodeConfig,
     m: crate::MoldConfig,
     sock: UdpSocket,
     rereq: UdpSocket,
     history: Arc<History>,
+    durable: Option<krusty_log::LogReader>,
     core_done: Arc<AtomicBool>,
     stats: Arc<Metrics>,
 ) {
-    let mut next = 1u64;
+    let mut next = history.earliest();
     let mut pkt = vec![0u8; cfg.mtu];
     let mut entry = vec![0u8; HIST_HEADER + cfg.max_payload];
     let mut sb = SendBatch::new(64, cfg.mtu);
@@ -676,7 +911,10 @@ fn mold(
     let mut empty = 0;
     loop {
         let done = core_done.load(Ordering::Acquire);
-        let committed = history.committed();
+        let committed = match &durable {
+            Some(d) => history.committed().min(d.durable_seqno()),
+            None => history.committed(),
+        };
         let mut busy = false;
         if next <= committed {
             let lost = mold_range(

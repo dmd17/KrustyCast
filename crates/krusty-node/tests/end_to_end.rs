@@ -170,6 +170,30 @@ impl Harness {
 
 #[test]
 fn exactly_once_in_order_and_no_allocation_on_the_hot_path() {
+    run(None);
+}
+
+/// The same with durable storage in mode (b): the storage stage is on the
+/// path, and it must not allocate either.
+#[test]
+fn with_storage_in_mode_b_still_no_allocation() {
+    let dir = std::env::temp_dir().join(format!("krusty-e2e-storage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    run(Some(krusty_node::StorageConfig {
+        log: krusty_log::LogConfig::new(&dir),
+        durability: krusty_node::Durability::Sync,
+        // Snapshots are rare, write files and may allocate: keep them out of
+        // the measured window.
+        snapshot_every: 1_000_000,
+    }));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The allocation counter is process-wide: run one node at a time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn run(storage: Option<krusty_node::StorageConfig>) {
+    let _one_at_a_time = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let consumer = UdpSocket::bind("127.0.0.1:0").unwrap();
     consumer.set_nonblocking(true).unwrap();
     let mut cfg = NodeConfig::new(
@@ -180,6 +204,7 @@ fn exactly_once_in_order_and_no_allocation_on_the_hot_path() {
     cfg.idle = Idle::Sleep { sleep_us: 20 };
     cfg.heartbeat_us = 10_000;
     cfg.stage_init = Some(mark_stage);
+    cfg.storage = storage;
     let node = krusty_node::start(cfg).unwrap();
     let client = UdpSocket::bind("127.0.0.1:0").unwrap();
     client.set_nonblocking(true).unwrap();

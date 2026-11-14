@@ -608,6 +608,7 @@ dependencies = [
  "ctrlc",
  "hdrhistogram",
  "krusty-core",
+ "krusty-log",
  "krusty-mold",
  "krusty-net",
  "krusty-ring",

@@ -17,6 +17,7 @@ krusty-net = { path = "../krusty-net" }
 krusty-session = { path = "../krusty-session" }
 krusty-stream = { path = "../krusty-stream" }
 krusty-mold = { path = "../krusty-mold" }
+krusty-log = { path = "../krusty-log" }
 libc = "0.2"
 socket2 = { version = "0.5", features = ["all"] }
 ctrlc = { version = "3", features = ["termination"] }

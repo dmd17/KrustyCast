@@ -20,8 +20,10 @@ pub struct History {
     slots: Box<[Slot]>,
     mask: u64,
     slot_bytes: usize,
-    /// Highest seqno written (0 = none).
+    /// Highest seqno written (first_seqno - 1 = none).
     committed: AtomicU64,
+    /// The first seqno this history ever held (after a restart, not 1).
+    first_seqno: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +37,12 @@ pub enum ReadError {
 impl History {
     /// `slots` (a power of two) messages of at most `slot_bytes` each.
     pub fn new(slots: usize, slot_bytes: usize) -> History {
+        History::starting_at(slots, slot_bytes, 1)
+    }
+
+    /// A history whose first message will be `first_seqno` (≥ 1).
+    pub fn starting_at(slots: usize, slot_bytes: usize, first_seqno: u64) -> History {
+        assert!(first_seqno >= 1);
         assert!(slots.is_power_of_two());
         let words = slot_bytes.div_ceil(8);
         History {
@@ -47,7 +55,8 @@ impl History {
                 .collect(),
             mask: slots as u64 - 1,
             slot_bytes,
-            committed: AtomicU64::new(0),
+            committed: AtomicU64::new(first_seqno - 1),
+            first_seqno,
         }
     }
 
@@ -55,16 +64,17 @@ impl History {
         self.slot_bytes
     }
 
-    /// Highest seqno published (0 = none).
+    /// Highest seqno published (`first - 1` = none yet).
     pub fn committed(&self) -> u64 {
         self.committed.load(Ordering::Acquire)
     }
 
-    /// Oldest seqno still retained (1 if nothing was overwritten yet).
+    /// Oldest seqno still retained.
     pub fn earliest(&self) -> u64 {
         let c = self.committed();
         let cap = self.mask + 1;
-        if c >= cap { c - cap + 1 } else { 1 }
+        let oldest = if c >= cap { c - cap + 1 } else { 1 };
+        oldest.max(self.first_seqno)
     }
 
     /// Appends `seqno` (exactly one more than the last). Writer only: the
@@ -87,8 +97,11 @@ impl History {
 
     /// Copies message `seqno` into `out` and returns its length.
     pub fn read(&self, seqno: u64, out: &mut [u8]) -> Result<usize, ReadError> {
-        if seqno == 0 || seqno > self.committed() {
+        if seqno > self.committed() {
             return Err(ReadError::NotYet);
+        }
+        if seqno < self.first_seqno {
+            return Err(ReadError::Gone);
         }
         let slot = &self.slots[(seqno & self.mask) as usize];
         let v1 = slot.version.load(Ordering::Acquire);

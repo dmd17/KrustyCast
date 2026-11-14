@@ -15,6 +15,13 @@ outcome_ring = 64             # clients' windows must not exceed this
 max_keys = 65536
 evict_idle_ms = 60000
 
+[storage]                     # optional durable log (M2)
+dir = "/var/lib/krusty/stream-1"
+durability = "a"              # "a": fsync off the latency path; "b": publish after fsync
+snapshot_every = 1000000      # log entries between core snapshots
+segment_mib = 256
+retain_gib = 64               # whole segments beyond this are deleted (below a snapshot)
+
 [mold]                        # optional MoldUDP64 adapter
 session = "KC20261114"
 feed = "239.1.1.2:7004"

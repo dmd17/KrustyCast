@@ -22,6 +22,9 @@
 pub mod config;
 pub mod metrics;
 pub mod stages;
+pub mod storage;
+
+pub use storage::Durability;
 
 use krusty_core::Config as CoreConfig;
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -44,6 +47,15 @@ pub struct MoldConfig {
     pub feed: SocketAddrV4,
     /// The standard re-request server's address.
     pub rerequest: SocketAddrV4,
+}
+
+/// Storage (M2): the log, its durability mode and the snapshot cadence.
+#[derive(Clone, Debug)]
+pub struct StorageConfig {
+    pub log: krusty_log::LogConfig,
+    pub durability: Durability,
+    /// Take a core snapshot every this many log entries.
+    pub snapshot_every: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +85,8 @@ pub struct NodeConfig {
     pub cores: [Option<usize>; 4],
     /// MoldUDP64 adapter (None: off).
     pub mold: Option<MoldConfig>,
+    /// Durable storage (None: in memory only).
+    pub storage: Option<StorageConfig>,
     /// Shared-memory metrics file for `krusty-stat` (None: private memory).
     pub metrics_path: Option<std::path::PathBuf>,
     /// Called at the start of every stage thread (tests use it to mark the
@@ -98,6 +112,7 @@ impl NodeConfig {
             idle: Idle::Sleep { sleep_us: 50 },
             cores: [None; 4],
             mold: None,
+            storage: None,
             metrics_path: None,
             stage_init: None,
         }

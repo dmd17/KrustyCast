@@ -46,7 +46,7 @@ fn fill(log: &mut Log, from: u64, to: u64) {
 
 fn replayed(log: &Log, from: u64) -> Vec<(u64, u64, Vec<u8>)> {
     let mut v = Vec::new();
-    log.replay(from, |i, ts, p| v.push((i, ts, p.to_vec())))
+    log.replay(from, |pos, ts, p| v.push((pos.log_index, ts, p.to_vec())))
         .unwrap();
     v
 }

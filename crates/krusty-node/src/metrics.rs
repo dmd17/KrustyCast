@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAGIC: u64 = 0x5354_4154_534B_434B; // "KCKSTATS"
-pub const LAYOUT_VERSION: u64 = 1;
+pub const LAYOUT_VERSION: u64 = 2;
 pub const BUCKETS: usize = 64;
 
 /// log2 histogram: bucket `b` counts values in `[2^(b-1), 2^b)` ns (bucket 0: 0).
@@ -68,6 +68,8 @@ macro_rules! counters {
             pub core_to_egress: Histogram,
             /// One RECOVER request, received to answered.
             pub recovery_service: Histogram,
+            /// One storage fsync (group commit of a batch).
+            pub store_sync: Histogram,
         }
 
         impl Shared {
@@ -76,12 +78,13 @@ macro_rules! counters {
                 vec![$((stringify!($name), self.$name.load(Ordering::Relaxed)),)*]
             }
 
-            pub fn histograms(&self) -> [(&'static str, &Histogram); 4] {
+            pub fn histograms(&self) -> [(&'static str, &Histogram); 5] {
                 [
                     ("ingress_to_core", &self.ingress_to_core),
                     ("core_batch", &self.core_batch),
                     ("core_to_egress", &self.core_to_egress),
                     ("recovery_service", &self.recovery_service),
+                    ("store_sync", &self.store_sync),
                 ]
             }
         }
@@ -99,6 +102,9 @@ counters! {
     mold_published: "Messages published by the MoldUDP64 adapter.",
     mold_lost: "Messages the Mold adapter fell too far behind to publish.",
     mold_rerequests: "MoldUDP64 re-requests served.",
+    stored: "Log entries made durable.",
+    snapshots: "Core snapshots written.",
+    recovered_from_disk: "Messages served to RECOVER from disk.",
 }
 
 /// The node's metrics: a shared mapping (or private memory when no path is

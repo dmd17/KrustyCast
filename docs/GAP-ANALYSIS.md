@@ -67,7 +67,7 @@ Columns:
 | R1 | Single sequencer process; recovery is a manual restart | Raft cluster with automatic failover (FR-5, NFR-6) | C, O | **XL** | M3 |
 | R2 | The journal records *decisions* and lives on one disk | Log of raw inputs, replicated; the state machine re-derives decisions on every node (ADR-4) | C | L | M3 |
 | R3 | Clients target one fixed sequencer address | Member list, `NOT_LEADER` redirect, client rotation | C | M | M3 |
-| R4 | No snapshots: restart replays the whole journal | Snapshots of core state plus log suffix replay (FR-9) | O | M | M2 |
+| R4 | **Done 2026-11-14:** snapshots every N entries; restart = latest snapshot + log suffix replay. No snapshots: restart replays the whole journal | Snapshots of core state plus log suffix replay (FR-9) | O | M | M2 |
 
 ### 3.3 Hot path performance
 
@@ -77,7 +77,7 @@ Columns:
 | P2 | **Done in `krusty-node` 2026-11-14:** single writer per state; the history is read by recovery through per-slot seqlocks. Mutexes on the hot path: `Arc<Mutex<History>>` (`sequencer.rs:148`, locked per batch); client state in three mutexes (`client.rs:102–104`) | Single writer per state; history readable by the re-request thread through a lock-free published index | P | M | M1 |
 | P3 | **Done in `krusty-node` 2026-11-14:** zero-copy views, preallocated buffers; a test fails on any allocation in the stage threads after warm-up. Allocation per message: decoders copy payloads (`protocol.rs:102`, `:304`, `:423`); history stores a `Vec<u8>` per message; encoders allocate | Zero-copy views (`zerocopy`), preallocated slots and slabs; zero allocations enforced in CI (NFR-7) | P | M | M1 |
 | P4 | **Done in `krusty-node` 2026-11-14:** `recvmmsg`/`sendmmsg`, pinned spinning stages (`--spin`). One `recv_from`/`send_to` syscall per datagram; blocking reads with timeouts (`client.rs:122`, `:191`) | `recvmmsg`/`sendmmsg`, busy-poll, pinned threads, spin/back-off strategies | P | M | M1 |
-| P5 | Synchronous fsync on the sequencing thread: `j.commit()` blocks sequencing on every batch | Storage on its own thread (io_uring); durability mode (a) takes fsync off the latency path | P | M | M2 |
+| P5 | **Done 2026-11-14:** storage on its own stage; mode (a) publishes without waiting, mode (b) after the batch's fsync (group commit). Synchronous fsync on the sequencing thread: `j.commit()` blocks sequencing on every batch | Storage on its own thread (io_uring); durability mode (a) takes fsync off the latency path | P | M | M2 |
 | P6 | No kernel-bypass path | Transport trait; Onload compatibility; AF_XDP (Tier B) | P | L | M4 |
 | P7 | **Done in `krusty-core` 2026-11-14.** `std::collections::HashMap` for sender and target state (`sequencer.rs:144`) | Fixed-capacity tables: predictable and verifiable | P, C | M | M1 |
 
@@ -99,9 +99,9 @@ Columns:
 
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
-| S1 | One growing journal file through `BufWriter`, CRC32 | Preallocated segments, CRC32C, io_uring, alignment | P, O | L | M2 |
-| S2 | Re-requests served only from in-memory history (last 1 M messages) | Served from segments via index and mmap for every retained session (FR-7) | C | M | M2 |
-| S3 | No indices, retention or purge | Seqno and log-index indices; per-session retention | O | M | M2 |
+| S1 | **Done 2026-11-14** (`krusty-log`): preallocated segments, CRC32C, 8-byte alignment, torn-tail cut; `pwrite`/`fdatasync` rather than io_uring so far. One growing journal file through `BufWriter`, CRC32 | Preallocated segments, CRC32C, io_uring, alignment | P, O | L | M2 |
+| S2 | **Done 2026-11-14:** RECOVER served from the in-memory history, else from disk through the egress index. Re-requests served only from in-memory history (last 1 M messages) | Served from segments via index and mmap for every retained session (FR-7) | C | M | M2 |
+| S3 | **Done 2026-11-14:** egress (seqno) index; retention by whole segments below the latest snapshot (one stream per log, so per session). No indices, retention or purge | Seqno and log-index indices; per-session retention | O | M | M2 |
 
 ### 3.6 Client and consumer SDK
 

@@ -19,6 +19,13 @@
 //! max_keys = 65536
 //! evict_idle_ms = 60000
 //!
+//! [storage]                     # optional durable log (M2)
+//! dir = "/var/lib/krusty/stream-1"
+//! durability = "a"              # "a": fsync off the latency path; "b": publish after fsync
+//! snapshot_every = 1000000      # log entries between core snapshots
+//! segment_mib = 256
+//! retain_gib = 64               # whole segments beyond this are deleted (below a snapshot)
+//!
 //! [mold]                        # optional MoldUDP64 adapter
 //! session = "KC20261114"
 //! feed = "239.1.1.2:7004"
@@ -41,7 +48,18 @@ pub struct FileConfig {
     /// Shared-memory metrics file (default /dev/shm/krusty-<stream_id>.stats).
     pub metrics: Option<std::path::PathBuf>,
     pub limits: Option<Limits>,
+    pub storage: Option<Storage>,
     pub mold: Option<Mold>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Storage {
+    pub dir: std::path::PathBuf,
+    pub durability: Option<String>,
+    pub snapshot_every: Option<u64>,
+    pub segment_mib: Option<u64>,
+    pub retain_gib: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -126,6 +144,25 @@ impl FileConfig {
                 cfg.core.evict_idle_ns = v.saturating_mul(1_000_000);
             }
         }
+        if let Some(st) = &self.storage {
+            let durability = match st.durability.as_deref().unwrap_or("a") {
+                "a" => crate::Durability::Async,
+                "b" => crate::Durability::Sync,
+                other => return Err(format!("storage.durability: \"a\" or \"b\", not {other:?}")),
+            };
+            let mut log = krusty_log::LogConfig::new(&st.dir);
+            if let Some(m) = st.segment_mib {
+                log.segment_bytes = m << 20;
+            }
+            if let Some(g) = st.retain_gib {
+                log.retain_bytes = g << 30;
+            }
+            cfg.storage = Some(crate::StorageConfig {
+                log,
+                durability,
+                snapshot_every: st.snapshot_every.unwrap_or(1_000_000),
+            });
+        }
         if let Some(m) = &self.mold {
             let session = krusty_mold::Session::new(&m.session)
                 .ok_or("mold.session: 1-10 printable ASCII characters")?;
@@ -193,6 +230,9 @@ mod tests {
             krusty_mold::Session::new("KC20261114").unwrap()
         );
         assert_eq!(cfg.idle, Idle::Spin);
+        let st = cfg.storage.unwrap();
+        assert_eq!(st.durability, crate::Durability::Async);
+        assert_eq!(st.log.retain_bytes, 64 << 30);
     }
 
     #[test]
