@@ -100,6 +100,9 @@ fn main() {
         _ => fail("the MoldUDP64 adapter needs both a session and a feed"),
     };
     cfg.validate().unwrap_or_else(|e| fail(e));
+    if cfg.metrics_path.is_none() {
+        cfg.metrics_path = Some(format!("/dev/shm/krusty-{}.stats", cfg.stream_id).into());
+    }
 
     let feed = cfg.feed;
     let stream_id = cfg.stream_id;

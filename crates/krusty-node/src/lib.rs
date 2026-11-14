@@ -20,6 +20,7 @@
 //! (durability arrives with storage and replication, M2/M3).
 
 pub mod config;
+pub mod metrics;
 pub mod stages;
 
 use krusty_core::Config as CoreConfig;
@@ -72,6 +73,8 @@ pub struct NodeConfig {
     pub cores: [Option<usize>; 4],
     /// MoldUDP64 adapter (None: off).
     pub mold: Option<MoldConfig>,
+    /// Shared-memory metrics file for `krusty-stat` (None: private memory).
+    pub metrics_path: Option<std::path::PathBuf>,
     /// Called at the start of every stage thread (tests use it to mark the
     /// threads whose allocations they count).
     pub stage_init: Option<fn()>,
@@ -95,6 +98,7 @@ impl NodeConfig {
             idle: Idle::Sleep { sleep_us: 50 },
             cores: [None; 4],
             mold: None,
+            metrics_path: None,
             stage_init: None,
         }
     }

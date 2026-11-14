@@ -38,6 +38,8 @@ pub struct FileConfig {
     pub stream_id: Option<u64>,
     pub spin: Option<bool>,
     pub cores: Option<Vec<usize>>,
+    /// Shared-memory metrics file (default /dev/shm/krusty-<stream_id>.stats).
+    pub metrics: Option<std::path::PathBuf>,
     pub limits: Option<Limits>,
     pub mold: Option<Mold>,
 }
@@ -83,6 +85,9 @@ impl FileConfig {
         }
         if let Some(s) = self.stream_id {
             cfg.stream_id = s;
+        }
+        if let Some(p) = &self.metrics {
+            cfg.metrics_path = Some(p.clone());
         }
         if self.spin == Some(true) {
             cfg.idle = Idle::Spin;

@@ -1,5 +1,6 @@
 //! The four stages and their wiring.
 
+use crate::metrics::{Metrics, mono_ns};
 use crate::{Idle, NodeConfig};
 use krusty_core::Core;
 use krusty_net::{RecvBatch, SendBatch};
@@ -11,36 +12,20 @@ use krusty_wire::stream::{self, DataFrameWriter, Frame, MessageMeta};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const REC_SUBMIT: u32 = 1;
 const REC_FEED: u32 = 1;
 const REC_TO: u32 = 2;
-/// Address prefix in ring records: ip (4) + port (2) + padding (2).
-const ADDR_LEN: usize = 8;
+/// Ring record header: ip (4) + port (2) + padding (2), then the monotonic
+/// time the record was queued (8), for the dwell histograms.
+const REC_HDR: usize = 16;
 /// History entry header: timestamp, client, flags, key, version.
 const HIST_HEADER: usize = 32;
 /// Most messages one RECOVER is answered with.
 const MAX_RECOVER_ANSWER: u64 = 1024;
-
-/// Counters, readable while the node runs.
-#[derive(Default, Debug)]
-pub struct Stats {
-    pub submits: AtomicU64,
-    pub rejected_at_edge: AtomicU64,
-    pub busy: AtomicU64,
-    pub published: AtomicU64,
-    pub frames: AtomicU64,
-    pub feedback: AtomicU64,
-    pub recover_requests: AtomicU64,
-    pub mold_published: AtomicU64,
-    /// Messages the Mold adapter could not publish because it fell further
-    /// behind than the history keeps.
-    pub mold_lost: AtomicU64,
-    pub mold_rerequests: AtomicU64,
-}
 
 pub struct Node {
     stop: Arc<AtomicBool>,
@@ -48,7 +33,7 @@ pub struct Node {
     ingress_addr: SocketAddrV4,
     recovery_addr: SocketAddrV4,
     mold_rerequest_addr: Option<SocketAddrV4>,
-    pub stats: Arc<Stats>,
+    pub stats: Arc<Metrics>,
 }
 
 impl Node {
@@ -85,6 +70,14 @@ fn put_addr(b: &mut [u8], a: SocketAddrV4) {
     b[..4].copy_from_slice(&u32::from(*a.ip()).to_le_bytes());
     b[4..6].copy_from_slice(&a.port().to_le_bytes());
     b[6..8].fill(0);
+}
+
+fn put_ts(b: &mut [u8], t: u64) {
+    b[8..16].copy_from_slice(&t.to_le_bytes());
+}
+
+fn get_ts(b: &[u8]) -> u64 {
+    u64::from_le_bytes(b[8..16].try_into().unwrap())
 }
 
 fn get_addr(b: &[u8]) -> SocketAddrV4 {
@@ -184,7 +177,7 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
     let history = Arc::new(History::new(cfg.history, HIST_HEADER + cfg.max_payload));
     let stop = Arc::new(AtomicBool::new(false));
     let core_done = Arc::new(AtomicBool::new(false));
-    let stats = Arc::new(Stats::default());
+    let stats = Arc::new(Metrics::create(cfg.metrics_path.as_deref(), cfg.stream_id)?);
 
     let mut threads = Vec::new();
     {
@@ -206,9 +199,9 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
         }));
     }
     {
-        let (cfg, done) = (cfg.clone(), core_done.clone());
+        let (cfg, done, stats) = (cfg.clone(), core_done.clone(), stats.clone());
         threads.push(spawn("krusty-egress", cfg.stage_init, move || {
-            egress(cfg, egress_sock, b_rx, done)
+            egress(cfg, egress_sock, b_rx, done, stats)
         }));
     }
     {
@@ -261,7 +254,7 @@ fn ingress(
     sock: UdpSocket,
     mut out: Producer,
     stop: Arc<AtomicBool>,
-    stats: Arc<Stats>,
+    stats: Arc<Metrics>,
 ) {
     pin(cfg.cores[0]);
     let mut rb = RecvBatch::new(cfg.batch, 65_536);
@@ -274,6 +267,7 @@ fn ingress(
             continue;
         }
         empty = 0;
+        let received = mono_ns();
         for i in 0..n {
             let (bytes, src) = rb.get(i);
             let s = match Submit::decode(bytes) {
@@ -284,9 +278,10 @@ fn ingress(
                 }
             };
             stats.submits.fetch_add(1, Ordering::Relaxed);
-            let wrote = out.try_write(REC_SUBMIT, ADDR_LEN + bytes.len(), |b| {
+            let wrote = out.try_write(REC_SUBMIT, REC_HDR + bytes.len(), |b| {
                 put_addr(b, src);
-                b[ADDR_LEN..].copy_from_slice(bytes);
+                put_ts(b, received);
+                b[REC_HDR..].copy_from_slice(bytes);
             });
             if !wrote {
                 // Overloaded (G9): tell the client to back off; nothing is lost.
@@ -337,6 +332,16 @@ fn parse_history(b: &[u8]) -> (MessageMeta, &[u8]) {
         },
     };
     (meta, &b[HIST_HEADER..])
+}
+
+/// Queues a frame for the feed.
+fn feed_record(out: &mut Producer, frame: &[u8]) {
+    let t = mono_ns();
+    write_b(out, REC_FEED, REC_HDR + frame.len(), |b| {
+        b[..8].fill(0);
+        put_ts(b, t);
+        b[REC_HDR..].copy_from_slice(frame);
+    });
 }
 
 /// Writes a record to ring B, waiting for egress if it is full.
@@ -395,7 +400,7 @@ fn core_stage(
     history: Arc<History>,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
-    stats: Arc<Stats>,
+    stats: Arc<Metrics>,
 ) {
     pin(cfg.cores[1]);
     let mut core = Core::new(cfg.core);
@@ -411,9 +416,13 @@ fn core_stage(
     loop {
         let first = core.next_seqno();
         let ts = now_ns();
+        let batch_start = mono_ns();
         let n = input.read(cfg.batch, |_, rec| {
             let src = get_addr(rec);
-            let Ok(s) = Submit::decode(&rec[ADDR_LEN..]) else {
+            stats
+                .ingress_to_core
+                .record(batch_start.saturating_sub(get_ts(rec)));
+            let Ok(s) = Submit::decode(&rec[REC_HDR..]) else {
                 return;
             };
             log_index += 1;
@@ -428,11 +437,12 @@ fn core_stage(
                 write_b(
                     &mut out,
                     REC_TO,
-                    ADDR_LEN + krusty_wire::feedback::LEN,
+                    REC_HDR + krusty_wire::feedback::LEN,
                     |b| {
                         put_addr(b, src);
+                        put_ts(b, batch_start);
                         f.encode(&mut fb).unwrap();
-                        b[ADDR_LEN..].copy_from_slice(&fb);
+                        b[REC_HDR..].copy_from_slice(&fb);
                     },
                 );
             }
@@ -448,13 +458,14 @@ fn core_stage(
                 false,
                 &mut frame,
                 &mut entry,
-                |f| write_b(&mut out, REC_FEED, f.len(), |b| b.copy_from_slice(f)),
+                |f| feed_record(&mut out, f),
             );
             stats.published.fetch_add(last - first, Ordering::Relaxed);
             stats.frames.fetch_add(frames, Ordering::Relaxed);
             last_sent = Instant::now();
         }
         if n > 0 {
+            stats.core_batch.record(mono_ns() - batch_start);
             stats.feedback.fetch_add(replies, Ordering::Relaxed);
             replies = 0;
             out.publish();
@@ -464,14 +475,14 @@ fn core_stage(
         if stop.load(Ordering::Acquire) {
             let k = stream::encode_end_of_session(&mut frame, cfg.stream_id, core.next_seqno())
                 .unwrap();
-            write_b(&mut out, REC_FEED, k, |b| b.copy_from_slice(&frame[..k]));
+            feed_record(&mut out, &frame[..k]);
             out.publish();
             done.store(true, Ordering::Release);
             return;
         }
         if last_sent.elapsed() >= heartbeat {
             let k = stream::encode_heartbeat(&mut frame, cfg.stream_id, core.next_seqno()).unwrap();
-            write_b(&mut out, REC_FEED, k, |b| b.copy_from_slice(&frame[..k]));
+            feed_record(&mut out, &frame[..k]);
             out.publish();
             last_sent = Instant::now();
         }
@@ -479,29 +490,34 @@ fn core_stage(
     }
 }
 
-fn egress(cfg: NodeConfig, sock: UdpSocket, mut input: Consumer, core_done: Arc<AtomicBool>) {
+fn egress(
+    cfg: NodeConfig,
+    sock: UdpSocket,
+    mut input: Consumer,
+    core_done: Arc<AtomicBool>,
+    stats: Arc<Metrics>,
+) {
     pin(cfg.cores[2]);
-    let mut sb = SendBatch::new(
-        cfg.batch,
-        cfg.mtu.max(ADDR_LEN + krusty_wire::feedback::LEN),
-    );
+    let mut sb = SendBatch::new(cfg.batch, cfg.mtu.max(krusty_wire::feedback::LEN));
     let mut empty = 0;
     loop {
         let finished = core_done.load(Ordering::Acquire);
+        let now = mono_ns();
         let n = input.read(cfg.batch, |kind, rec| {
             if sb.is_full() {
                 let _ = sb.flush(&sock);
             }
+            stats.core_to_egress.record(now.saturating_sub(get_ts(rec)));
+            let body = &rec[REC_HDR..];
             match kind {
                 REC_FEED => {
                     sb.push(cfg.feed, |b| {
-                        b[..rec.len()].copy_from_slice(rec);
-                        rec.len()
+                        b[..body.len()].copy_from_slice(body);
+                        body.len()
                     });
                 }
                 _ => {
                     let dest = get_addr(rec);
-                    let body = &rec[ADDR_LEN..];
                     sb.push(dest, |b| {
                         b[..body.len()].copy_from_slice(body);
                         body.len()
@@ -528,7 +544,7 @@ fn recovery(
     sock: UdpSocket,
     history: Arc<History>,
     stop: Arc<AtomicBool>,
-    stats: Arc<Stats>,
+    stats: Arc<Metrics>,
 ) {
     pin(cfg.cores[3]);
     let mut rb = RecvBatch::new(16, 256);
@@ -550,6 +566,7 @@ fn recovery(
                 continue;
             };
             stats.recover_requests.fetch_add(1, Ordering::Relaxed);
+            let t0 = mono_ns();
             let earliest = history.earliest();
             if from < earliest {
                 let k =
@@ -582,6 +599,7 @@ fn recovery(
                     });
                 },
             );
+            stats.recovery_service.record(mono_ns() - t0);
         }
         let _ = sb.flush(&sock);
     }
@@ -646,7 +664,7 @@ fn mold(
     rereq: UdpSocket,
     history: Arc<History>,
     core_done: Arc<AtomicBool>,
-    stats: Arc<Stats>,
+    stats: Arc<Metrics>,
 ) {
     let mut next = 1u64;
     let mut pkt = vec![0u8; cfg.mtu];
