@@ -1,0 +1,12 @@
+[package]
+name = "krusty-wire"
+version = "0.1.0"
+description = "KrustyCast native wire formats: ingress, feedback and the native stream (fixed little-endian layouts, zero-copy views)."
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest = "1"

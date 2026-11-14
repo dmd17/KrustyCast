@@ -85,12 +85,12 @@ Columns:
 
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
-| W1 | No magic or version field on any internal format | Versioned formats (FR-15) | O | S | M1 |
+| W1 | **Done in `krusty-wire` 2026-11-14** (not yet used by the node). No magic or version field on any internal format | Versioned formats (FR-15) | O | S | M1 |
 | W2 | Every message is a conditional claim (`target_id`, `target_seq`); no unconditional append | Two append modes (FR-3) | C | S | M1 |
 | W3 | No BUSY, NOT_LEADER or SESSION_EXPIRED feedback | Full outcome set (architecture §8.1) | C | S | M1 |
 | W4 | Dedup tables grow without limit: one entry per incarnation, forever; outcome ring of 4096 per sender (`sequencer.rs:25`) | Bounded, replicated, deterministic eviction | C | M | M1 |
 | W5 | Messages limited to one datagram, with no explicit maximum | Explicit maximum size (PRD open question 2); optional fragmentation | C | S–M | M1 |
-| W6 | Big-endian hand-written upstream codecs | Little-endian fixed layouts (ADR-8); Kani-checked decoders | P, C | M | M1 |
+| W6 | **Done in `krusty-wire` 2026-11-14** (not yet used by the node). Big-endian hand-written upstream codecs | Little-endian fixed layouts (ADR-8); Kani-checked decoders | P, C | M | M1 |
 | W7 | MoldUDP64 is the only egress: no back pressure policy, no UNAVAILABLE answer, no cluster timestamp, multicast only | Native stream protocol (architecture §8.3) as the backbone; MoldUDP64 moved behind the adapter (§8.4) | C, P | M | M1 |
 | W8 | Seqno arithmetic on wire values overflows near `u64::MAX` (`p.seqno + i`, `next += 1`, `seqno + count` in `stream.rs`): panic in debug, wrap in release. Found by the Aeneas spike. **Fixed 2026-11-14:** `decode` rejects such packets; the tracker ignores them (`Outcome::Invalid`) | Range-validate at decode (`seqno + count ≤ u64::MAX`) or checked arithmetic; no-overflow preconditions in proofs | C | S | M1 |
 | W9 | Consumer reorder buffer is an unbounded `BTreeMap` (`stream.rs`): a hostile or buggy sender grows memory without limit | Fixed reorder window; messages beyond it recovered by re-request (prototype in `spikes/aeneas-stream/subset`) | C, P | S | M1 |
@@ -124,7 +124,7 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 | Q3 | V3 | — | Trace validation of `krusty-raft` against the spec | C | L | M3 |
 | Q4 | V4 | — | Verus-verified SPSC ring (or loom + Kani) | C | L | M2 |
 | Q5 | V6 | No simulation | `krusty-sim`: seeded network, disk and clock faults; G1–G9 checkers; nightly runs | C | L | M1→ |
-| Q6 | V7 | No fuzzing | `cargo-fuzz` on all decoders and on ingress | C | S | M1 |
+| Q6 | V7 | **Started 2026-11-14:** `cargo-fuzz` target for every `krusty-wire` decoder (canonical re-encoding asserted), 60 s per CI run. No fuzzing | `cargo-fuzz` on all decoders and on ingress | C | S | M1 |
 | Q7 | — | **Started 2026-11-14:** fmt, clippy, tests, TLC model checking and Lean proof re-check in GitHub Actions | CI: build, tests, Kani/Miri, model checking, proof re-check, alloc guard, perf smoke test | O | M | M0 |
 | Q8 | V8 | — | Jepsen-style real-network fault testing | C | M | M4 |
 

@@ -56,7 +56,7 @@ second feed for external consumers; it is not shown.
 | 5 | Publish after commit (P5). | Speculative publish with rollback | Rollback is unacceptable to feed consumers. |
 | 6 | **Durability by replication** by default (mode a); fsync-before-commit as an option (mode b). | fsync always | Mode (a) takes fsync off the latency path. Mode (b) is for deployments where every node can lose power at once. |
 | 7 | **Thread-per-core with busy-polling**; no async runtime on the hot path. Tokio is allowed in the control plane. | Tokio everywhere | Async executors add wakeups, scheduling jitter and allocation. Spin and back-off strategies stay configurable (like Agrona's idle strategies). |
-| 8 | **Our wire formats are fixed-layout, little-endian, zero-copy (`zerocopy`).** Only the MoldUDP64 adapter is big-endian. | SBE (it has a Rust generator); hand-written codecs | Native byte order; zero-copy views; formats simple enough to verify. SBE remains an option if schemas multiply. |
+| 8 | **Our wire formats are fixed-layout, little-endian, zero-copy.** Only the MoldUDP64 adapter is big-endian. Views are hand-written with safe little-endian accessors over `&[u8]` (`krusty-wire`, 2026-11-14), not `zerocopy`: its derive and trait machinery falls outside what Aeneas and Kani handle well, and the formats are small. | SBE (it has a Rust generator); `zerocopy` derives | Native byte order; zero-copy views; formats simple enough to verify. SBE remains an option if schemas multiply. |
 | 9 | **Verification split** (§11): TLA+/Quint for protocols; Aeneas→Lean for pure cores; Verus for low-level concurrent structures; Kani/Miri for unsafe code; simulation for everything. | One tool for all | Each tool is strongest at a different layer; none covers everything. |
 | 10 | **One total order per cluster** in v1. Scale out with multiple independent clusters (shards). | Multi-stream clusters | Simplest correct design; most venue cores need exactly one order. |
 | 11 | **The native stream is the egress backbone; MoldUDP64 is an optional adapter** (**accepted** 2026-11-14). Both are projections of the same committed sequence and share global seqnos. | MoldUDP64 as the only egress (the previous design) | Mold is the right format for external feed consumers (UC4), but it has no back pressure, no "unavailable, use a snapshot" answer, re-requests that storm, and multicast-only assumptions. Those gaps land on our main use cases (UC1–UC3), where our own SDK is on both ends and interoperability buys nothing. |
@@ -170,13 +170,18 @@ next lever after software inefficiencies are removed.
 
 ### 8.1 Ingress (client ⇄ leader), protocol v2
 
-Fixed little-endian header: `magic u16 | version u8 | type u8 | flags u16 |
-client_id u32 | incarnation u64 | client_seqno u64 | mode u8 | key u64 |
-expected_version u64 | len u16 | payload`.
+Fixed little-endian 48-byte header: `magic u16 | version u8 | type u8 |
+flags u16 | mode u8 | reserved u8 | client_id u32 | len u16 | reserved u16 |
+incarnation u64 | client_seqno u64 | key u64 | expected_version u64`, then
+the payload. Fields are naturally aligned. The exact layouts of all
+native formats live in `krusty-wire` (module docs), which is the reference.
 - `mode` = unconditional or conditional.
 - `incarnation` is random per client process, as it is today.
 
-Feedback types:
+Feedback is a fixed 48-byte message carrying `client_id`, `incarnation`,
+`client_seqno` and two type-specific fields. The incarnation lets a
+restarted client ignore outcomes meant for its previous incarnation.
+Types:
 
 | Type | Meaning |
 |---|---|
@@ -216,11 +221,12 @@ list.
 The backbone egress protocol: our SDK on one end, the cluster on the
 other. Fixed little-endian layout, versioned (P6, ADR-8). Sketch:
 
-- **Frame header:** `magic u16 | version u8 | type u8 | flags u16 |
-  stream_id u64 | seqno u64 | count u16`. `stream_id` identifies cluster and
+- **Frame header (24 bytes):** `magic u16 | version u8 | type u8 |
+  flags u16 | count u16 | stream_id u64 | seqno u64`. `stream_id` identifies cluster and
   session; it replaces Mold's 10-byte ASCII session name.
-- **Message block (8-byte aligned):** `len u32 | flags u32 | timestamp_ns
-  u64 | sender_id u32 | key u64 | version u64 | payload`.
+- **Message block (40-byte header, padded to 8):** `len u32 | flags u32 |
+  timestamp_ns u64 | client_id u32 | reserved u32 | key u64 | version u64 |
+  payload`.
   - `timestamp_ns` is assigned by the leader when it appends the entry, so
     it is part of the replicated log and deterministic. Applications use it
     instead of reading their own clocks (G7).

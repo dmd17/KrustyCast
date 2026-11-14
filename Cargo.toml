@@ -6,6 +6,18 @@ edition = "2024"
 description = "A Rust-based multicast sequencer for high frequency trading applications."
 license = "MIT"
 
+[workspace]
+members = [".", "crates/*"]
+# Spikes are standalone experiments with their own lock files and toolchains.
+exclude = ["spikes"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
 [dependencies]
 crossbeam-channel = "0.5"
 clap = { version = "4.4", features = ["derive"] }
