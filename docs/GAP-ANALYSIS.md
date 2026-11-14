@@ -119,13 +119,13 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 
 | ID | PRD | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|---|
-| Q1 | V1 | No specification | TLA+/Quint spec of sessions, sequencer, Raft and egress, with G1–G7 | C | L | M0–M3 |
+| Q1 | V1 | **Started 2026-11-14:** `spec/tla/Sequencer.tla` covers sessions and the sequencer state machine over an atomic log (G4–G6, outcome consistency), checked in CI | TLA+/Quint spec of sessions, sequencer, Raft and egress, with G1–G7 | C | L | M0–M3 |
 | Q2 | V2 | No proofs | Aeneas→Lean proof of `krusty-core::step` (refinement plus invariants) | C | XL | M1–M3 |
 | Q3 | V3 | — | Trace validation of `krusty-raft` against the spec | C | L | M3 |
 | Q4 | V4 | — | Verus-verified SPSC ring (or loom + Kani) | C | L | M2 |
 | Q5 | V6 | No simulation | `krusty-sim`: seeded network, disk and clock faults; G1–G9 checkers; nightly runs | C | L | M1→ |
 | Q6 | V7 | No fuzzing | `cargo-fuzz` on all decoders and on ingress | C | S | M1 |
-| Q7 | — | No CI | CI: build, tests, Kani/Miri, model checking, proof re-check, alloc guard, perf smoke test | O | M | M0 |
+| Q7 | — | **Started 2026-11-14:** fmt, clippy, tests, TLC model checking and Lean proof re-check in GitHub Actions | CI: build, tests, Kani/Miri, model checking, proof re-check, alloc guard, perf smoke test | O | M | M0 |
 | Q8 | V8 | — | Jepsen-style real-network fault testing | C | M | M4 |
 
 ### 3.8 Performance evidence

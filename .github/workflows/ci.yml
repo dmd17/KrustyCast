@@ -11,7 +11,7 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -29,3 +29,20 @@ jobs:
       - name: Aeneas spike crate (unit + differential tests)
         working-directory: spikes/aeneas-stream/subset
         run: cargo test
+
+  tla:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Fetch TLC
+        run: |
+          mkdir -p "$RUNNER_TEMP/tla"
+          curl -sSfL -o "$RUNNER_TEMP/tla/tla2tools.jar" \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+          echo "TLA2TOOLS=$RUNNER_TEMP/tla/tla2tools.jar" >> "$GITHUB_ENV"
+      - name: Model-check (CI bounds)
+        run: spec/tla/check.sh
