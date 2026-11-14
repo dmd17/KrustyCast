@@ -1,0 +1,10 @@
+[package]
+name = "stream_subset"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dev-dependencies]
+stream_as_is = { path = "../as-is" }
+
+[workspace]
