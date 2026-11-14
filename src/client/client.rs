@@ -425,10 +425,10 @@ impl Inner {
                 target.outstanding.remove(&m.target_seq);
             }
         }
-        if m.target_id == self.cfg.my_id {
-            if let Some(cb) = self.callback.lock().unwrap().as_ref() {
-                cb(m.payload);
-            }
+        if m.target_id == self.cfg.my_id
+            && let Some(cb) = self.callback.lock().unwrap().as_ref()
+        {
+            cb(m.payload);
         }
     }
 

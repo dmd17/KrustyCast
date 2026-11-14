@@ -162,17 +162,17 @@ impl Feedback {
     }
 
     pub fn decode(b: &[u8]) -> Option<Self> {
-        match b.first()? {
-            &FEEDBACK_NAK if b.len() == 9 => Some(Feedback::Nak {
+        match *b.first()? {
+            FEEDBACK_NAK if b.len() == 9 => Some(Feedback::Nak {
                 expected: u64_at(b, 1),
             }),
-            &FEEDBACK_REJECT if b.len() == 29 => Some(Feedback::Reject {
+            FEEDBACK_REJECT if b.len() == 29 => Some(Feedback::Reject {
                 target_id: u32_at(b, 1),
                 rejected_target_seq: u64_at(b, 5),
                 current_target_seq: u64_at(b, 13),
                 sender_seqno: u64_at(b, 21),
             }),
-            &FEEDBACK_ACCEPTED if b.len() == 17 => Some(Feedback::Accepted {
+            FEEDBACK_ACCEPTED if b.len() == 17 => Some(Feedback::Accepted {
                 sender_seqno: u64_at(b, 1),
                 global_seqno: u64_at(b, 9),
             }),

@@ -272,13 +272,16 @@ fn interop_our_client_against_moldudp_server() {
 use krustycast::protocol::{ClientMessage, Feedback};
 use std::sync::{Arc, Mutex};
 
+/// Every packet a proxy saw: (upstream?, bytes).
+type PacketLog = Arc<Mutex<Vec<(bool, Vec<u8>)>>>;
+
 /// A UDP proxy between one client and the sequencer that drops packets for
 /// which `drop(upstream, bytes)` returns true. Returns its address and a log
 /// of every packet seen (upstream?, bytes).
 fn lossy_proxy(
     sequencer: SocketAddr,
     mut drop: impl FnMut(bool, &[u8]) -> bool + Send + 'static,
-) -> (SocketAddrV4, Arc<Mutex<Vec<(bool, Vec<u8>)>>>) {
+) -> (SocketAddrV4, PacketLog) {
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
     let addr = v4(sock.local_addr().unwrap());
     let log = Arc::new(Mutex::new(Vec::new()));

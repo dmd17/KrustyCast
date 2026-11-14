@@ -578,10 +578,10 @@ fn sequencing_loop(
 
     // End of session: journal it, then announce it in place of heartbeats for
     // the linger period while the re-request server keeps answering.
-    if let Some(j) = &mut core.journal {
-        if let Err(e) = j.append(&Record::EndOfSession).and_then(|_| j.commit()) {
-            eprintln!("Could not journal end of session: {}", e);
-        }
+    if let Some(j) = &mut core.journal
+        && let Err(e) = j.append(&Record::EndOfSession).and_then(|_| j.commit())
+    {
+        eprintln!("Could not journal end of session: {}", e);
     }
     println!("Session {} ended at seqno {}", session, core.next_seqno);
     let eos = MoldPacket::end_of_session(session, core.next_seqno);
@@ -738,7 +738,7 @@ mod tests {
             current_target_seq: 1,
             sender_seqno: 2,
         };
-        assert_eq!(feedback(&out), [reject.clone()]);
+        assert_eq!(feedback(&out), std::slice::from_ref(&reject));
 
         // Resends of both: nothing new is sequenced, outcomes are repeated.
         let out = c
