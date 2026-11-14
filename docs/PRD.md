@@ -179,6 +179,7 @@ host's clock, so no cross-host clock sync is needed.
 | NFR-7 | Heap allocation on the hot path after warmup | zero (enforced in CI) | zero |
 | NFR-8 | Resident memory | ≤ configured budget + 10% | same |
 | NFR-9 | Mode (b) round trip p99 | ≤ device fsync p99 + 30 µs, with group commit | same |
+| NFR-10 | Node restart: start to serving (latest snapshot + replay of the log suffix), snapshot every 1 M entries | ≤ 1 s | same |
 
 These targets come from a hop budget (architecture §7): four network hops
 plus processing. **They are provisional.** Milestone M0 measures baselines
@@ -262,3 +263,8 @@ Verification runs alongside from M0.
 5. License and business model: open-source core with proprietary
    accelerators, or something else?
 6. Should 5-node clusters be supported at launch?
+7. NFR-9 (deferred 2026-11-14). On a consumer NVMe drive, serial group
+   commit makes mode (b) cost one to two fsyncs, so p99 was 2.1–2.6 ms
+   against a device fsync p99 of about 1 ms (docs/BASELINE.md). Either
+   relax the target (e.g. ≤ 2 × fsync p99 + 30 µs) or require drives with
+   power-loss protection for mode (b).
