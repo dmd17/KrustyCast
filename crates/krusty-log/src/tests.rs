@@ -223,3 +223,26 @@ fn readers_see_flushed_entries_while_the_writer_appends() {
     }
     t.join().unwrap();
 }
+
+#[test]
+fn reindexing_after_restart_can_rewrite_an_earlier_index_file() {
+    let d = Dir::new("reindex");
+    let mut log = Log::open(cfg(&d)).unwrap().log; // 256 seqnos per index file
+    fill(&mut log, 1, 1001); // seqnos 1..500: two index files
+    drop(log);
+    let mut log = Log::open(cfg(&d)).unwrap().log;
+    assert_eq!(log.next_seqno(), 501);
+    // As a restart from a snapshot taken at seqno 200 does: rewrite from 201.
+    log.reset_index_to(201);
+    for n in 201..=500u64 {
+        log.index_published(
+            n,
+            Pos {
+                log_index: 2 * n,
+                offset: 0,
+            },
+        );
+    }
+    log.flush().unwrap();
+    assert_eq!(log.next_seqno(), 501);
+}

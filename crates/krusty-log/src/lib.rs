@@ -236,6 +236,69 @@ fn read_record(
     Ok(Some(ts))
 }
 
+/// Reads one segment's records in order through a large buffer (one
+/// system call per MiB instead of two per record).
+struct Scanner<'f> {
+    f: &'f File,
+    seg_bytes: u64,
+    buf: Vec<u8>,
+    /// File offset of `buf[0]`.
+    at: u64,
+}
+
+impl<'f> Scanner<'f> {
+    fn new(f: &'f File, seg_bytes: u64) -> Scanner<'f> {
+        Scanner {
+            f,
+            seg_bytes,
+            buf: Vec::new(),
+            at: 0,
+        }
+    }
+
+    /// Makes `[off, off + len)` available in the buffer; false if past the end.
+    fn ensure(&mut self, off: u64, len: u64) -> io::Result<bool> {
+        if off + len > self.seg_bytes {
+            return Ok(false);
+        }
+        if off >= self.at && off + len <= self.at + self.buf.len() as u64 {
+            return Ok(true);
+        }
+        let n = len.max(1 << 20).min(self.seg_bytes - off) as usize;
+        self.buf.resize(n, 0);
+        self.f.read_exact_at(&mut self.buf, off)?;
+        self.at = off;
+        Ok(true)
+    }
+
+    /// The record at `off` if it is valid and has index `expect`:
+    /// (timestamp, payload, record length).
+    fn record(&mut self, off: u64, expect: u64) -> io::Result<Option<(u64, &[u8], u64)>> {
+        if !self.ensure(off, REC_HEADER as u64)? {
+            return Ok(None);
+        }
+        let h = &self.buf[(off - self.at) as usize..][..REC_HEADER];
+        let size = u32::from_le_bytes(h[0..4].try_into().unwrap());
+        let sum = u32::from_le_bytes(h[4..8].try_into().unwrap());
+        let log_index = u64::from_le_bytes(h[8..16].try_into().unwrap());
+        let ts = u64::from_le_bytes(h[16..24].try_into().unwrap());
+        if (size as usize) < REC_HEADER || log_index != expect {
+            return Ok(None);
+        }
+        let len = (size as usize) - REC_HEADER;
+        let rec = record_len(len);
+        if !self.ensure(off, rec)? {
+            return Ok(None);
+        }
+        let start = (off - self.at) as usize + REC_HEADER;
+        let payload = &self.buf[start..start + len];
+        if crc(len as u32, log_index, ts, payload) != sum {
+            return Ok(None);
+        }
+        Ok(Some((ts, payload, rec)))
+    }
+}
+
 impl Log {
     /// Opens (or creates) the log in `cfg.dir`.
     pub fn open(cfg: LogConfig) -> io::Result<Opened> {
@@ -290,11 +353,12 @@ impl Log {
         let (active, active_first) = (last.file.clone(), last.first_index);
         let mut off = FILE_HEADER;
         let mut next_index = active_first;
-        let mut scratch = Vec::new();
-        while read_record(&active, off, next_index, cfg.segment_bytes, &mut scratch)?.is_some() {
-            off += record_len(scratch.len());
+        let mut scan = Scanner::new(&active, cfg.segment_bytes);
+        while let Some((_, _, rec)) = scan.record(off, next_index)? {
+            off += rec;
             next_index += 1;
         }
+        drop(scan);
         let zero_to = (off + ZERO_AHEAD).min(cfg.segment_bytes);
         if zero_to > off {
             active.write_all_at(&vec![0u8; (zero_to - off) as usize], off)?;
@@ -316,24 +380,44 @@ impl Log {
         }
         let mut next_seqno = 1;
         if let Some(ix) = indexes.last() {
-            let mut slot = [0u8; IDX_SLOT as usize];
-            let mut k = 0;
-            while k < cfg.index_entries {
+            // Valid slots form a prefix (log indices only grow), so binary
+            // search for its end instead of reading every slot.
+            let valid = |k: u64| -> io::Result<bool> {
+                let mut slot = [0u8; IDX_SLOT as usize];
                 ix.file
                     .read_exact_at(&mut slot, FILE_HEADER + k * IDX_SLOT)?;
                 let li = u64::from_le_bytes(slot[0..8].try_into().unwrap());
-                if li == 0 || li > last_index {
+                Ok(li != 0 && li <= last_index)
+            };
+            let (mut lo, mut hi) = (0, cfg.index_entries);
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                if valid(mid)? { lo = mid + 1 } else { hi = mid }
+            }
+            let k = lo;
+            next_seqno = ix.first_seqno + k;
+            // Zero the stale slots after the end (entries past the log's end
+            // from before a crash), up to the first slot that is already zero.
+            let mut at = k;
+            let mut chunk = vec![0u8; 4096 * IDX_SLOT as usize];
+            while at < cfg.index_entries {
+                let n = (cfg.index_entries - at).min(4096);
+                let bytes = &mut chunk[..(n * IDX_SLOT) as usize];
+                ix.file.read_exact_at(bytes, FILE_HEADER + at * IDX_SLOT)?;
+                let stale = bytes
+                    .chunks(IDX_SLOT as usize)
+                    .take_while(|s| s[..8] != [0u8; 8])
+                    .count() as u64;
+                if stale > 0 {
+                    ix.file.write_all_at(
+                        &vec![0u8; (stale * IDX_SLOT) as usize],
+                        FILE_HEADER + at * IDX_SLOT,
+                    )?;
+                }
+                if stale < n {
                     break;
                 }
-                k += 1;
-            }
-            next_seqno = ix.first_seqno + k;
-            let tail = cfg.index_entries - k;
-            if tail > 0 {
-                ix.file.write_all_at(
-                    &vec![0u8; (tail * IDX_SLOT) as usize],
-                    FILE_HEADER + k * IDX_SLOT,
-                )?;
+                at += n;
             }
         }
 
@@ -404,7 +488,6 @@ impl Log {
     /// end (for recovery replay). Entries must be contiguous.
     pub fn replay(&self, from: u64, mut f: impl FnMut(Pos, u64, &[u8])) -> io::Result<()> {
         let segs = self.shared.segments.read().unwrap();
-        let mut payload = Vec::new();
         let start = segs
             .partition_point(|s| s.first_index <= from)
             .saturating_sub(1);
@@ -417,9 +500,10 @@ impl Log {
                 ));
             }
             let mut off = FILE_HEADER;
+            let mut scan = Scanner::new(&s.file, self.cfg.segment_bytes);
             while expect < self.next_index {
-                match read_record(&s.file, off, expect, self.cfg.segment_bytes, &mut payload)? {
-                    Some(ts) => {
+                match scan.record(off, expect)? {
+                    Some((ts, payload, rec)) => {
                         if expect >= from {
                             f(
                                 Pos {
@@ -427,10 +511,10 @@ impl Log {
                                     offset: off,
                                 },
                                 ts,
-                                &payload,
+                                payload,
                             );
                         }
-                        off += record_len(payload.len());
+                        off += rec;
                         expect += 1;
                     }
                     None => break, // end of this segment
@@ -552,12 +636,12 @@ impl Log {
 
     fn index_file_for(&self, seqno: u64) -> io::Result<(u64, Arc<File>)> {
         {
+            // Usually the last file; after a restart, replay may rewrite an
+            // earlier one.
             let idx = self.shared.indexes.read().unwrap();
-            if let Some(f) = idx.last()
-                && seqno >= f.first_seqno
-                && seqno < f.first_seqno + self.cfg.index_entries
-            {
-                return Ok((f.first_seqno, f.file.clone()));
+            let i = idx.partition_point(|f| f.first_seqno <= seqno);
+            if i > 0 && seqno < idx[i - 1].first_seqno + self.cfg.index_entries {
+                return Ok((idx[i - 1].first_seqno, idx[i - 1].file.clone()));
             }
         }
         let first = match self.shared.indexes.read().unwrap().last() {

@@ -52,6 +52,8 @@ struct Args {
     node_cores: [Option<usize>; 4],
     spin: bool,
     combined: bool,
+    storage: Option<std::path::PathBuf>,
+    durability: krusty_node::Durability,
 }
 
 fn parse() -> Args {
@@ -66,6 +68,8 @@ fn parse() -> Args {
         node_cores: [None; 4],
         spin: false,
         combined: false,
+        storage: None,
+        durability: krusty_node::Durability::Async,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -85,6 +89,14 @@ fn parse() -> Args {
             }
             "--spin" => a.spin = true,
             "--combined" => a.combined = true,
+            "--storage" => a.storage = Some(v().into()),
+            "--durability" => {
+                a.durability = match v().as_str() {
+                    "a" => krusty_node::Durability::Async,
+                    "b" => krusty_node::Durability::Sync,
+                    other => panic!("--durability a|b, not {other}"),
+                }
+            }
             other => panic!("unknown argument {other}"),
         }
     }
@@ -250,6 +262,14 @@ fn main() {
         cfg.idle = Idle::Spin;
     }
     cfg.core.outcome_ring = 64;
+    if let Some(dir) = &a.storage {
+        let _ = std::fs::remove_dir_all(dir); // a fresh log per run
+        cfg.storage = Some(krusty_node::StorageConfig {
+            log: krusty_log::LogConfig::new(dir),
+            durability: a.durability,
+            snapshot_every: 1_000_000,
+        });
+    }
     let node = krusty_node::start(cfg).unwrap();
     let ingress = node.ingress_addr();
 

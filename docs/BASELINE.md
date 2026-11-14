@@ -134,6 +134,60 @@ The egress stage sends one feedback datagram per message, which also
 costs kernel time per datagram. Batching outcomes per client and core
 batch is the obvious next protocol optimization.
 
+## M2 storage, 2026-11-14
+
+Same machine and placement as above (node stages on isolated cores 2–4,
+generator on 5, `--combined`); log on the laptop's consumer NVMe (ext4).
+The storage stage itself is unpinned (no isolated core left).
+
+**Device floor.** `cargo run --release -p krusty-log --example fsync`
+(append 112 bytes + `fdatasync`, 5000 times): p50 716–733 µs, p99
+891–1109 µs, p99.9 1.2–2.8 ms across runs. Pre-writing segment files
+instead of only `fallocate`-ing them made no difference: the time is the
+drive's cache flush (no power-loss protection), not filesystem metadata.
+
+Submit-to-feed latency from the scheduled send time, µs:
+
+| Mode | Offered msg/s | p50 | p90 | p99 | p99.9 | p99.99 | max |
+|---|---|---|---|---|---|---|---|
+| (a) | 1 000 | 16.1 | 18.8 | 25.1 | 29.6 | 35.5 | 35.5 |
+| (a) | 10 000 | 15.7 | 16.6 | 18.5 | 22.0 | 37.4 | 66.3 |
+| (a) | 50 000 | 15.5 | 16.4 | 16.7 | 17.7 | 37.9 | 84.1 |
+| (b) | 1 000 | 1 276 | 1 885 | 2 058 | 2 730 | 5 714 | 5 714 |
+| (b) | 10 000 | 1 595 | 1 994 | 2 568 | 4 370 | 6 001 | 6 222 |
+
+- **Mode (a)** is unaffected by storage: the storage stage runs behind,
+  off the latency path.
+- **Mode (b) misses NFR-9 as written** (p99 ≤ device fsync p99 + 30 µs,
+  about 1 ms here): p99 is 2.1–2.6 ms. With one group commit at a time, a
+  message that arrives just after an fsync started waits for it and then
+  for its own, so latency is 1–2 fsyncs (mean ~1.5×, tail ~2×). An
+  experiment with 2–4 overlapping `fdatasync` threads did not help on this
+  drive (it serializes cache flushes). NFR-9 needs either revising (e.g.
+  ≤ 2 × fsync p99 + 30 µs) or a qualifier: drives with power-loss
+  protection, where an fsync costs tens of µs. A PRD decision.
+- At 50 000 msg/s in mode (b) a single client is window-bound: 64 messages
+  in flight over a ~2.5 ms round trip is ~25 k msg/s.
+
+**Restart** (`cargo run --release -p krusty-node --example restore_time`):
+log built directly, then `krusty_node::start` timed (restore happens before
+it returns). Warm page cache (the log was just written):
+
+| Entries | Snapshot at | Replayed | Ready in |
+|---|---|---|---|
+| 1 M | 1 M | 0 | 0.15 s |
+| 1 M | none | 1 M | 0.27 s |
+| 5 M | 4 M | 1 M | 0.29 s |
+| 5 M | none | 5 M | 1.03 s |
+
+Proposed budget (the PRD has none yet): **restart ≤ 1 s with a snapshot
+every 1 M entries**; met here. Cold-cache restarts read the log from the
+device (~0.5 s more per GB at NVMe speeds); not measured, since dropping
+the page cache needs root. Two bugs found by this benchmark are fixed:
+opening a log read every record with two system calls (1.4 s for a full
+segment; now 1 MiB reads, 64 ms), and a restart from a snapshot older
+than the last index file failed ("index entry out of order").
+
 ## Next
 
 - Run the same tool on the reference servers (real NICs, multicast, isolated
