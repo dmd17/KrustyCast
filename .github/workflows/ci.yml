@@ -46,3 +46,31 @@ jobs:
           echo "TLA2TOOLS=$RUNNER_TEMP/tla/tla2tools.jar" >> "$GITHUB_ENV"
       - name: Model-check (CI bounds)
         run: spec/tla/check.sh
+
+  verus:
+    runs-on: ubuntu-latest
+    env:
+      # Keep in step with spikes/verus-ring/REPORT.md and its Cargo.toml pins.
+      VERUS_RELEASE: 0.2026.11.02.8bf68ee
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Verus and its toolchain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R verus-lang/verus "release/$VERUS_RELEASE" \
+            -p '*x86-linux.zip' -D "$RUNNER_TEMP"
+          unzip -q "$RUNNER_TEMP"/verus-*-x86-linux.zip -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/verus-x86-linux" >> "$GITHUB_PATH"
+          rustup install "$(jq -r .verus.toolchain "$RUNNER_TEMP/verus-x86-linux/version.json" | cut -d' ' -f1)" --profile minimal
+      - name: Verify
+        working-directory: spikes/verus-ring
+        run: cargo verus verify
+      - name: Test the erased code (stable)
+        working-directory: spikes/verus-ring
+        run: cargo test --release
+      - name: Miri on the erased code (4 scheduling seeds)
+        working-directory: spikes/verus-ring
+        run: |
+          rustup toolchain install nightly --component miri rust-src --profile minimal
+          MIRIFLAGS="-Zmiri-many-seeds=0..4" cargo +nightly miri test

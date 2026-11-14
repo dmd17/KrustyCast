@@ -172,7 +172,11 @@ the M0 spikes.
 - Tool spikes:
   - Charon/Aeneas on `stream.rs`: does it translate, and how much
     rewriting does it need?
+    **Done 2026-11-14** (`spikes/aeneas-stream/REPORT.md`): a restricted
+    rewrite translates and the first loop theorem is proved.
   - Verus on a small SPSC ring: how does it build and ship with cargo?
+    **Done 2026-11-14** (`spikes/verus-ring/REPORT.md`): builds and ships
+    with plain cargo; SeqCst-only atomics require a batched ring.
 - *Exit:*
   - Baseline numbers published.
   - PRD §7 targets confirmed or revised.
