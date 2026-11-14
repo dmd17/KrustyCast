@@ -29,7 +29,10 @@
     clippy::while_let_loop
 )]
 
+mod snapshot;
 mod table;
+
+pub use snapshot::SnapshotError;
 
 use krusty_wire::feedback::{Feedback, Outcome};
 use krusty_wire::ingress::{Append, Submit};
@@ -159,6 +162,8 @@ pub struct Core {
 
     keys: IdMap,
     versions: Vec<u64>,
+    /// The key at each `versions` slot (for snapshots).
+    key_of_slot: Vec<u64>,
 }
 
 impl Core {
@@ -178,6 +183,7 @@ impl Core {
             unused: 0,
             keys: IdMap::new(cfg.max_keys),
             versions: Vec::with_capacity(cfg.max_keys),
+            key_of_slot: Vec::with_capacity(cfg.max_keys),
         }
     }
 
@@ -487,6 +493,7 @@ impl Core {
                 } else {
                     let i = self.versions.len() as u32;
                     self.versions.push(version);
+                    self.key_of_slot.push(key);
                     self.keys.insert(key, i)
                 }
             }

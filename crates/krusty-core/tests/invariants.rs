@@ -190,3 +190,68 @@ fn entries_must_be_applied_in_order() {
     assert!(core.apply(1, 0, &submit(1, 1, 1)).is_ok());
     assert!(core.apply(1, 0, &submit(1, 1, 2)).is_err());
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 1000, ..ProptestConfig::default() })]
+    /// A restored snapshot behaves exactly like the original from then on,
+    /// and snapshots are canonical.
+    #[test]
+    fn snapshot_restore_is_indistinguishable(ops in proptest::collection::vec(op(), 1..120), cut in 0usize..120) {
+        let cfg = Config { max_clients: 2, outcome_ring: 4, max_keys: 2, evict_idle_ns: 1_000_000_000 };
+        let mut a = Core::new(cfg);
+        let mut b: Option<Core> = None;
+        let mut now = 0u64;
+        let cut = cut.min(ops.len());
+        for (i, o) in ops.iter().enumerate() {
+            if i == cut {
+                let mut snap = Vec::new();
+                a.snapshot(&mut snap);
+                let restored = Core::restore(cfg, &snap).unwrap();
+                let mut again = Vec::new();
+                restored.snapshot(&mut again);
+                prop_assert_eq!(&again, &snap);
+                b = Some(restored);
+            }
+            now += o.advance_ns;
+            let append = match o.cond {
+                Some((key, expected_version)) => Append::Conditional { key, expected_version },
+                None => Append::Unconditional,
+            };
+            let s = Submit { client_id: o.client, incarnation: incarnation(o.client, o.inc), client_seqno: o.seq, append, payload: b"" };
+            let ea = a.apply(i as u64 + 1, now, &s).unwrap();
+            if let Some(b) = b.as_mut() {
+                prop_assert_eq!(b.apply(i as u64 + 1, now, &s).unwrap(), ea);
+            }
+        }
+        if let Some(b) = b {
+            let (mut sa, mut sb) = (Vec::new(), Vec::new());
+            a.snapshot(&mut sa);
+            b.snapshot(&mut sb);
+            prop_assert_eq!(sa, sb);
+        }
+    }
+}
+
+#[test]
+fn restore_rejects_bad_snapshots() {
+    let cfg = Config::DEFAULT;
+    let mut core = Core::new(cfg);
+    core.apply(1, 1, &submit(1, 5, 1)).unwrap();
+    let mut snap = Vec::new();
+    core.snapshot(&mut snap);
+    assert!(Core::restore(cfg, &snap).is_ok());
+    assert_eq!(
+        Core::restore(Config { max_keys: 7, ..cfg }, &snap).err(),
+        Some(krusty_core::SnapshotError::ConfigMismatch)
+    );
+    assert_eq!(
+        Core::restore(cfg, &snap[..snap.len() - 1]).err(),
+        Some(krusty_core::SnapshotError::Truncated)
+    );
+    let mut bad = snap.clone();
+    bad[0] ^= 1;
+    assert_eq!(
+        Core::restore(cfg, &bad).err(),
+        Some(krusty_core::SnapshotError::BadMagic)
+    );
+}

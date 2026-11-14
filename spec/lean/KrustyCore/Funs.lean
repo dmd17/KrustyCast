@@ -84,27 +84,27 @@ def krusty_wire.stream.MessageMeta.Insts.CoreFmtDebug : core.fmt.Debug
 }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Config}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 39:9-39:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 42:9-42:14
     Visibility: public -/
 def Config.Insts.CoreCloneClone.clone (self : Config) : Result Config := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 39:9-39:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 42:9-42:14 -/
 @[reducible]
 def Config.Insts.CoreCloneClone : core.clone.Clone Config := {
   clone := Config.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 39:16-39:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 42:16-42:20 -/
 @[reducible]
 def Config.Insts.CoreMarkerCopy : core.marker.Copy Config := {
   cloneInst := Config.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Config}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 39:22-39:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 42:22-42:27
     Visibility: public -/
 def Config.Insts.CoreFmtDebug.fmt
   (self : Config) (f : core.fmt.Formatter) :
@@ -120,21 +120,21 @@ def Config.Insts.CoreFmtDebug.fmt
     (toStr "evict_idle_ns") dyn3
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 39:22-39:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 42:22-42:27 -/
 @[reducible]
 def Config.Insts.CoreFmtDebug : core.fmt.Debug Config := {
   fmt := Config.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 39:29-39:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 42:29-42:38 -/
 @[reducible]
 def Config.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Config := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Config> for krusty_core::Config}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 39:29-39:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 42:29-42:38
     Visibility: public -/
 def Config.Insts.CoreCmpPartialEqConfig.eq
   (self : Config) (other : Config) : Result Bool := do
@@ -149,21 +149,21 @@ def Config.Insts.CoreCmpPartialEqConfig.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Config> for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 39:29-39:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 42:29-42:38 -/
 @[reducible]
 def Config.Insts.CoreCmpPartialEqConfig : core.cmp.PartialEq Config Config := {
   eq := Config.Insts.CoreCmpPartialEqConfig.eq
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Config}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 39:40-39:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 42:40-42:42
     Visibility: public -/
 def Config.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Config) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 39:40-39:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 42:40-42:42 -/
 @[reducible]
 def Config.Insts.CoreCmpEq : core.cmp.Eq Config := {
   partialEqInst := Config.Insts.CoreCmpPartialEqConfig
@@ -171,7 +171,7 @@ def Config.Insts.CoreCmpEq : core.cmp.Eq Config := {
 }
 
 /-- [krusty_core::{krusty_core::Config}::DEFAULT]
-    Source: 'crates/krusty-core/src/lib.rs', lines 53:4-58:6
+    Source: 'crates/krusty-core/src/lib.rs', lines 56:4-61:6
     Visibility: public -/
 @[global_simps, irreducible]
 def Config.DEFAULT : Result Config := do
@@ -185,27 +185,27 @@ def Config.DEFAULT : Result Config := do
     }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Decided}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 62:9-62:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 65:9-65:14
     Visibility: public -/
 def Decided.Insts.CoreCloneClone.clone (self : Decided) : Result Decided := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 62:9-62:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 65:9-65:14 -/
 @[reducible]
 def Decided.Insts.CoreCloneClone : core.clone.Clone Decided := {
   clone := Decided.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 62:16-62:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 65:16-65:20 -/
 @[reducible]
 def Decided.Insts.CoreMarkerCopy : core.marker.Copy Decided := {
   cloneInst := Decided.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Decided}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 62:22-62:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 65:22-65:27
     Visibility: public -/
 def Decided.Insts.CoreFmtDebug.fmt
   (self : Decided) (f : core.fmt.Formatter) :
@@ -223,21 +223,21 @@ def Decided.Insts.CoreFmtDebug.fmt
       "key") __self_01 (toStr "current_version") __self_11
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 62:22-62:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 65:22-65:27 -/
 @[reducible]
 def Decided.Insts.CoreFmtDebug : core.fmt.Debug Decided := {
   fmt := Decided.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 62:29-62:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 65:29-65:38 -/
 @[reducible]
 def Decided.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Decided := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Decided> for krusty_core::Decided}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 62:29-62:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 65:29-65:38
     Visibility: public -/
 def Decided.Insts.CoreCmpPartialEqDecided.eq
   (self : Decided) (other : Decided) : Result Bool := do
@@ -262,7 +262,7 @@ def Decided.Insts.CoreCmpPartialEqDecided.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Decided> for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 62:29-62:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 65:29-65:38 -/
 @[reducible]
 def Decided.Insts.CoreCmpPartialEqDecided : core.cmp.PartialEq Decided Decided
   := {
@@ -270,14 +270,14 @@ def Decided.Insts.CoreCmpPartialEqDecided : core.cmp.PartialEq Decided Decided
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Decided}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 62:40-62:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 65:40-65:42
     Visibility: public -/
 def Decided.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Decided) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 62:40-62:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 65:40-65:42 -/
 @[reducible]
 def Decided.Insts.CoreCmpEq : core.cmp.Eq Decided := {
   partialEqInst := Decided.Insts.CoreCmpPartialEqDecided
@@ -285,7 +285,7 @@ def Decided.Insts.CoreCmpEq : core.cmp.Eq Decided := {
 }
 
 /-- [krusty_core::{krusty_core::Decided}::outcome]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 69:4-80:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 72:4-83:5 -/
 def Decided.outcome
   (self : Decided) : Result krusty_wire.feedback.Outcome := do
   match self with
@@ -295,28 +295,28 @@ def Decided.outcome
     ok (krusty_wire.feedback.Outcome.Rejected key current_version)
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::RingSlot}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 83:9-83:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 86:9-86:14
     Visibility: public -/
 def RingSlot.Insts.CoreCloneClone.clone
   (self : RingSlot) : Result RingSlot := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 83:9-83:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 86:9-86:14 -/
 @[reducible]
 def RingSlot.Insts.CoreCloneClone : core.clone.Clone RingSlot := {
   clone := RingSlot.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 83:16-83:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 86:16-86:20 -/
 @[reducible]
 def RingSlot.Insts.CoreMarkerCopy : core.marker.Copy RingSlot := {
   cloneInst := RingSlot.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::RingSlot}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 83:22-83:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 86:22-86:27
     Visibility: public -/
 def RingSlot.Insts.CoreFmtDebug.fmt
   (self : RingSlot) (f : core.fmt.Formatter) :
@@ -329,21 +329,21 @@ def RingSlot.Insts.CoreFmtDebug.fmt
     "client_seqno") dyn (toStr "decided") dyn1
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 83:22-83:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 86:22-86:27 -/
 @[reducible]
 def RingSlot.Insts.CoreFmtDebug : core.fmt.Debug RingSlot := {
   fmt := RingSlot.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 83:29-83:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 86:29-86:38 -/
 @[reducible]
 def RingSlot.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq RingSlot := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::RingSlot> for krusty_core::RingSlot}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 83:29-83:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 86:29-86:38
     Visibility: public -/
 def RingSlot.Insts.CoreCmpPartialEqRingSlot.eq
   (self : RingSlot) (other : RingSlot) : Result Bool := do
@@ -352,7 +352,7 @@ def RingSlot.Insts.CoreCmpPartialEqRingSlot.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::RingSlot> for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 83:29-83:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 86:29-86:38 -/
 @[reducible]
 def RingSlot.Insts.CoreCmpPartialEqRingSlot : core.cmp.PartialEq RingSlot
   RingSlot := {
@@ -360,14 +360,14 @@ def RingSlot.Insts.CoreCmpPartialEqRingSlot : core.cmp.PartialEq RingSlot
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::RingSlot}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 83:40-83:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 86:40-86:42
     Visibility: public -/
 def RingSlot.Insts.CoreCmpEq.assert_fields_are_eq
   (self : RingSlot) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 83:40-83:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 86:40-86:42 -/
 @[reducible]
 def RingSlot.Insts.CoreCmpEq : core.cmp.Eq RingSlot := {
   partialEqInst := RingSlot.Insts.CoreCmpPartialEqRingSlot
@@ -375,27 +375,27 @@ def RingSlot.Insts.CoreCmpEq : core.cmp.Eq RingSlot := {
 }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Session}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 89:9-89:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 92:9-92:14
     Visibility: public -/
 def Session.Insts.CoreCloneClone.clone (self : Session) : Result Session := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 89:9-89:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 92:9-92:14 -/
 @[reducible]
 def Session.Insts.CoreCloneClone : core.clone.Clone Session := {
   clone := Session.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 89:16-89:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 92:16-92:20 -/
 @[reducible]
 def Session.Insts.CoreMarkerCopy : core.marker.Copy Session := {
   cloneInst := Session.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Session}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 89:22-89:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 92:22-92:27
     Visibility: public -/
 def Session.Insts.CoreFmtDebug.fmt
   (self : Session) (f : core.fmt.Formatter) :
@@ -411,21 +411,21 @@ def Session.Insts.CoreFmtDebug.fmt
     "last_active_ns") dyn3
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 89:22-89:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 92:22-92:27 -/
 @[reducible]
 def Session.Insts.CoreFmtDebug : core.fmt.Debug Session := {
   fmt := Session.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 89:29-89:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 92:29-92:38 -/
 @[reducible]
 def Session.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Session := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Session> for krusty_core::Session}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 89:29-89:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 92:29-92:38
     Visibility: public -/
 def Session.Insts.CoreCmpPartialEqSession.eq
   (self : Session) (other : Session) : Result Bool := do
@@ -440,7 +440,7 @@ def Session.Insts.CoreCmpPartialEqSession.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Session> for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 89:29-89:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 92:29-92:38 -/
 @[reducible]
 def Session.Insts.CoreCmpPartialEqSession : core.cmp.PartialEq Session Session
   := {
@@ -448,14 +448,14 @@ def Session.Insts.CoreCmpPartialEqSession : core.cmp.PartialEq Session Session
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Session}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 89:40-89:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 92:40-92:42
     Visibility: public -/
 def Session.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Session) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 89:40-89:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 92:40-92:42 -/
 @[reducible]
 def Session.Insts.CoreCmpEq : core.cmp.Eq Session := {
   partialEqInst := Session.Insts.CoreCmpPartialEqSession
@@ -463,27 +463,27 @@ def Session.Insts.CoreCmpEq : core.cmp.Eq Session := {
 }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Request}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 101:9-101:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 104:9-104:14
     Visibility: public -/
 def Request.Insts.CoreCloneClone.clone (self : Request) : Result Request := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 101:9-101:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 104:9-104:14 -/
 @[reducible]
 def Request.Insts.CoreCloneClone : core.clone.Clone Request := {
   clone := Request.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 101:16-101:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 104:16-104:20 -/
 @[reducible]
 def Request.Insts.CoreMarkerCopy : core.marker.Copy Request := {
   cloneInst := Request.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Request}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 101:22-101:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 104:22-104:27
     Visibility: public -/
 def Request.Insts.CoreFmtDebug.fmt
   (self : Request) (f : core.fmt.Formatter) :
@@ -500,21 +500,21 @@ def Request.Insts.CoreFmtDebug.fmt
     (toStr "append") dyn3
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 101:22-101:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 104:22-104:27 -/
 @[reducible]
 def Request.Insts.CoreFmtDebug : core.fmt.Debug Request := {
   fmt := Request.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 101:29-101:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 104:29-104:38 -/
 @[reducible]
 def Request.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Request := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Request> for krusty_core::Request}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 101:29-101:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 104:29-104:38
     Visibility: public -/
 def Request.Insts.CoreCmpPartialEqRequest.eq
   (self : Request) (other : Request) : Result Bool := do
@@ -531,7 +531,7 @@ def Request.Insts.CoreCmpPartialEqRequest.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Request> for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 101:29-101:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 104:29-104:38 -/
 @[reducible]
 def Request.Insts.CoreCmpPartialEqRequest : core.cmp.PartialEq Request Request
   := {
@@ -539,14 +539,14 @@ def Request.Insts.CoreCmpPartialEqRequest : core.cmp.PartialEq Request Request
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Request}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 101:40-101:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 104:40-104:42
     Visibility: public -/
 def Request.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Request) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 101:40-101:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 104:40-104:42 -/
 @[reducible]
 def Request.Insts.CoreCmpEq : core.cmp.Eq Request := {
   partialEqInst := Request.Insts.CoreCmpPartialEqRequest
@@ -554,7 +554,7 @@ def Request.Insts.CoreCmpEq : core.cmp.Eq Request := {
 }
 
 /-- [krusty_core::{krusty_core::Request}::of]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 110:4-117:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 113:4-120:5
     Visibility: public -/
 def Request.of (s : krusty_wire.ingress.Submit) : Result Request := do
   ok
@@ -566,27 +566,27 @@ def Request.of (s : krusty_wire.ingress.Submit) : Result Request := do
     }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Effects}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 121:9-121:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 124:9-124:14
     Visibility: public -/
 def Effects.Insts.CoreCloneClone.clone (self : Effects) : Result Effects := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 121:9-121:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 124:9-124:14 -/
 @[reducible]
 def Effects.Insts.CoreCloneClone : core.clone.Clone Effects := {
   clone := Effects.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 121:16-121:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 124:16-124:20 -/
 @[reducible]
 def Effects.Insts.CoreMarkerCopy : core.marker.Copy Effects := {
   cloneInst := Effects.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Published}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 129:22-129:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 132:22-132:27
     Visibility: public -/
 def Published.Insts.CoreFmtDebug.fmt
   (self : Published) (f : core.fmt.Formatter) :
@@ -600,14 +600,14 @@ def Published.Insts.CoreFmtDebug.fmt
     "seqno") dyn (toStr "meta") dyn1
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 129:22-129:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 132:22-132:27 -/
 @[reducible]
 def Published.Insts.CoreFmtDebug : core.fmt.Debug Published := {
   fmt := Published.Insts.CoreFmtDebug.fmt
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Effects}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 121:22-121:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 124:22-124:27
     Visibility: public -/
 def Effects.Insts.CoreFmtDebug.fmt
   (self : Effects) (f : core.fmt.Formatter) :
@@ -623,21 +623,21 @@ def Effects.Insts.CoreFmtDebug.fmt
     "publish") dyn (toStr "reply") dyn1
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 121:22-121:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 124:22-124:27 -/
 @[reducible]
 def Effects.Insts.CoreFmtDebug : core.fmt.Debug Effects := {
   fmt := Effects.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 121:29-121:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 124:29-124:38 -/
 @[reducible]
 def Effects.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Effects := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Published> for krusty_core::Published}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 129:29-129:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 132:29-132:38
     Visibility: public -/
 def Published.Insts.CoreCmpPartialEqPublished.eq
   (self : Published) (other : Published) : Result Bool := do
@@ -648,7 +648,7 @@ def Published.Insts.CoreCmpPartialEqPublished.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Published> for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 129:29-129:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 132:29-132:38 -/
 @[reducible]
 def Published.Insts.CoreCmpPartialEqPublished : core.cmp.PartialEq Published
   Published := {
@@ -656,7 +656,7 @@ def Published.Insts.CoreCmpPartialEqPublished : core.cmp.PartialEq Published
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Effects> for krusty_core::Effects}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 121:29-121:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 124:29-124:38
     Visibility: public -/
 def Effects.Insts.CoreCmpPartialEqEffects.eq
   (self : Effects) (other : Effects) : Result Bool := do
@@ -671,7 +671,7 @@ def Effects.Insts.CoreCmpPartialEqEffects.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Effects> for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 121:29-121:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 124:29-124:38 -/
 @[reducible]
 def Effects.Insts.CoreCmpPartialEqEffects : core.cmp.PartialEq Effects Effects
   := {
@@ -679,14 +679,14 @@ def Effects.Insts.CoreCmpPartialEqEffects : core.cmp.PartialEq Effects Effects
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Effects}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 121:40-121:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 124:40-124:42
     Visibility: public -/
 def Effects.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Effects) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 121:40-121:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 124:40-124:42 -/
 @[reducible]
 def Effects.Insts.CoreCmpEq : core.cmp.Eq Effects := {
   partialEqInst := Effects.Insts.CoreCmpPartialEqEffects
@@ -694,42 +694,42 @@ def Effects.Insts.CoreCmpEq : core.cmp.Eq Effects := {
 }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Published}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 129:9-129:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 132:9-132:14
     Visibility: public -/
 def Published.Insts.CoreCloneClone.clone
   (self : Published) : Result Published := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 129:9-129:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 132:9-132:14 -/
 @[reducible]
 def Published.Insts.CoreCloneClone : core.clone.Clone Published := {
   clone := Published.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 129:16-129:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 132:16-132:20 -/
 @[reducible]
 def Published.Insts.CoreMarkerCopy : core.marker.Copy Published := {
   cloneInst := Published.Insts.CoreCloneClone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 129:29-129:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 132:29-132:38 -/
 @[reducible]
 def Published.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Published := {
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Published}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 129:40-129:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 132:40-132:42
     Visibility: public -/
 def Published.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Published) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 129:40-129:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 132:40-132:42 -/
 @[reducible]
 def Published.Insts.CoreCmpEq : core.cmp.Eq Published := {
   partialEqInst := Published.Insts.CoreCmpPartialEqPublished
@@ -737,28 +737,28 @@ def Published.Insts.CoreCmpEq : core.cmp.Eq Published := {
 }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::ApplyError}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 135:9-135:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 138:9-138:14
     Visibility: public -/
 def ApplyError.Insts.CoreCloneClone.clone
   (self : ApplyError) : Result ApplyError := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 135:9-135:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 138:9-138:14 -/
 @[reducible]
 def ApplyError.Insts.CoreCloneClone : core.clone.Clone ApplyError := {
   clone := ApplyError.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 135:16-135:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 138:16-138:20 -/
 @[reducible]
 def ApplyError.Insts.CoreMarkerCopy : core.marker.Copy ApplyError := {
   cloneInst := ApplyError.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::ApplyError}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 135:22-135:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 138:22-138:27
     Visibility: public -/
 def ApplyError.Insts.CoreFmtDebug.fmt
   (self : ApplyError) (f : core.fmt.Formatter) :
@@ -771,21 +771,21 @@ def ApplyError.Insts.CoreFmtDebug.fmt
     "expected") __self_01 (toStr "got") __self_11
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 135:22-135:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 138:22-138:27 -/
 @[reducible]
 def ApplyError.Insts.CoreFmtDebug : core.fmt.Debug ApplyError := {
   fmt := ApplyError.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 135:29-135:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 138:29-138:38 -/
 @[reducible]
 def ApplyError.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq ApplyError := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::ApplyError> for krusty_core::ApplyError}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 135:29-135:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 138:29-138:38
     Visibility: public -/
 def ApplyError.Insts.CoreCmpPartialEqApplyError.eq
   (self : ApplyError) (other : ApplyError) : Result Bool := do
@@ -797,7 +797,7 @@ def ApplyError.Insts.CoreCmpPartialEqApplyError.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::ApplyError> for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 135:29-135:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 138:29-138:38 -/
 @[reducible]
 def ApplyError.Insts.CoreCmpPartialEqApplyError : core.cmp.PartialEq ApplyError
   ApplyError := {
@@ -805,14 +805,14 @@ def ApplyError.Insts.CoreCmpPartialEqApplyError : core.cmp.PartialEq ApplyError
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::ApplyError}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 135:40-135:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 138:40-138:42
     Visibility: public -/
 def ApplyError.Insts.CoreCmpEq.assert_fields_are_eq
   (self : ApplyError) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 135:40-135:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 138:40-138:42 -/
 @[reducible]
 def ApplyError.Insts.CoreCmpEq : core.cmp.Eq ApplyError := {
   partialEqInst := ApplyError.Insts.CoreCmpPartialEqApplyError
@@ -870,7 +870,7 @@ def table.IdMap.new (max_len : Std.Usize) : Result table.IdMap := do
   ok { buckets := v, mask := i1, len := 0#usize, max_len }
 
 /-- [krusty_core::{krusty_core::Core}::new]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 165:4-182:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 170:4-188:5
     Visibility: public -/
 def Core.new (cfg : Config) : Result Core := do
   massert (cfg.max_clients >= 1#usize)
@@ -889,6 +889,7 @@ def Core.new (cfg : Config) : Result Core := do
       RingSlot.Insts.CoreCloneClone) none i2
   let im1 ← table.IdMap.new cfg.max_keys
   let v2 := alloc.vec.Vec.with_capacity Std.U64 cfg.max_keys
+  let v3 := alloc.vec.Vec.with_capacity Std.U64 cfg.max_keys
   ok
     {
       cfg,
@@ -901,23 +902,24 @@ def Core.new (cfg : Config) : Result Core := do
       ring := v1,
       unused := 0#usize,
       keys := im1,
-      versions := v2
+      versions := v2,
+      key_of_slot := v3
     }
 
 /-- [krusty_core::{krusty_core::Core}::applied]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 184:4-186:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 190:4-192:5
     Visibility: public -/
 def Core.impl.applied (self : Core) : Result Std.U64 := do
   ok self.applied
 
 /-- [krusty_core::{krusty_core::Core}::next_seqno]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 188:4-190:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 194:4-196:5
     Visibility: public -/
 def Core.impl.next_seqno (self : Core) : Result Std.U64 := do
   ok self.next_seqno
 
 /-- [krusty_core::{krusty_core::Core}::incarnation_floor]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 192:4-194:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 198:4-200:5
     Visibility: public -/
 def Core.impl.incarnation_floor (self : Core) : Result Std.U64 := do
   ok self.incarnation_floor
@@ -929,7 +931,7 @@ def table.IdMap.impl.len (self : table.IdMap) : Result Std.Usize := do
   ok self.len
 
 /-- [krusty_core::{krusty_core::Core}::clients]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 196:4-198:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 202:4-204:5
     Visibility: public -/
 def Core.impl.clients (self : Core) : Result Std.Usize := do
   table.IdMap.impl.len self.clients
@@ -1011,7 +1013,7 @@ def table.IdMap.get
   | some b1 => ok (some b1.slot)
 
 /-- [krusty_core::{krusty_core::Core}::version]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 201:4-206:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 207:4-212:5
     Visibility: public -/
 def Core.version (self : Core) (key : Std.U64) : Result Std.U64 := do
   let o ← table.IdMap.get self.keys key
@@ -1065,7 +1067,7 @@ def table.IdMap.insert
       ok (true, { self with buckets := v, len := i1 })
 
 /-- [krusty_core::{krusty_core::Core}::set_version]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 478:4-494:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 484:4-501:5 -/
 def Core.set_version
   (self : Core) (key : Std.U64) (version : Std.U64) :
   Result (Bool × Core)
@@ -1080,8 +1082,9 @@ def Core.set_version
       let i := alloc.vec.Vec.len self.versions
       let i1 ← lift (UScalar.cast .U32 i)
       let v ← alloc.vec.Vec.push self.versions version
+      let v1 ← alloc.vec.Vec.push self.key_of_slot key
       let (b1, im) ← table.IdMap.insert self.keys key i1
-      ok (b1, { self with keys := im, versions := v })
+      ok (b1, { self with keys := im, versions := v, key_of_slot := v1 })
   | some i =>
     let i1 ← lift (UScalar.cast .Usize i)
     let (_, index_mut_back) ←
@@ -1091,7 +1094,7 @@ def Core.set_version
     ok (true, { self with versions := v })
 
 /-- [krusty_core::{krusty_core::Core}::decide_append]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 430:4-475:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 436:4-481:5 -/
 def Core.decide_append
   (self : Core) (s : Request) :
   Result (((Option Decided) × (Option krusty_wire.stream.MessageMeta)) ×
@@ -1126,7 +1129,7 @@ def Core.decide_append
         else ok ((none, none), self1)
 
 /-- [krusty_core::{krusty_core::Core}::ring_index]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 349:4-352:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 355:4-358:5 -/
 def Core.ring_index
   (self : Core) (slot : Std.U32) (client_seqno : Std.U64) :
   Result Std.Usize
@@ -1139,7 +1142,7 @@ def Core.ring_index
   i1 + i4
 
 /-- [krusty_core::{krusty_core::Core}::reply]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 229:4-239:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 235:4-245:5 -/
 def Core.reply
   (s : Request) (client_seqno : Std.U64)
   (outcome : krusty_wire.feedback.Outcome) :
@@ -1159,12 +1162,12 @@ def Core.reply
     }
 
 /-- [krusty_core::{krusty_core::Core}::busy]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 241:4-243:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 247:4-249:5 -/
 def Core.busy (s : Request) : Result Effects := do
   Core.reply s s.client_seqno (krusty_wire.feedback.Outcome.Busy 0#u64)
 
 /-- [krusty_core::{krusty_core::Core}::in_session]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 354:4-425:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 360:4-431:5 -/
 def Core.in_session
   (self : Core) (slot : Std.U32) (s : Request) : Result (Effects × Core) := do
   let i ← lift (UScalar.cast .Usize slot)
@@ -1246,7 +1249,7 @@ def Core.in_session
               { self1 with next_seqno := i4, sessions := v, ring := v1 })
 
 /-- [krusty_core::{krusty_core::Core}::start_session]: loop body 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 343:8-346:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 349:8-352:9 -/
 @[rust_loop_body]
 def Core.start_session_loop.body
   (n : Std.Usize) (base : Std.Usize) (v : alloc.vec.Vec (Option RingSlot))
@@ -1266,7 +1269,7 @@ def Core.start_session_loop.body
   else ok (done v)
 
 /-- [krusty_core::{krusty_core::Core}::start_session]: loop 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 343:8-346:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 349:8-352:9 -/
 @[rust_loop]
 def Core.start_session_loop
   (v : alloc.vec.Vec (Option RingSlot)) (n : Std.Usize) (base : Std.Usize)
@@ -1278,7 +1281,7 @@ def Core.start_session_loop
     (v, i)
 
 /-- [krusty_core::{krusty_core::Core}::start_session]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 333:4-347:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 339:4-353:5 -/
 def Core.start_session
   (self : Core) (slot : Std.U32) (s : Request) : Result Core := do
   let i ← lift (UScalar.cast .Usize slot)
@@ -1386,7 +1389,7 @@ def table.IdMap.remove
     ok { self with buckets := v1, len := i }
 
 /-- [krusty_core::{krusty_core::Core}::allocate_session]: loop body 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 305:8-319:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 311:8-325:9 -/
 @[rust_loop_body]
 def Core.allocate_session_loop.body
   (i : Std.U64) (v : alloc.vec.Vec (Option Session)) (c : Config)
@@ -1427,7 +1430,7 @@ def Core.allocate_session_loop.body
   else ok (done (c, victim))
 
 /-- [krusty_core::{krusty_core::Core}::allocate_session]: loop 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 305:8-319:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 311:8-325:9 -/
 @[rust_loop]
 def Core.allocate_session_loop
   (c : Config) (i : Std.U64) (v : alloc.vec.Vec (Option Session))
@@ -1440,7 +1443,7 @@ def Core.allocate_session_loop
     (c, victim, i1)
 
 /-- [krusty_core::{krusty_core::Core}::allocate_session]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 298:4-331:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 304:4-337:5 -/
 def Core.allocate_session
   (self : Core) : Result ((Option Std.U32) × Core) := do
   let i := alloc.vec.Vec.len self.sessions
@@ -1477,7 +1480,7 @@ def Core.allocate_session
         })
 
 /-- [krusty_core::{krusty_core::Core}::decide]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 245:4-294:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 251:4-300:5 -/
 def Core.decide (self : Core) (s : Request) : Result (Effects × Core) := do
   let i ← lift (UScalar.cast .U64 s.client_id)
   let found ← table.IdMap.get self.clients i
@@ -1533,7 +1536,7 @@ def Core.decide (self : Core) (s : Request) : Result (Effects × Core) := do
           ok (e, self)
 
 /-- [krusty_core::{krusty_core::Core}::apply]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 210:4-227:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 216:4-233:5
     Visibility: public -/
 def Core.apply
   (self : Core) (log_index : Std.U64) (timestamp_ns : Std.U64)
