@@ -1,0 +1,46 @@
+name: proofs
+
+# Re-checks the Lean proofs against the checked-in Aeneas output. Heavy
+# (Mathlib), so it runs only when the verified code or proofs change, weekly,
+# and on demand. Regenerating the Lean from Rust (Charon + Aeneas) is a local
+# step for now: see spikes/aeneas-stream/regen.sh.
+
+on:
+  push:
+    paths:
+      - "spikes/aeneas-stream/**"
+      - ".github/workflows/proofs.yml"
+      - "scripts/check-axioms.sh"
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+env:
+  # Keep in step with spikes/aeneas-stream/REPORT.md.
+  AENEAS_COMMIT: 0d21a9ec
+
+jobs:
+  lean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Fetch Aeneas
+        run: |
+          git clone --filter=blob:none https://github.com/AeneasVerif/aeneas.git "$RUNNER_TEMP/aeneas"
+          git -C "$RUNNER_TEMP/aeneas" checkout "$AENEAS_COMMIT"
+          echo "AENEAS_LEAN=$RUNNER_TEMP/aeneas/backends/lean" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/aeneas/backends/lean/.lake
+          key: aeneas-lean-${{ env.AENEAS_COMMIT }}
+      - name: Build the Aeneas Lean library
+        working-directory: ${{ runner.temp }}/aeneas/backends/lean
+        run: lake exe cache get && lake build
+      - name: Check proofs
+        run: scripts/check-axioms.sh spikes/aeneas-stream/proofs
