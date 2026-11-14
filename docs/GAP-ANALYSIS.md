@@ -79,16 +79,16 @@ Columns:
 | P4 | One `recv_from`/`send_to` syscall per datagram; blocking reads with timeouts (`client.rs:122`, `:191`) | `recvmmsg`/`sendmmsg`, busy-poll, pinned threads, spin/back-off strategies | P | M | M1 |
 | P5 | Synchronous fsync on the sequencing thread: `j.commit()` blocks sequencing on every batch | Storage on its own thread (io_uring); durability mode (a) takes fsync off the latency path | P | M | M2 |
 | P6 | No kernel-bypass path | Transport trait; Onload compatibility; AF_XDP (Tier B) | P | L | M4 |
-| P7 | `std::collections::HashMap` for sender and target state (`sequencer.rs:144`) | Fixed-capacity tables: predictable and verifiable | P, C | M | M1 |
+| P7 | **Done in `krusty-core` 2026-11-14.** `std::collections::HashMap` for sender and target state (`sequencer.rs:144`) | Fixed-capacity tables: predictable and verifiable | P, C | M | M1 |
 
 ### 3.4 Protocol
 
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
 | W1 | **Done in `krusty-wire` 2026-11-14** (not yet used by the node). No magic or version field on any internal format | Versioned formats (FR-15) | O | S | M1 |
-| W2 | Every message is a conditional claim (`target_id`, `target_seq`); no unconditional append | Two append modes (FR-3) | C | S | M1 |
-| W3 | No BUSY, NOT_LEADER or SESSION_EXPIRED feedback | Full outcome set (architecture §8.1) | C | S | M1 |
-| W4 | Dedup tables grow without limit: one entry per incarnation, forever; outcome ring of 4096 per sender (`sequencer.rs:25`) | Bounded, replicated, deterministic eviction | C | M | M1 |
+| W2 | **Done in `krusty-core` 2026-11-14.** Every message is a conditional claim (`target_id`, `target_seq`); no unconditional append | Two append modes (FR-3) | C | S | M1 |
+| W3 | **BUSY and SESSION_EXPIRED done in `krusty-core` 2026-11-14 (NOT_LEADER comes with Raft).** No BUSY, NOT_LEADER or SESSION_EXPIRED feedback | Full outcome set (architecture §8.1) | C | S | M1 |
+| W4 | **Done in `krusty-core` 2026-11-14 (ADR-12, proposed).** Dedup tables grow without limit: one entry per incarnation, forever; outcome ring of 4096 per sender (`sequencer.rs:25`) | Bounded, replicated, deterministic eviction | C | M | M1 |
 | W5 | Messages limited to one datagram, with no explicit maximum | Explicit maximum size (PRD open question 2); optional fragmentation | C | S–M | M1 |
 | W6 | **Done in `krusty-wire` 2026-11-14** (not yet used by the node). Big-endian hand-written upstream codecs | Little-endian fixed layouts (ADR-8); Kani-checked decoders | P, C | M | M1 |
 | W7 | MoldUDP64 is the only egress: no back pressure policy, no UNAVAILABLE answer, no cluster timestamp, multicast only | Native stream protocol (architecture §8.3) as the backbone; MoldUDP64 moved behind the adapter (§8.4) | C, P | M | M1 |

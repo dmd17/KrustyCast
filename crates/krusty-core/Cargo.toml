@@ -1,0 +1,15 @@
+[package]
+name = "krusty-core"
+version = "0.1.0"
+description = "KrustyCast sequencer state machine: sans-I/O, deterministic, bounded."
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+krusty-wire = { path = "../krusty-wire" }
+
+[dev-dependencies]
+proptest = "1"

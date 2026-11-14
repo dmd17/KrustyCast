@@ -28,3 +28,6 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 
 [dev-dependencies]
 libc = "0.2.191"
+
+# Standalone: not part of the KrustyCast workspace.
+[workspace]

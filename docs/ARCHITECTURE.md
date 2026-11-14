@@ -60,6 +60,7 @@ second feed for external consumers; it is not shown.
 | 9 | **Verification split** (§11): TLA+/Quint for protocols; Aeneas→Lean for pure cores; Verus for low-level concurrent structures; Kani/Miri for unsafe code; simulation for everything. | One tool for all | Each tool is strongest at a different layer; none covers everything. |
 | 10 | **One total order per cluster** in v1. Scale out with multiple independent clusters (shards). | Multi-stream clusters | Simplest correct design; most venue cores need exactly one order. |
 | 11 | **The native stream is the egress backbone; MoldUDP64 is an optional adapter** (**accepted** 2026-11-14). Both are projections of the same committed sequence and share global seqnos. | MoldUDP64 as the only egress (the previous design) | Mold is the right format for external feed consumers (UC4), but it has no back pressure, no "unavailable, use a snapshot" answer, re-requests that storm, and multicast-only assumptions. Those gaps land on our main use cases (UC1–UC3), where our own SDK is on both ends and interoperability buys nothing. |
+| 12 | **Bounded dedup without duplicates** (*proposed* 2026-11-14, `krusty-core`). One session per `client_id` (its latest incarnation). Incarnations must increase per client (the SDK uses its start time in ns), so a newer one retires the older. When the client table is full, the least recently active client idle for at least `evict_idle_ns` (leader time) is evicted, and a global *incarnation floor* rises to its incarnation. A client without a session whose incarnation is at or below the floor gets `SESSION_EXPIRED{min_incarnation}`, never a second sequencing. No idle client → BUSY. Each session remembers its last `outcome_ring` outcomes; clients keep at most that many messages unanswered. | Random incarnations with per-incarnation sessions (today): bounded memory then needs a timeout after which resends become unsafe. Keeping evicted (client, incarnation) pairs: unbounded. | G4 holds under bounded memory (G9). The cost is a client contract: monotonic incarnations, and a fresh client whose clock lags the floor restarts once with `min_incarnation`. To be model-checked in TLA+ before acceptance. |
 
 ## 4. Crate layout
 
@@ -192,13 +193,13 @@ Types:
 | `NOT_LEADER{leader}` | Talk to another node. |
 | `SESSION_EXPIRED{}` | Dedup state for this incarnation was evicted. |
 
-The **dedup table is replicated state** (ADR-4):
-- It is bounded: a fixed number of sessions, each holding a ring of recent
-  outcomes.
-- Idle sessions are evicted deterministically (by log position, never by
-  wall clock).
-- Eviction is answered with `SESSION_EXPIRED`, so clients never get a
-  silent duplicate.
+The **dedup table is replicated state** (ADR-4, refined by ADR-12):
+- It is bounded: a fixed number of sessions (one per client, its latest
+  incarnation), each holding a ring of recent outcomes.
+- Idle sessions are evicted deterministically, by the leader timestamps in
+  the replicated log, never by a local clock.
+- Eviction raises an incarnation floor; anything from an evicted session is
+  answered with `SESSION_EXPIRED`, so clients never get a silent duplicate.
 
 Clients resend unanswered messages with back-off, as they do today. After
 failover they get `NOT_LEADER` or time out, and rotate through the member
