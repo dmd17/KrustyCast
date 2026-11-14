@@ -11,12 +11,16 @@ jar=${TLA2TOOLS:-$HOME/.local/share/krusty-tools/tla/tla2tools.jar}
 meta=$(mktemp -d)
 trap 'rm -rf -- "${meta:?}"' EXIT
 
-configs="SequencerRace SequencerRestart"
-[ "${1:-}" = "--large" ] && configs="$configs SequencerLarge"
+# module:config pairs.
+configs="Sequencer:SequencerRace Sequencer:SequencerRestart
+SequencerBounded:SequencerBoundedEvict SequencerBounded:SequencerBoundedRing"
+[ "${1:-}" = "--large" ] && configs="$configs
+Sequencer:SequencerLarge SequencerBounded:SequencerBoundedEvictLarge"
 
 status=0
-for cfg in $configs; do
-    spec=Sequencer
+for pair in $configs; do
+    spec=${pair%%:*}
+    cfg=${pair#*:}
     printf '%-20s ' "$cfg"
     if java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers auto \
         -config "$cfg.cfg" -metadir "$meta/$cfg" "$spec.tla" >"$meta/$cfg.log" 2>&1 \

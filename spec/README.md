@@ -28,7 +28,7 @@ Invariants (PRD §5):
 | `SequencerRestart.cfg` (CI) | 1 client, 2 incarnations, 2 msgs, log 4 | 748 k | ~20 s |
 | `SequencerLarge.cfg` | 2 clients, 2 incarnations, 2 versions, log 5, ≤3 in flight | not yet run to completion | hours |
 
-Run: `spec/tla/check.sh` (add `--large` for the big config). It needs Java 11+
+Run: `spec/tla/check.sh` (add `--large` for the big configs). It needs Java 11+
 and `tla2tools.jar` v1.8.0, which goes in `~/.local/share/krusty-tools/tla/`
 (or set `TLA2TOOLS`).
 
@@ -43,6 +43,29 @@ and `tla2tools.jar` v1.8.0, which goes in `~/.local/share/krusty-tools/tla/`
 
 Not modelled yet: NAK, BUSY, NOT_LEADER, the bounded outcome ring and
 SESSION_EXPIRED, Raft, consumers, liveness.
+
+## `tla/SequencerBounded.tla`
+
+The same model with **bounded dedup state** (ADR-12, as in `krusty-core`):
+one session per client, a table of `MaxClients` sessions, eviction of *any*
+session when full (a superset of the code's idle-LRU policy), an incarnation
+floor, and an outcome ring of `Ring` per session with a client window to
+match. Same invariants as above, plus `Bounded` (table never over capacity).
+
+| Config | Bounds | States | Time (laptop) |
+|---|---|---|---|
+| `SequencerBoundedEvict.cfg` (CI) | 2 clients, room for 1, 2 incarnations, 1 msg each, log 4 | 725 k | ~36 s |
+| `SequencerBoundedRing.cfg` (CI) | 1 client, ring 1, 3 msgs, 2 incarnations, log 5 | 1.3 M | ~49 s |
+| `SequencerBoundedEvictLarge.cfg` | as Evict with 2 msgs and ring 2 | > 25 M, not finished | hours |
+
+Mutation checks: evicting without raising the floor, and accepting an
+incarnation equal to the floor, are both caught by `OutcomesTrue`.
+
+## `lean/`
+
+Lean proofs about `krusty-core`, against its Aeneas translation
+(`lean/regen.sh`). CI fails if the translation is stale (`source-hash.sh`)
+or if any theorem uses `sorry` or an unexpected axiom.
 
 ## `../spikes/aeneas-stream/proofs`
 
