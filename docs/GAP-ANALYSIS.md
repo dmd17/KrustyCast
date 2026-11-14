@@ -1,6 +1,6 @@
 # KrustyCast: Gap Analysis (current code → v1)
 
-Status: **draft v0.1** (2026-11-13). Measures the code on branch
+Status: **draft v0.2** (2026-11-14). Measures the code on branch
 `moldudp64-downstream` against the [PRD](PRD.md) and the
 [architecture](ARCHITECTURE.md).
 
@@ -13,7 +13,8 @@ largely right, and several are already what v1 needs:
 - total order
 - idempotent client resends with incarnations
 - conditional append (per-target compare-and-swap)
-- a standard MoldUDP64 feed with re-requests
+- a standard MoldUDP64 feed with re-requests (becoming an optional
+  adapter, architecture ADR-11)
 - a crash-recovery journal
 
 Its *implementation* is not built for the PRD's correctness or performance
@@ -39,7 +40,8 @@ logic.
 | Conditional append | `sequencer.rs` `process_batch` | Becomes FR-3's conditional mode; unconditional mode is added. |
 | Sequencer decision logic | `sequencer.rs:192` `Core::process_batch` | Almost pure already. Remove the journal I/O and it becomes `krusty-core::step`, the first Aeneas target. |
 | Consumer stream tracker | `stream.rs` (pure, 9 unit tests) | Becomes `krusty-stream` almost as is. **Best first Aeneas spike.** |
-| MoldUDP64 codec and interop tests | `protocol.rs`, `tests/e2e.rs` | Keep the format; rewrite as zero-copy. Keep the `moldudp` interop tests. |
+| MoldUDP64 codec, re-request server and interop tests | `protocol.rs`, `sequencer.rs`, `tests/e2e.rs` | Becomes the `krusty-mold` adapter (ADR-11), largely as is. Keep the `moldudp` interop tests. |
+| Stream recovery logic | `stream.rs` | Its gap, retry and give-up logic carries over to the native stream's tracker. |
 | Journal format ideas | `journal.rs`: CRC, torn-tail truncation, session header | Carry into the segment format (CRC32C, preallocation). |
 | Fault scenarios | `tests/e2e.rs`: lossy proxy, crash and resume, lost REJECT | Become seeded scenarios in `krusty-sim`, run under many seeds. |
 
@@ -89,6 +91,7 @@ Columns:
 | W4 | Dedup tables grow without limit: one entry per incarnation, forever; outcome ring of 4096 per sender (`sequencer.rs:25`) | Bounded, replicated, deterministic eviction | C | M | M1 |
 | W5 | Messages limited to one datagram, with no explicit maximum | Explicit maximum size (PRD open question 2); optional fragmentation | C | S–M | M1 |
 | W6 | Big-endian hand-written upstream codecs | Little-endian fixed layouts (ADR-8); Kani-checked decoders | P, C | M | M1 |
+| W7 | MoldUDP64 is the only egress: no back pressure policy, no UNAVAILABLE answer, no cluster timestamp, multicast only | Native stream protocol (architecture §8.3) as the backbone; MoldUDP64 moved behind the adapter (§8.4) | C, P | M | M1 |
 
 ### 3.5 Storage
 
@@ -102,11 +105,11 @@ Columns:
 
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
-| K1 | Re-requests sent immediately to one server address (storm risk) | Random delay, spread across nodes (architecture §8.4) | P | S | M2 |
+| K1 | Re-requests sent immediately to one server address (storm risk) | Delayed, randomized recovery spread across nodes, with multicast suppression (architecture §8.5) | P | M | M2 |
 | K2 | Callback API `Fn(Vec<u8>)`: copies, runs under a mutex, no position | Zero-copy delivery with seqno and position; replay-from-position; deterministic-consumer API (FR-10) | P | M | M2 |
 | K3 | Abandoned sends only counted and logged (`failed()`) | Explicit failure delivered to the application | C | S | M2 |
 | K4 | Client logic lives in the I/O shell | `krusty-session` sans-I/O core | C | M | M1 |
-| K5 | Multicast-only egress | Unicast fan-out (FR-6b) | O | M | M4 |
+| K5 | Multicast-only egress | Unicast fan-out on the native stream (FR-6b) | O | M | M4 |
 
 ### 3.7 Assurance
 
@@ -174,7 +177,7 @@ the M0 spikes.
   - Coding rules for the verified subset confirmed (architecture §11.3).
 
 **M1: Single-node performance core.**
-- Gaps A1–A3, P1–P4, P7, W1–W6, K4, Q5 (single-node simulation), Q6, O1, O2.
+- Gaps A1–A3, P1–P4, P7, W1–W7, K4, Q5 (single-node simulation), Q6, O1, O2.
 - *Exit:*
   - Single-node submit-to-feed round trip meets the Tier A targets minus
     the replication hop.

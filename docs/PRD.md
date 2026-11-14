@@ -1,6 +1,6 @@
 # KrustyCast: Product Requirements
 
-Status: **draft v0.1** (2026-11-13). Companion documents:
+Status: **draft v0.2** (2026-11-14). Companion documents:
 [Architecture](ARCHITECTURE.md), [Gap analysis](GAP-ANALYSIS.md).
 
 ## 1. Summary
@@ -8,9 +8,11 @@ Status: **draft v0.1** (2026-11-13). Companion documents:
 KrustyCast is a Rust-native, replicated, totally ordered message
 sequencer for trading and exchange-style systems. Clients submit messages,
 and a 3- or 5-node cluster puts them in one order that survives failures.
-The ordered stream is published as standard MoldUDP64. Deterministic
-applications (matching engines, risk, position keeping, replicas) consume it
-and get identical state.
+The ordered stream is published on KrustyCast's native stream protocol.
+Deterministic applications (matching engines, risk, position keeping,
+replicas) consume it through the SDK and get identical state. The same
+sequence can also be published as a standard MoldUDP64 feed for external
+consumers.
 
 The product makes two claims and has to back both:
 
@@ -71,7 +73,7 @@ These must be shown with published benchmarks (§10).
 | UC1 | Venue core sequencing | Gateways submit orders. KrustyCast orders them. Matching engines consume the stream. Their outputs (fills, acks) are submitted back and sequenced too. |
 | UC2 | Deterministic replicated services | Several replicas of a service consume the same stream and stay identical: active/active, or a hot standby. |
 | UC3 | Recovery and audit | Any consumer can replay a session from its start, or from a position, and get exactly the same messages. The session log is the audit trail. |
-| UC4 | Standard feed distribution | The ordered stream is a MoldUDP64 feed with re-request service. Off-the-shelf Mold receivers can consume it. |
+| UC4 | Standard feed distribution | The ordered stream is also available as a MoldUDP64 feed with a standard re-request service, so off-the-shelf Mold receivers can consume it. |
 | UC5 | Conditional append | A message can carry "key K is at version V". The sequencer accepts it only if that's still true. At most one writer wins each version. This lets clients coordinate without locks. |
 
 **Non-goals (v1)**
@@ -95,8 +97,9 @@ These must be shown with published benchmarks (§10).
    limit. Overload produces explicit back pressure, never unbounded growth.
 4. **Publish only what's committed.** Nothing a client or consumer can see
    is ever retracted.
-5. **Standards at the edges.** MoldUDP64 out. A documented, versioned
-   protocol in.
+5. **Native protocols inside, standards as adapters.** Our own documented,
+   versioned protocols where we control both ends; MoldUDP64 as an adapter
+   for external consumers.
 6. **Verify the core, test the shell.** Formal methods go where bugs are
    subtle and expensive. Simulation and fuzzing cover the rest.
 
@@ -111,9 +114,10 @@ Priority: **P0** = required for v1, **P1** = soon after v1, **P2** = later.
 | FR-3 | **Append modes.** *Unconditional* append, or *conditional* append on a key with an expected version (UC5). | P0 |
 | FR-4 | **Outcomes.** Each message's outcome is reported to its client: ACCEPTED (with global seqno), REJECTED (with the key's current version), BUSY (back pressure, with a retry hint) or NOT_LEADER (with the leader's address). | P0 |
 | FR-5 | **Replication and failover.** 3- or 5-node clusters. Automatic leader election. Committed data survives the failure of up to f nodes, where n = 2f+1. | P0 |
-| FR-6 | **MoldUDP64 egress.** Multicast feed of accepted messages, with session names, heartbeats and end-of-session. | P0 |
-| FR-6b | **Unicast egress** for networks without multicast (cloud): nodes fan out to registered subscribers. | P1 |
-| FR-7 | **Re-request service** on every node, serving any seqno in the retained sessions from memory or disk. | P0 |
+| FR-6 | **Native stream egress.** Multicast stream of accepted messages, each with a deterministic cluster timestamp. Heartbeats, end-of-session, and an explicit UNAVAILABLE answer for data that has aged out. The cluster never waits for slow consumers. | P0 |
+| FR-6a | **MoldUDP64 adapter.** The same sequence (same global seqnos) as a standard MoldUDP64 feed with a standard re-request server, off the native stream's latency path. Priority depends on the first market (§13). | P0 / P1 |
+| FR-6b | **Unicast egress** for networks without multicast (cloud): consumers subscribe to a node, preferably a follower, which fans out to them. | P1 |
+| FR-7 | **Recovery service** on every node, serving any seqno in the retained sessions from memory or disk. Requests are delayed and suppressed so that many consumers missing the same data don't cause a request storm. | P0 |
 | FR-8 | **Durability modes.** (a) Committed when a quorum holds the entry in memory, fsync asynchronous. (b) Committed when a quorum has fsynced it. | P0 |
 | FR-9 | **Snapshots** of sequencer state (dedup tables, key versions) for fast node recovery. Log retention per session. | P1 |
 | FR-10 | **Consumer SDK.** In-order delivery, gap recovery, replay from a position, a "deterministic consumer" API for building replicas. | P0 |
@@ -161,7 +165,7 @@ testing.
   waits on responses, so stalls aren't hidden).
 
 **Primary metric: submit-to-feed round trip.** A client submits a message
-and receives that same message on the egress feed. This is measured on one
+and receives that same message on the native stream. This is measured on one
 host's clock, so no cross-host clock sync is needed.
 
 | ID | Metric | Tier A (kernel UDP) P0 | Tier B (kernel bypass) P1 |
@@ -248,7 +252,8 @@ Verification runs alongside from M0.
 ## 13. Open questions
 
 1. Which beachhead first: crypto venues (cloud-heavy, so unicast egress
-   becomes P0) or traditional ATS / colo (multicast)?
+   becomes P0) or traditional ATS / colo (multicast, where ITCH-style
+   MoldUDP64 feeds are expected, so the Mold adapter becomes P0)?
 2. Maximum message size. One MTU, or fragmentation and reassembly?
 3. How many clients and keys per cluster? This sizes the dedup and version
    tables.

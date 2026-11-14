@@ -1,6 +1,6 @@
 # KrustyCast: Architecture
 
-Status: **draft v0.1** (2026-11-13). Implements the [PRD](PRD.md). The
+Status: **draft v0.2** (2026-11-14). Implements the [PRD](PRD.md). The
 current code's distance from this design is tracked in the
 [gap analysis](GAP-ANALYSIS.md).
 
@@ -8,25 +8,30 @@ current code's distance from this design is tracked in the
 
 A KrustyCast cluster is 3 (or 5) nodes. Clients (gateways, services)
 submit messages to the leader. The cluster replicates them, decides each
-one's outcome deterministically, and publishes accepted messages as a
-MoldUDP64 feed. Consumers, including the deterministic applications built on
-top, read the feed and recover gaps from any node.
+one's outcome deterministically, and publishes accepted messages on the
+**native stream** (§8.3). Consumers, including the deterministic applications
+built on top, read the stream and recover gaps from any node. Optionally,
+the same sequence is also published as a standard **MoldUDP64** feed for
+external consumers (§8.4).
 
 ```
    clients / gateways                                 consumers / replicas
           │  ▲                                                ▲   │
- submit   │  │ outcome                         MoldUDP64 feed │   │ re-request
- (UDP)    ▼  │ (ACCEPTED/REJECTED/BUSY/...)       (multicast) │   ▼  (any node)
+ submit   │  │ outcome                          native stream │   │ recover
+ (UDP)    ▼  │ (ACCEPTED/REJECTED/BUSY/...)    (mcast/unicast) │   ▼  (any node)
    ┌─────────────────────── KrustyCast cluster ───────────────────────────┐
    │  ┌──────────── leader ────────────┐      ┌──── followers (×2) ────┐  │
    │  │ ingress ─▶ consensus ─▶ sequencer ─▶ egress    consensus         │  │
    │  │              │  ▲       core        │        sequencer core      │  │
-   │  │              ▼  │ acks              │        re-request server   │  │
+   │  │              ▼  │ acks              │        recovery server     │  │
    │  │          replication ◀──────────────┼──────▶ storage             │  │
    │  │          storage                    │                            │  │
    │  └─────────────────────────────────────┘      └────────────────────┘  │
    └──────────────────────────────────────────────────────────────────────┘
 ```
+
+The optional MoldUDP64 adapter (§8.4) publishes the same sequence as a
+second feed for external consumers; it is not shown.
 
 ## 2. Design principles
 
@@ -37,7 +42,7 @@ top, read the feed and recover gaps from any node.
 | P3 | **Bounded everything.** Fixed-capacity rings, tables and pools; overload produces an explicit BUSY. | Predictable memory and tail latency (G9). |
 | P4 | **Hot path: no allocation, no locks, no syscall per message.** | Low jitter: allocators, futexes and syscalls are the main sources of tail latency once GC is gone. |
 | P5 | **Publish after commit.** Nothing leaves the cluster until it is committed. | No retractions (G3); egress needs no coordination (§8.3). |
-| P6 | **Standard edges, versioned internals.** MoldUDP64 out; every internal format carries a version. | Interoperability; rolling upgrades. |
+| P6 | **Native protocols inside, standards as adapters.** Our own versioned protocols wherever we control both ends; standard formats (MoldUDP64) as adapters at the edge. | We get the semantics we need (back pressure, recovery, cloud) without giving up interoperability; rolling upgrades. |
 | P7 | **Verify the core, test the shell.** | Puts proof effort where bugs are subtle (§11). |
 
 ## 3. Key decisions (ADR summaries)
@@ -51,19 +56,21 @@ top, read the feed and recover gaps from any node.
 | 5 | Publish after commit (P5). | Speculative publish with rollback | Rollback is unacceptable to feed consumers. |
 | 6 | **Durability by replication** by default (mode a); fsync-before-commit as an option (mode b). | fsync always | Mode (a) takes fsync off the latency path. Mode (b) is for deployments where every node can lose power at once. |
 | 7 | **Thread-per-core with busy-polling**; no async runtime on the hot path. Tokio is allowed in the control plane. | Tokio everywhere | Async executors add wakeups, scheduling jitter and allocation. Spin and back-off strategies stay configurable (like Agrona's idle strategies). |
-| 8 | **Internal wire formats are fixed-layout, little-endian, zero-copy (`zerocopy`). Egress stays big-endian MoldUDP64.** | SBE (it has a Rust generator); hand-written codecs | Native byte order; zero-copy views; formats simple enough to verify. SBE remains an option if schemas multiply. |
+| 8 | **Our wire formats are fixed-layout, little-endian, zero-copy (`zerocopy`).** Only the MoldUDP64 adapter is big-endian. | SBE (it has a Rust generator); hand-written codecs | Native byte order; zero-copy views; formats simple enough to verify. SBE remains an option if schemas multiply. |
 | 9 | **Verification split** (§11): TLA+/Quint for protocols; Aeneas→Lean for pure cores; Verus for low-level concurrent structures; Kani/Miri for unsafe code; simulation for everything. | One tool for all | Each tool is strongest at a different layer; none covers everything. |
 | 10 | **One total order per cluster** in v1. Scale out with multiple independent clusters (shards). | Multi-stream clusters | Simplest correct design; most venue cores need exactly one order. |
+| 11 | **The native stream is the egress backbone; MoldUDP64 is an optional adapter** (**accepted** 2026-11-14). Both are projections of the same committed sequence and share global seqnos. | MoldUDP64 as the only egress (the previous design) | Mold is the right format for external feed consumers (UC4), but it has no back pressure, no "unavailable, use a snapshot" answer, re-requests that storm, and multicast-only assumptions. Those gaps land on our main use cases (UC1–UC3), where our own SDK is on both ends and interoperability buys nothing. |
 
 ## 4. Crate layout
 
 | Crate | Responsibility | Pure? | Verification |
 |---|---|---|---|
-| `krusty-wire` | Ingress, replication and egress (MoldUDP64) formats. Zero-copy views; version and magic checks. | yes | Kani (no panics, bounds); Aeneas/Lean (decode∘encode = id) for core formats |
+| `krusty-wire` | Ingress, replication and native stream formats. Zero-copy views; version and magic checks. | yes | Kani (no panics, bounds); Aeneas/Lean (decode∘encode = id) for core formats |
+| `krusty-mold` | MoldUDP64 adapter: publisher and standard re-request server, fed from the committed sequence (today's MoldUDP64 code). | codec yes, server no | Kani on the codec; `moldudp` interop tests |
 | `krusty-core` | **Sequencer state machine.** Dedup, append modes, conditional append, outcome table, egress projection, snapshot state. | **yes** | **Aeneas→Lean proof against the spec** (V2) |
 | `krusty-raft` | Raft as a sans-I/O state machine (election, replication, commit index, membership). | yes | TLA+ model checking plus trace validation (V3); Lean proof is a stretch goal |
 | `krusty-session` | Client-side session core: claims, resends, outcome handling. | yes | Aeneas→Lean (P1) |
-| `krusty-stream` | Consumer stream tracker: ordering, gaps, re-request scheduling (today's `stream.rs`). | yes | Aeneas→Lean (V2b) |
+| `krusty-stream` | Consumer stream tracker for the native stream: ordering, gaps, recovery scheduling, UNAVAILABLE handling (evolves from today's `stream.rs`). | yes | Aeneas→Lean (V2b) |
 | `krusty-log` | Segmented log storage, indices, snapshots, recovery. | no (I/O shell plus a pure index core) | Simulation with disk faults; Verus for offset/segment arithmetic |
 | `krusty-ring` | SPSC rings, buffer pools, cache-padded counters. | no (atomics) | **Verus** (V4) or loom + Kani; Miri |
 | `krusty-net` | Transport trait. Kernel UDP (`recvmmsg`/`sendmmsg`, busy-poll); AF_XDP later; Onload-compatible. | no | Simulation (simulated transport); fuzzing |
@@ -129,14 +136,17 @@ high throughput when heavily loaded.
          │   ▼  │                   │
          │ [T-repl] ⇄ followers   [T-store] io_uring segment writes, fsync policy
          ▼ SPSC
-        [T-egress] sendmmsg: MoldUDP64 packets + client outcomes
-        [T-rereq]  re-request server: reads committed log via mmap (any node)
+        [T-egress] sendmmsg: native stream frames + client outcomes
+        [T-recov]  recovery server: reads committed log via mmap (any node)
+        [T-mold]   optional MoldUDP64 adapter + re-request server (own core,
+                   off the latency path)
         [control]  config, CLI, counters export (unpinned, may use tokio)
 ```
 
 On followers, `T-repl` receives AppendEntries, `T-store` persists, and
 `T-core` applies committed entries to its own sequencer core. Every node
-can therefore serve re-requests and take over immediately.
+can therefore serve recovery (and unicast subscribers) and take over
+immediately.
 
 ## 7. Latency budget (Tier A, estimates to be validated in M0)
 
@@ -148,7 +158,7 @@ can therefore serve re-requests and take over immediately.
 | Follower append (mode a) and ack | ~1 µs |
 | Ack → leader | 5–10 µs |
 | Commit, sequencer step, egress encode | < 1 µs |
-| Leader → consumer multicast | 5–10 µs |
+| Leader → consumer multicast (native stream) | 5–10 µs |
 | **Submit → feed, one-way total** | **~22–43 µs** |
 
 The PRD's submit-to-feed *round-trip* target also covers getting the
@@ -191,7 +201,9 @@ list.
 
 ### 8.2 Replication (leader ⇄ followers)
 
-- Raft AppendEntries carrying batches of raw ingress entries.
+- Raft AppendEntries carrying batches of raw ingress entries. Each entry
+  carries the leader's append timestamp, so the native stream's
+  `timestamp_ns` is replicated state, not a local clock reading.
 - Pipelined: several batches in flight, bounded by a per-follower window.
 - Pre-vote and check-quorum prevent disruptive elections.
 - Heartbeat and election timeouts are tuned for the NFR-6 failover target.
@@ -199,26 +211,79 @@ list.
 - The commit index advances at quorum. Log index and egress seqno are
   different numbers: rejected entries consume a log index but no seqno.
 
-### 8.3 Egress (MoldUDP64)
+### 8.3 Native stream (cluster → consumers)
 
-- Same semantics as today: a session name per cluster session, heartbeats,
-  end-of-session.
-- Only the leader multicasts.
-- **Two leaders publishing at once during a handover is harmless.** By Raft's
-  log-matching property and determinism (G7), both publish byte-identical
-  packets for the same seqnos, and consumers drop duplicates by seqno.
-  Egress safety therefore doesn't depend on a single publisher.
-- Every node keeps an egress index (seqno → log position) and serves
-  re-requests from memory or mmap.
-- Unicast egress (FR-6b) has followers fan out to registered subscribers.
+The backbone egress protocol: our SDK on one end, the cluster on the
+other. Fixed little-endian layout, versioned (P6, ADR-8). Sketch:
 
-### 8.4 Consumer recovery
+- **Frame header:** `magic u16 | version u8 | type u8 | flags u16 |
+  stream_id u64 | seqno u64 | count u16`. `stream_id` identifies cluster and
+  session; it replaces Mold's 10-byte ASCII session name.
+- **Message block (8-byte aligned):** `len u32 | flags u32 | timestamp_ns
+  u64 | sender_id u32 | key u64 | version u64 | payload`.
+  - `timestamp_ns` is assigned by the leader when it appends the entry, so
+    it is part of the replicated log and deterministic. Applications use it
+    instead of reading their own clocks (G7).
+- **Frame types:**
 
-- The consumer SDK re-requests after a small random delay and spreads
-  requests across nodes. This avoids a re-request storm when many
-  consumers miss the same packet.
-- Optional (P2): a node that receives many requests for the same range
-  re-multicasts it once instead of unicasting it N times.
+| Type | Direction | Meaning |
+|---|---|---|
+| `DATA` | cluster → consumer | Messages `seqno .. seqno+count`. A retransmit flag marks recovery traffic. |
+| `HEARTBEAT{next_seqno}` | cluster → consumer | Liveness; exposes tail loss. |
+| `END_OF_SESSION{next_seqno}` | cluster → consumer | Session finished. |
+| `RECOVER{from, count}` | consumer → any node | Request a range. |
+| `UNAVAILABLE{from, earliest_retained}` | node → consumer | The range has aged out: load an application snapshot or replay from an archive. Mold has no equivalent; there the consumer can only time out. |
+| `SUBSCRIBE` / `STATUS{position}` | consumer → node | Unicast mode registration and keep-alive; position reports feed the lag counters. |
+
+**Transport modes.** The same frames run in two modes:
+- **Multicast** (on-prem/colo): only the leader publishes.
+- **Unicast fan-out** (cloud, FR-6b): consumers `SUBSCRIBE` to a node,
+  preferably a follower, and each node serves a bounded number of
+  subscribers.
+
+**Flow control.** The cluster never waits for a consumer: a slow consumer
+must not slow the venue. Consumers that fall behind recover. In unicast
+mode, a subscriber that lags beyond a configured limit is dropped with an
+explicit reason and must resubscribe from its position. Consumer positions
+are visible in counters, so lag is observable before it becomes loss.
+
+**Leader changes.** Two leaders publishing at once during a handover is
+harmless. By Raft's log-matching property and determinism (G7), both
+publish the same messages for the same seqnos (packet boundaries may
+differ), and consumers drop duplicates by seqno. Egress safety therefore
+doesn't depend on a single publisher.
+
+**Indexing.** Every node keeps an egress index (seqno → log position) and
+serves recovery from memory or mmap.
+
+### 8.4 MoldUDP64 adapter (optional, ADR-11)
+
+For external consumers that expect a standard feed (UC4):
+- A separate multicast group carrying the same global seqnos as the native
+  stream, so the two are always cross-checkable.
+- A standard MoldUDP64 re-request server, as the current code implements
+  and tests against the `moldudp` crate.
+- Session name, heartbeats and end-of-session per the MoldUDP64 spec.
+- Message data is the current big-endian `SequencedMessage` layout (sender,
+  target, target seq, payload), plus the timestamp in a later version.
+- Runs on its own stage and core (`T-mold`). It is not on the native
+  stream's latency path, and the PRD latency targets are measured on the
+  native stream.
+
+### 8.5 Consumer recovery (native stream)
+
+- **Delayed, randomized requests.** A consumer that detects a gap waits a
+  small random delay before sending `RECOVER`. Requests are spread across
+  nodes.
+- **Suppression.** If several consumers request the same range within a
+  short window, the node retransmits it once on multicast. Consumers
+  waiting on that range cancel their own pending requests when they see
+  the retransmission. This prevents the re-request storm that plain Mold
+  suffers.
+- **Rate limits.** Per-consumer recovery rate limits keep one consumer from
+  starving the others.
+- **Aged-out data.** `UNAVAILABLE` sends the consumer to its snapshot path
+  (FR-10b) instead of retrying forever.
 
 ## 9. Storage
 
@@ -346,7 +411,7 @@ answers early whether these rules are enough in practice.
 - P1: per-client pre-shared-key MAC on ingress, and authenticated
   replication links.
 - P2: encryption.
-- The re-request server serves only committed public feed data.
+- The recovery and re-request servers serve only committed stream data.
 
 ## 15. Crate inventory (adopt now, replace when justified)
 
@@ -372,9 +437,11 @@ answers early whether these rules are enough in practice.
 2. Outcome-ring depth per session and dedup capacity. This needs PRD
    answers on client counts.
 3. Unicast egress at scale: followers only, or a separate relay tier?
-4. Whether to adopt SBE now for schema evolution, or stay with `zerocopy`
+4. Is the MoldUDP64 adapter P0 or P1? It depends on the first market
+   (PRD open question 1).
+5. Whether to adopt SBE now for schema evolution, or stay with `zerocopy`
    structs plus explicit versioning.
-5. Lean (via Aeneas) or Verus for `krusty-session`. Decide after the M0
+6. Lean (via Aeneas) or Verus for `krusty-session`. Decide after the M0
    spikes.
 
 ## 17. Prior art evaluated
