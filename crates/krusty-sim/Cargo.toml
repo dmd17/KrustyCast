@@ -1,0 +1,15 @@
+[package]
+name = "krusty-sim"
+version = "0.1.0"
+description = "KrustyCast deterministic simulator: clients, sequencer core and consumers over a faulty network, with invariant checkers."
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+krusty-wire = { path = "../krusty-wire" }
+krusty-core = { path = "../krusty-core" }
+krusty-session = { path = "../krusty-session" }
+krusty-stream = { path = "../krusty-stream" }

@@ -123,7 +123,7 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 | Q2 | V2 | **Started 2026-11-14:** `krusty-core` translates to Lean (`spec/lean`, `regen.sh`); first three theorems proved; CI re-checks them and fails if the Lean is stale. No proofs | Aeneas→Lean proof of `krusty-core::step` (refinement plus invariants) | C | XL | M1–M3 |
 | Q3 | V3 | — | Trace validation of `krusty-raft` against the spec | C | L | M3 |
 | Q4 | V4 | — | Verus-verified SPSC ring (or loom + Kani) | C | L | M2 |
-| Q5 | V6 | No simulation | `krusty-sim`: seeded network, disk and clock faults; G1–G9 checkers; nightly runs | C | L | M1→ |
+| Q5 | V6 | **Started 2026-11-14:** `krusty-sim` drives clients, core and consumers through the real codecs over a faulty network; G1, G2, G4–G6, exactly-once and liveness checkers; 5 scenarios; nightly sweep of 100 k runs. No simulation | `krusty-sim`: seeded network, disk and clock faults; G1–G9 checkers; nightly runs | C | L | M1→ |
 | Q6 | V7 | **Started 2026-11-14:** `cargo-fuzz` target for every `krusty-wire` decoder (canonical re-encoding asserted), 60 s per CI run. No fuzzing | `cargo-fuzz` on all decoders and on ingress | C | S | M1 |
 | Q7 | — | **Started 2026-11-14:** fmt, clippy, tests, TLC model checking and Lean proof re-check in GitHub Actions | CI: build, tests, Kani/Miri, model checking, proof re-check, alloc guard, perf smoke test | O | M | M0 |
 | Q8 | V8 | — | Jepsen-style real-network fault testing | C | M | M4 |
