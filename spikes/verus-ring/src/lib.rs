@@ -14,6 +14,8 @@
 //! `SeqCst`); Verus does not model weaker orderings.
 #![allow(unused_imports)]
 
+pub mod batched;
+
 use std::sync::Arc;
 use vstd::atomic_ghost::*;
 use vstd::cell::*;

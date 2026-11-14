@@ -86,6 +86,99 @@ impl Pop for RC {
     }
 }
 
+/// Batched streaming: up to 64 per call.
+trait PushBatch: Send + 'static {
+    fn push_batch(&mut self, items: &[u64]) -> usize;
+}
+trait PopBatch: Send + 'static {
+    fn pop_batch(&mut self, out: &mut Vec<u64>, max: usize) -> usize;
+}
+impl PushBatch for verus_ring::batched::BatchProducer<u64> {
+    fn push_batch(&mut self, items: &[u64]) -> usize {
+        verus_ring::batched::BatchProducer::push_batch(self, items)
+    }
+}
+impl PopBatch for verus_ring::batched::BatchConsumer<u64> {
+    fn pop_batch(&mut self, out: &mut Vec<u64>, max: usize) -> usize {
+        verus_ring::batched::BatchConsumer::pop_batch(self, out, max)
+    }
+}
+
+/// The same batched algorithm as the verified ring, with Acquire/Release.
+impl PushBatch for RP {
+    fn push_batch(&mut self, items: &[u64]) -> usize {
+        let len = self.0.buf.len();
+        let head = self.0.head.load(Ordering::Acquire) as usize;
+        let tail = self.1;
+        let avail = if head > tail { head - tail - 1 } else if head == 0 { len - tail - 1 } else { len - tail };
+        let n = avail.min(items.len());
+        for (i, v) in items[..n].iter().enumerate() {
+            unsafe { (*self.0.buf[tail + i].get()).write(*v) };
+        }
+        if n > 0 {
+            let next = if tail + n == len { 0 } else { tail + n };
+            self.0.tail.store(next as u64, Ordering::Release);
+            self.1 = next;
+        }
+        n
+    }
+}
+impl PopBatch for RC {
+    fn pop_batch(&mut self, out: &mut Vec<u64>, max: usize) -> usize {
+        let len = self.0.buf.len();
+        let tail = self.0.tail.load(Ordering::Acquire) as usize;
+        let head = self.1;
+        let avail = if head <= tail { tail - head } else { len - head };
+        let n = avail.min(max);
+        for i in 0..n {
+            out.push(unsafe { (*self.0.buf[head + i].get()).assume_init_read() });
+        }
+        if n > 0 {
+            let next = if head + n == len { 0 } else { head + n };
+            self.0.head.store(next as u64, Ordering::Release);
+            self.1 = next;
+        }
+        n
+    }
+}
+
+/// One-way streaming in batches of up to 64: ns per message.
+fn throughput_batched<P: PushBatch, C: PopBatch>(mut p: P, mut c: C, n: u64, cores: (usize, usize)) -> f64 {
+    let t = std::thread::spawn(move || {
+        pin(cores.0);
+        let mut next = 0u64;
+        let mut buf = [0u64; 64];
+        while next < n {
+            let k = ((n - next) as usize).min(64);
+            for (j, b) in buf[..k].iter_mut().enumerate() {
+                *b = next + j as u64;
+            }
+            let sent = p.push_batch(&buf[..k]);
+            if sent == 0 {
+                std::hint::spin_loop();
+            }
+            next += sent as u64;
+        }
+    });
+    pin(cores.1);
+    let start = Instant::now();
+    let mut out = Vec::with_capacity(64);
+    let mut expect = 0u64;
+    while expect < n {
+        out.clear();
+        if c.pop_batch(&mut out, 64) == 0 {
+            std::hint::spin_loop();
+        }
+        for v in &out {
+            assert_eq!(*v, expect);
+            expect += 1;
+        }
+    }
+    let el = start.elapsed();
+    t.join().unwrap();
+    el.as_nanos() as f64 / n as f64
+}
+
 fn pin(core: usize) {
     unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
@@ -165,6 +258,22 @@ fn main() {
     const N: u64 = 20_000_000;
     const RT: usize = 1_000_000;
     println!("cores {:?}; {} msgs streamed, {} round trips; best of 5 runs", cores, N, RT);
+    println!("batched streaming (up to 64 per call), ns/msg, best of 5:");
+    for name in ["verified batched (SeqCst)", "twin batched (Acquire/Release)"] {
+        let mut best = f64::MAX;
+        for _ in 0..5 {
+            let tp = if name.starts_with("verified") {
+                let (p, c) = verus_ring::batched::new_batch_ring::<u64>(1024);
+                throughput_batched(p, c, N, cores)
+            } else {
+                let (p, c) = relaxed(1024);
+                throughput_batched(p, c, N, cores)
+            };
+            best = best.min(tp);
+        }
+        println!("  {:<32}{:>8.1}", name, best);
+    }
+    println!("per element:");
     println!("{:<28}{:>10}{:>10}{:>10}{:>10}", "variant", "ns/msg", "rtt p50", "rtt p99", "p99.99");
     for name in ["verified (SeqCst)", "twin (Acquire/Release)"] {
         let mut best_tp = f64::MAX;

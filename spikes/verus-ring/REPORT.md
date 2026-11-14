@@ -86,10 +86,41 @@ the cache-line transfer between cores and barely changes.
 - Pin `vstd` and `verus_state_machines_macros` with `=` to the Verus release's
   date stamp; CI installs that release and its toolchain.
 
+## Batched ring (Q4, M2), 2026-11-14
+
+`src/batched.rs` implements option 1 above and is fully verified (36 items,
+0 errors, including the executable `push_batch`/`pop_batch`):
+
+- Protocol `BatchQueue`: the producer reserves up to `n` free cells with one
+  transition (`produce_start(n)`, inside the atomic load of `head`),
+  receiving their permissions as a map; it writes them and publishes them
+  with one transition (`produce_end`, inside the atomic store of `tail`).
+  The consumer is symmetric. A batch never crosses the end of the buffer
+  (callers loop), so ranges stay contiguous and the invariants stay linear.
+- Proved: the per-cell storage invariant (each cell owned by exactly one
+  side; published cells initialized, free cells empty), bounds, and that a
+  reservation stays valid while the other side moves. A few small lemmas
+  (`lemma_free`, `lemma_produce_grows`, `lemma_consume_shrinks`,
+  `lemma_consume_keeps`) carry the circular arithmetic.
+- Plain-cargo tests (including 5 M values across two threads in order) and
+  Miri with 4 seeds pass. FIFO order is still checked by tests, not proved.
+
+Streaming throughput, batches of up to 64, cores 4→5 and 2→3, best of 5:
+
+| Variant | ns/msg |
+|---|---|
+| verified batched (SeqCst) | 3.3 |
+| twin batched (Acquire/Release) | 2.5 |
+| verified per element (SeqCst) | 65.7 |
+| twin per element (Acquire/Release) | 18.7 |
+
+The verified ring's cost over the unverified one drops from 2.6–4.7× to
+1.3×, and it is 20× faster than the per-element verified ring: the SeqCst
+store is now paid once per batch.
+
 ## Next steps (not done)
 
 - FIFO order as a verified property: add a persistent ghost history
   (`#[sharding(persistent_map)]`, index ↦ value) and prove each pop returns
   the next history element.
-- The batched protocol (option 1) and a re-run of the benchmark.
 - `T: Copy` bound and capacity as a const generic.

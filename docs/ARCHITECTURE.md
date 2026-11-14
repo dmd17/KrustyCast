@@ -398,7 +398,9 @@ The rules:
   SeqCst only (Verus does not model weaker orderings). A SeqCst store is an
   `xchg` on x86, which made a per-element verified ring 2.6–4.7× slower at
   streaming than an Acquire/Release twin. Verified rings therefore publish
-  in batches (one atomic store per batch). Rings carry `Copy` handles (a
+  in batches (one atomic store per batch): the verified batched ring
+  (`spikes/verus-ring/src/batched.rs`, M2) streams at 3.3 ns/msg against
+  2.5 ns/msg for its unverified twin. Rings carry `Copy` handles (a
   dropped ring leaks what it holds). Miri runs on the erased code of every
   Verus crate, since the proof covers the ghost model, not the binary.
 - Toolchains pinned: Charon pins its Rust toolchain; Verus ships its own
