@@ -158,14 +158,16 @@ Submit-to-feed latency from the scheduled send time, µs:
 
 - **Mode (a)** is unaffected by storage: the storage stage runs behind,
   off the latency path.
-- **Mode (b) misses NFR-9 as written** (p99 ≤ device fsync p99 + 30 µs,
-  about 1 ms here): p99 is 2.1–2.6 ms. With one group commit at a time, a
+- **Mode (b) costs one to two fsyncs.** With one group commit at a time, a
   message that arrives just after an fsync started waits for it and then
-  for its own, so latency is 1–2 fsyncs (mean ~1.5×, tail ~2×). An
-  experiment with 2–4 overlapping `fdatasync` threads did not help on this
-  drive (it serializes cache flushes). NFR-9 needs either revising (e.g.
-  ≤ 2 × fsync p99 + 30 µs) or a qualifier: drives with power-loss
-  protection, where an fsync costs tens of µs. A PRD decision.
+  for its own (mean ~1.5×, tail ~2×). An experiment with 2–4 overlapping
+  `fdatasync` threads did not help on this drive (it serializes cache
+  flushes). NFR-9 was relaxed on 2026-11-15 to ≤ 2 × device fsync p99 +
+  30 µs (PRD open question 7), 1.81–2.25 ms with the floor above. Against
+  that, 1 000 msg/s (p99 2.06 ms) is borderline and 10 000 msg/s (p99
+  2.57 ms) misses. The floor and the latencies were measured in separate
+  runs, and the floor's p99 varies by 25% between runs. Re-measure both in
+  one session before calling NFR-9 met. Mode (b) in a cluster: see M3.
 - At 50 000 msg/s in mode (b) a single client is window-bound: 64 messages
   in flight over a ~2.5 ms round trip is ~25 k msg/s.
 
@@ -191,7 +193,7 @@ than the last index file failed ("index entry out of order").
 ## M3 replication, 2026-11-15
 
 Three replicated nodes in one process over loopback (`krusty-node` cluster
-mode, durability (a)).
+mode, durability (a) unless stated).
 
 **Failover (NFR-6: leader crash to the first new message on the feed,
 p99 ≤ 200 ms).** `crates/krusty-client/examples/failover.rs`: a publisher
@@ -215,6 +217,27 @@ follower notices after 50–100 ms without a heartbeat). Unpinned, and even
 confined to the two non-isolated cores (`taskset -c 0,1`, 20 trials), the
 worst trial took 91 ms. This is loopback on a laptop; the servers decide.
 The nightly workflow runs 20 trials and fails above 1 s.
+
+**Mode (b) in a cluster** (followers acknowledge only fsynced entries,
+`repl_held`; architecture §8.2). Measured on a second machine (i9-9980HK,
+8 cores with HT on, 6.8 lowlatency kernel, no isolated cores, unpinned),
+with mode (a) on the same machine for comparison:
+
+```
+FAILOVER_DURABILITY=b cargo run --release -p krusty-client --example failover -- 100
+```
+
+| Mode | Trials | New leader p50 | max | New messages on the feed p50 | p90 | max | Failed messages |
+|---|---|---|---|---|---|---|---|
+| (b) | 100 | 65.5 ms | 142.5 ms | 66.1 ms | 83.9 ms | 143.9 ms | 0 |
+| (a) | 100 | 64.5 ms | 94.9 ms | 71.9 ms | 101.9 ms | 112.8 ms | 0 |
+
+Mode (b) does not slow failover: the time is still mostly the election
+timeout. The
+`krusty-sim` scenario `cluster3-b` adds power losses, a third of them of
+the whole cluster. 1 000 seeds are clean. The same scenario with followers
+acknowledging unsynced entries loses ACCEPTED messages, or the histories
+diverge, in 9 of 20 seeds.
 
 The benchmark found two bugs, now fixed: finding an entry by log index read
 1 MiB per lookup, and a restarted node looked up every re-applied entry

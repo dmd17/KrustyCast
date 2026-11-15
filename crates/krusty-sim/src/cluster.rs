@@ -127,6 +127,8 @@ struct ClientState {
 }
 
 const MS: u64 = 1_000_000;
+/// In-flight datagrams beyond which a run is stopped as a livelock.
+const MAX_QUEUE: usize = 20_000;
 
 fn raft_config(id: NodeId, n: u32, seed: u64) -> RaftConfig {
     RaftConfig {
@@ -272,6 +274,7 @@ impl Sim<'_> {
                 }
             }
             buf.truncate(at);
+            buf.shrink_to_fit(); // queued copies would otherwise keep 64 KiB each
             self.send(To::Node(id), To::Node(to), buf);
         }
         self.apply_committed(k);
@@ -493,6 +496,16 @@ pub fn run_cluster(seed: u64, p: &ClusterParams) -> Report {
     let tick = MS / 2;
 
     while sim.now < p.limit_ns {
+        // A message storm (fan-out above one per round trip) would exhaust
+        // memory long before the time limit; healthy runs stay in the
+        // low thousands.
+        if sim.queue.len() > MAX_QUEUE {
+            sim.report.violations.push(format!(
+                "livelock: over {MAX_QUEUE} datagrams in flight at {} ms",
+                sim.now / MS
+            ));
+            break;
+        }
         let done = events.len() as u64 == total;
         let longest = sim.nodes.iter().map(|x| x.history.len()).max().unwrap_or(0) as u64;
         if done
@@ -828,7 +841,7 @@ pub fn cluster_scenario(name: &str) -> Option<ClusterParams> {
         // Mode (b): power losses, including of the whole cluster.
         "cluster3-b" => ClusterParams {
             durable_acks: true,
-            crash_ms: 150,
+            crash_ms: 50,
             ..d
         },
         _ => return None,
@@ -910,8 +923,15 @@ mod tests {
             ack_unsynced: true,
             ..cluster_scenario("cluster3-b").unwrap()
         };
-        let caught = (0..20).filter(|&seed| !simulate(seed, &p).violations.is_empty());
-        assert!(caught.count() > 0);
+        // Caught by a safety check, not only by the livelock guard or its
+        // liveness fallout (the leader's stale match index can storm).
+        let caught = (0..20).any(|seed| {
+            simulate(seed, &p)
+                .violations
+                .iter()
+                .any(|v| !v.starts_with("livelock") && !v.starts_with("liveness"))
+        });
+        assert!(caught);
     }
 
     #[test]

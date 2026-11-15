@@ -308,9 +308,8 @@ impl Shell {
                 self.unsynced.pop_back();
             }
             self.durable = self.durable.min(t - 1);
-            self.held.retain(|(_, m)| {
-                !matches!(m, Message::AppendReply { index, .. } if *index >= t)
-            });
+            self.held
+                .retain(|(_, m)| !matches!(m, Message::AppendReply { index, .. } if *index >= t));
         }
         if let Some(from) = self.ob.store_from.take() {
             let last = self.raft.last_index();
