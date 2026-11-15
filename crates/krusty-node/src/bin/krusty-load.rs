@@ -321,7 +321,7 @@ fn main() {
                 c.recovery = free();
                 c.storage = Some(krusty_node::StorageConfig {
                     log: krusty_log::LogConfig::new(base.join(id.to_string())),
-                    durability: krusty_node::Durability::Async,
+                    durability: a.durability,
                     snapshot_every: 1_000_000,
                 });
                 let mut cl = krusty_node::ClusterConfig::new(id, members.clone());

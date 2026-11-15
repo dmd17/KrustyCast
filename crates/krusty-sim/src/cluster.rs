@@ -4,6 +4,13 @@
 //! duplication, delay, partitions, crashes and restarts (from each node's
 //! store).
 //!
+//! Durability mode (b) (`durable_acks`): a node's store syncs after a
+//! random delay; only synced entries count toward the leader's quorum, and
+//! followers hold successful AppendReplies until what they acknowledge is
+//! synced, as `krusty-node` does. Every crash is then a power loss (the
+//! unsynced tail of the store is gone), sometimes of all nodes at once:
+//! nothing committed may be lost.
+//!
 //! The log holds raw inputs (gap R2): an entry is `[timestamp u64][SUBMIT]`
 //! proposed by the leader; an empty entry is the leader's no-op. Every node
 //! derives the same decisions; only the leader answers clients and publishes
@@ -47,6 +54,10 @@ pub struct ClusterParams {
     pub limit_ns: u64,
     pub conditional: u64,
     pub core: CoreConfig,
+    /// Mode (b) with power losses (see the module docs).
+    pub durable_acks: bool,
+    /// Bug injection for mode (b): followers acknowledge unsynced entries.
+    pub ack_unsynced: bool,
 }
 
 impl Default for ClusterParams {
@@ -68,6 +79,8 @@ impl Default for ClusterParams {
                 outcome_ring: 8,
                 ..CoreConfig::DEFAULT
             },
+            durable_acks: false,
+            ack_unsynced: false,
         }
     }
 }
@@ -98,6 +111,10 @@ struct Node {
     /// Leader timestamp clock (monotonic).
     last_ts: u64,
     last_heartbeat: u64,
+    /// Mode (b): entries of `store.log` that are synced.
+    synced: u64,
+    /// Mode (b): successful AppendReplies waiting for a sync.
+    held: Vec<(NodeId, Message)>,
 }
 
 struct ClientState {
@@ -180,26 +197,50 @@ impl Sim<'_> {
     /// Persists, then sends (the outbox contract), then applies commits.
     fn after_step(&mut self, k: usize, mut out: Outbox) {
         let id = k as NodeId + 1;
+        let b = self.p.durable_acks;
         {
             let node = &mut self.nodes[k];
             let raft = node.raft.as_mut().unwrap();
             if let Some(hs) = out.hard_state {
-                node.store.hs = hs;
+                node.store.hs = hs; // synced at once in both modes
             }
             if let Some(t) = out.truncate_from {
                 node.store.log.truncate(t as usize - 1);
+                node.synced = node.synced.min(t - 1);
+                node.held.retain(
+                    |(_, m)| !matches!(m, Message::AppendReply { index, .. } if *index >= t),
+                );
             }
             if let Some(from) = out.store_from {
                 node.store.log.truncate(from as usize - 1);
+                node.synced = node.synced.min(from - 1);
                 for i in from..=raft.last_index() {
                     let (t, d) = raft.entry(i).expect("new entries are in memory");
                     node.store.log.push((t, d.to_vec()));
                 }
             }
-            let last = raft.last_index();
-            let mut more = Outbox::default();
-            raft.persisted(last, &mut more);
-            out.sends.append(&mut more.sends);
+            if !b {
+                // Mode (a): stored is persisted.
+                let last = raft.last_index();
+                let mut more = Outbox::default();
+                raft.persisted(last, &mut more);
+                out.sends.append(&mut more.sends);
+            } else if !self.p.ack_unsynced {
+                // Mode (b): acknowledge only what is synced.
+                let synced = node.synced;
+                let held = &mut node.held;
+                out.sends.retain(|&(to, m)| match m {
+                    Message::AppendReply {
+                        success: true,
+                        index,
+                        ..
+                    } if index > synced => {
+                        held.push((to, m));
+                        false
+                    }
+                    _ => true,
+                });
+            }
         }
         let sends = std::mem::take(&mut out.sends);
         for (to, m) in sends {
@@ -234,6 +275,29 @@ impl Sim<'_> {
             self.send(To::Node(id), To::Node(to), buf);
         }
         self.apply_committed(k);
+    }
+
+    /// Mode (b): node `k`'s store finishes a sync of everything stored.
+    fn sync(&mut self, k: usize) {
+        let node = &mut self.nodes[k];
+        let Some(raft) = node.raft.as_mut() else {
+            return;
+        };
+        node.synced = node.store.log.len() as u64;
+        let mut out = Outbox::default();
+        raft.persisted(node.synced, &mut out);
+        let (term, synced) = (raft.term(), node.synced);
+        for (to, m) in std::mem::take(&mut node.held) {
+            match m {
+                Message::AppendReply { term: t, index, .. } if index <= synced => {
+                    if t == term {
+                        out.sends.push((to, m));
+                    }
+                }
+                _ => node.held.push((to, m)),
+            }
+        }
+        self.after_step(k, out);
     }
 
     fn apply_committed(&mut self, k: usize) {
@@ -386,6 +450,8 @@ pub fn run_cluster(seed: u64, p: &ClusterParams) -> Report {
                 history: Vec::new(),
                 last_ts: 0,
                 last_heartbeat: 0,
+                synced: 0,
+                held: Vec::new(),
             })
             .collect(),
         report: Report::default(),
@@ -450,13 +516,24 @@ pub fn run_cluster(seed: u64, p: &ClusterParams) -> Report {
         }
         if sim.faulty && sim.rng.below(p.crash_ms * 2) == 0 {
             let k = sim.rng.below(n as u64) as usize;
-            let node = &mut sim.nodes[k];
-            node.raft = None; // memory is gone; the store survives
+            // Mode (b): power losses, sometimes of every node at once.
+            let all = p.durable_acks && sim.rng.below(3) == 0;
+            for j in 0..n as usize {
+                if j == k || all {
+                    let node = &mut sim.nodes[j];
+                    node.raft = None; // memory is gone; the store survives
+                    if p.durable_acks {
+                        node.store.log.truncate(node.synced as usize);
+                        node.held.clear();
+                    }
+                }
+            }
         }
         for k in 0..n as usize {
             if sim.nodes[k].raft.is_none() && (!sim.faulty || sim.rng.below(200) == 0) {
                 let node = &mut sim.nodes[k];
                 node.raft = Some(boot(k as u32 + 1, n, seed ^ sim.now, &node.store, sim.now));
+                node.synced = node.store.log.len() as u64;
                 // Rebuild the core by re-applying the committed log as the
                 // commit index becomes known again.
                 node.core = Core::new(p.core);
@@ -490,6 +567,18 @@ pub fn run_cluster(seed: u64, p: &ClusterParams) -> Report {
                     }
                 }
                 To::Consumer(k) => consumer_receive(&bytes, &mut consumers[k], k, &mut sim.report),
+            }
+        }
+        // Mode (b): stores finish syncs (about 2 ms after a write).
+        if p.durable_acks {
+            for k in 0..n as usize {
+                let node = &sim.nodes[k];
+                if node.raft.is_some()
+                    && node.synced < node.store.log.len() as u64
+                    && sim.rng.below(4) == 0
+                {
+                    sim.sync(k);
+                }
             }
         }
         // Raft ticks and leader heartbeats on the stream.
@@ -736,11 +825,17 @@ pub fn cluster_scenario(name: &str) -> Option<ClusterParams> {
             crash_ms: 150,
             ..d
         },
+        // Mode (b): power losses, including of the whole cluster.
+        "cluster3-b" => ClusterParams {
+            durable_acks: true,
+            crash_ms: 150,
+            ..d
+        },
         _ => return None,
     })
 }
 
-pub const CLUSTER_SCENARIOS: [&str; 3] = ["cluster3", "cluster5", "cluster3-harsh"];
+pub const CLUSTER_SCENARIOS: [&str; 4] = ["cluster3", "cluster5", "cluster3-harsh", "cluster3-b"];
 
 /// Runs a cluster simulation; deterministic in `seed` and `p`.
 pub fn simulate(seed: u64, p: &ClusterParams) -> Report {
@@ -791,6 +886,32 @@ mod tests {
                 &r.violations[..r.violations.len().min(8)]
             );
         }
+    }
+
+    #[test]
+    fn mode_b_survives_power_losses() {
+        let p = cluster_scenario("cluster3-b").unwrap();
+        for seed in 0..10 {
+            let r = simulate(seed, &p);
+            assert!(
+                r.violations.is_empty(),
+                "seed {seed}: {:?}",
+                &r.violations[..r.violations.len().min(8)]
+            );
+            assert_eq!(r.accepted + r.rejected, 3 * 150);
+        }
+    }
+
+    /// The check has teeth: followers acknowledging unsynced entries lose
+    /// committed messages to power losses.
+    #[test]
+    fn acknowledging_unsynced_entries_is_caught() {
+        let p = ClusterParams {
+            ack_unsynced: true,
+            ..cluster_scenario("cluster3-b").unwrap()
+        };
+        let caught = (0..20).filter(|&seed| !simulate(seed, &p).violations.is_empty());
+        assert!(caught.count() > 0);
     }
 
     #[test]

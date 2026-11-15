@@ -3,7 +3,8 @@
 //!
 //! `cargo run --release -p krusty-client --example failover -- [trials]`
 //! (`FAILOVER_CORES=2,3,4`: pin node k's stages to core k; `FAILOVER_MAX_MS`:
-//! exit 1 if a trial takes longer; `FAILOVER_TRACE`: print node states.)
+//! exit 1 if a trial takes longer; `FAILOVER_TRACE`: print node states;
+//! `FAILOVER_DURABILITY=b`: durability mode (b).)
 //!
 //! Each trial: a publisher sends steadily (one message every 200 µs) and a
 //! consumer follows the feed; the leader is stopped (its threads end, it
@@ -49,6 +50,10 @@ fn main() {
         .and_then(|a| a.parse().ok())
         .unwrap_or(30);
     let base = std::env::temp_dir().join(format!("krusty-failover-{}", std::process::id()));
+    let durability = match std::env::var("FAILOVER_DURABILITY").as_deref() {
+        Ok("b") => Durability::Sync,
+        _ => Durability::Async,
+    };
     let feed = free_port();
     let repl: Vec<(u32, SocketAddrV4)> = (1..=3).map(|id| (id, free_port())).collect();
     let cfgs: Vec<NodeConfig> = (1..=3u32)
@@ -57,7 +62,7 @@ fn main() {
             cfg.heartbeat_us = 5_000;
             cfg.storage = Some(StorageConfig {
                 log: krusty_log::LogConfig::new(base.join(id.to_string())),
-                durability: Durability::Async,
+                durability,
                 snapshot_every: 100_000,
             });
             let mut cl = ClusterConfig::new(id, repl.clone());

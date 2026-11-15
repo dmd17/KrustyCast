@@ -230,10 +230,15 @@ As built (M3, `krusty-node/src/cluster.rs`):
   and heartbeats (and Mold), and answers clients. Followers answer
   NOT_LEADER with the leader's id. A node stopping does not end the stream
   (no END_OF_SESSION).
-- Mode (a) only: an entry handed to T-store counts as persisted, so
-  followers acknowledge on receipt. The hard state goes to `raft.state`
-  (two slots, CRC) before any message that depends on it. Mode (b) with
-  replication needs acknowledgements after fsync (PRD open question 7).
+- Mode (a): an entry handed to T-store counts as persisted, so followers
+  acknowledge on receipt. Mode (b): T-store reports how many entries it
+  has fsynced; only those count toward the leader's quorum, and a
+  follower holds each successful AppendReply until what it acknowledges is
+  synced (`repl_held`), so a committed entry is on a majority's disks.
+  A held reply is dropped if its entries are truncated or the term moves
+  on. Leader and followers fsync in parallel, each with group commit.
+  The hard state goes to `raft.state` (two slots, CRC) before any message
+  that depends on it (fsynced in mode b).
 - Lagging followers are served from memory (`retain_entries`) or the log
   (a sparse in-memory index per segment finds an entry with one short
   read). InstallSnapshot is not implemented: a follower behind the log's

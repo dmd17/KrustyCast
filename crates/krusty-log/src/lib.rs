@@ -730,9 +730,13 @@ impl Log {
         let mut segs = self.shared.segments.write().unwrap();
         let k = segs.partition_point(|s| s.first_index <= from) - 1;
         // Later segments go entirely.
+        let removed = segs.len() > k + 1;
         while segs.len() > k + 1 {
             let s = segs.pop().unwrap();
             fs::remove_file(&s.path)?;
+        }
+        if removed {
+            sync_dir(&self.cfg.dir)?;
         }
         let seg = &segs[k];
         let end = if seg.first_index == self.active_first {

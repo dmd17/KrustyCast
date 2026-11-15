@@ -5,7 +5,7 @@
 //! storage stage appends them to `krusty-log`, fsyncs once per batch (group
 //! commit), writes snapshots the core sends, and enforces retention.
 //!
-//! Durability modes (PRD FR-8, single node):
+//! Durability modes (PRD FR-8, single node; for a cluster see `cluster`):
 //! - **Async (a)**: egress does not wait; storage runs behind, off the
 //!   latency path. A crash can lose the last unsynced batch.
 //! - **Sync (b)**: the core routes egress records (frames, feedback)
@@ -27,7 +27,7 @@ use krusty_ring::history::History;
 use krusty_wire::ingress::Submit;
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 
 /// Ring S record kinds.
@@ -163,7 +163,11 @@ pub(crate) fn store_stage(
     core_done: Arc<AtomicBool>,
     store_done: Arc<AtomicBool>,
     stats: Arc<Metrics>,
+    synced: Option<Arc<AtomicU64>>,
 ) {
+    // Entries (S_ENTRY records) received; after each fsync, `synced` (when
+    // given: replication in mode b) says how many of them are durable.
+    let mut entries = 0u64;
     // Staged egress records: kind u32 | len u32 | bytes, back to back.
     let mut pending: Vec<u8> = Vec::with_capacity(PENDING_BYTES);
     let mut empty = 0;
@@ -189,6 +193,7 @@ pub(crate) fn store_stage(
                     .unwrap_or_else(|e| fatal("append", e));
                 recent.push_back(pos);
                 appended += 1;
+                entries += 1;
             }
             S_PUBLISHED => {
                 let (seqno, li) = (u64_at(rec, 0), u64_at(rec, 8));
@@ -232,6 +237,9 @@ pub(crate) fn store_stage(
             log.sync().unwrap_or_else(|e| fatal("sync", e));
             stats.store_sync.record(crate::metrics::mono_ns() - t0);
             stats.stored.fetch_add(appended, Ordering::Relaxed);
+            if let Some(s) = &synced {
+                s.store(entries, Ordering::Release);
+            }
         }
         // Mode (b): what was waiting for this fsync may go out now.
         let mut at = 0;
