@@ -119,7 +119,7 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 
 | ID | PRD | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|---|
-| Q1 | V1 | **Started 2026-11-14:** `spec/tla/Sequencer.tla` covers sessions and the sequencer state machine over an atomic log (G4–G6, outcome consistency), checked in CI | TLA+/Quint spec of sessions, sequencer, Raft and egress, with G1–G7 | C | L | M0–M3 |
+| Q1 | V1 | **Started 2026-11-14:** `spec/tla/Sequencer.tla` covers sessions and the sequencer state machine over an atomic log (G4–G6, outcome consistency), checked in CI; **2026-11-15:** `RaftKC.tla` adds Raft (as implemented), bounded-depth exhaustive in CI, with the composition argument in spec/README.md; egress and consumers are covered by krusty-stream's tests and krusty-sim, not TLA+ | TLA+/Quint spec of sessions, sequencer, Raft and egress, with G1–G7 | C | L | M0–M3 |
 | Q2 | V2 | **Started 2026-11-14:** `krusty-core` translates to Lean (`spec/lean`, `regen.sh`); first three theorems proved; CI re-checks them and fails if the Lean is stale. No proofs | Aeneas→Lean proof of `krusty-core::step` (refinement plus invariants) | C | XL | M1–M3 |
 | Q3 | V3 | — | Trace validation of `krusty-raft` against the spec | C | L | M3 |
 | Q4 | V4 | **Done 2026-11-14:** Verus-verified batched SPSC ring of `Copy` values (memory safety, data-race freedom; FIFO tested, not proved), 1.3× the cost of an Acquire/Release twin; not yet used by the node (its rings carry variable-length records). — | Verus-verified SPSC ring (or loom + Kani) | C | L | M2 |

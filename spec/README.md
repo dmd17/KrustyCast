@@ -61,6 +61,40 @@ match. Same invariants as above, plus `Bounded` (table never over capacity).
 Mutation checks: evicting without raising the floor, and accepting an
 incarnation equal to the floor, are both caught by `OutcomesTrue`.
 
+## `tla/RaftKC.tla`
+
+Raft as `krusty-raft` implements it (based on Ongaro's spec): a new
+leader's no-op, appends of the leader's log after any prefix, followers
+treating entries at or below their commit index as matching, a lossy and
+reordering network, process crash-restarts (term, vote and log survive),
+and leaders stepping down at any time (which covers check-quorum; pre-vote
+only decides when a node times out). Invariants: `ElectionSafety`,
+`LogMatching`, `StateMachineSafety`, `LeaderCompleteness`.
+
+**Why two specs compose.** `Sequencer.tla` and `SequencerBounded.tla` show
+the sequencer's guarantees hold over *any* single growing log of inputs
+(duplicated, reordered, from restarting clients). `RaftKC.tla` shows the
+committed entries form exactly that: one log, agreed by every node, that
+never changes once committed. Every node applies that log to the same
+deterministic core, so G1 (agreement) and G7 (determinism) hold for the
+egress stream. Not modelled: power loss in durability mode (a), which is
+outside G3's assumptions.
+
+| Config | Bounds | States | Time (laptop) |
+|---|---|---|---|
+| `MCRaftKC.cfg` (CI) | all behaviours up to 11 steps; 3 servers, 2 terms, logs of 2, ≤3 messages, restarts and step-downs | 141 k | ~3 min (2 workers) |
+| `RaftKC.cfg` | exhaustive; 2 terms, logs of 2, ≤2 messages, no restarts or step-downs | > 2.4 M, see below | > 20 min |
+| `RaftKCLarge.cfg` | exhaustive; 2 terms, logs of 3, ≤3 messages, restarts and step-downs | > 10 M explored without a violation in 20 min, not exhausted | hours |
+
+What finds which bug (mutations of the spec, and of `krusty-raft`'s code):
+
+| Bug | Bounded TLC (CI) | `krusty-raft` harness |
+|---|---|---|
+| Double vote in a term | `ElectionSafety` | CI tests |
+| Vote ignores log freshness | not within 11 steps | CI tests |
+| Follower skips the prev-term check | not within 11 steps | CI tests |
+| Commit of an old-term entry by count (Figure 8) | not within 11 steps | nightly sweep (found at seed 12500) |
+
 ## `lean/`
 
 Lean proofs about `krusty-core`, against its Aeneas translation
