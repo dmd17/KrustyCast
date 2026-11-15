@@ -64,7 +64,8 @@ incarnation equal to the floor, are both caught by `OutcomesTrue`.
 ## `tla/RaftKC.tla`
 
 Raft as `krusty-raft` implements it (based on Ongaro's spec): a new
-leader's no-op, appends of the leader's log after any prefix, followers
+leader's no-op, appends of any range of the leader's log (the code sends
+at most `max_append_entries` at a time), followers
 treating entries at or below their commit index as matching, a lossy and
 reordering network, process crash-restarts (term, vote and log survive),
 and leaders stepping down at any time (which covers check-quorum; pre-vote
@@ -93,10 +94,26 @@ outside G3's assumptions.
 
 | Config | Bounds | States | Time (laptop) |
 |---|---|---|---|
-| `MCRaftKC.cfg` (CI) | all behaviours up to 11 steps; 3 servers, 2 terms, logs of 2, ≤3 messages, restarts and step-downs | 141 k | ~3 min (2 workers) |
+| `MCRaftKC.cfg` (CI) | all behaviours up to 11 steps; 3 servers, 2 terms, logs of 2, ≤3 messages, restarts and step-downs | 176 k | ~3 min (2 workers) |
 | `RaftKC.cfg` | exhaustive; 2 terms, logs of 2, ≤2 messages, no restarts or step-downs | 9.41 M (depth 39), no violation | 43 min (3 workers) |
 | `RaftKCLarge.cfg` | exhaustive; 2 terms, logs of 3, ≤3 messages, restarts and step-downs | > 10 M explored without a violation in 20 min, not exhausted | hours |
 | `RaftKCTerms3.cfg` | exhaustive; 3 terms, logs of 2, ≤2 messages, no restarts or step-downs | > 18.6 M explored without a violation in 12 min, not exhausted | hours |
+| `RaftKCTerms4.cfg` | exhaustive; 4 terms, logs of 2, 1 message, no client values, restarts or step-downs | > 21.2 M explored to depth 41 without a violation in 30 min, not exhausted | about an hour |
+
+The figures for the configs above `RaftKCTerms4` were measured before
+2026-11-15, when the model sent only whole suffixes of the leader's log.
+Partial ranges make each state space somewhat larger.
+
+**Figure 8 needs four terms and partial batches.** A leader commits an
+old-term entry by count, and a later leader, elected without that entry
+because its log ends in a newer term, overwrites it. With three servers
+that takes a stale term-2 entry, a term-3 leader committing the term-1
+entry, and a term-4 leader. A follower must also hold the old entry but
+*not* the term-3 leader's no-op after it. The model used to send only
+whole suffixes of the leader's log, which cannot produce that state, so
+no bound could reach the bug. `krusty-raft` sends at most
+`max_append_entries` at a time, so the code can reach it, and the model
+now can too.
 
 What finds which bug (mutations of the spec, and of `krusty-raft`'s code):
 
@@ -105,7 +122,7 @@ What finds which bug (mutations of the spec, and of `krusty-raft`'s code):
 | Double vote in a term | `ElectionSafety` | CI tests | 2 of 6 traces |
 | Vote ignores log freshness | not within 11 steps; `RaftKCTerms3`: `LeaderCompleteness` at 23 steps (6 min) | CI tests | 2 of 6 traces |
 | Follower skips the prev-term check | not within 11 steps | CI tests | 4 of 6 traces |
-| Commit of an old-term entry by count (Figure 8) | not within 11 steps | nightly sweep (found at seed 12500) | 5 of 6 traces |
+| Commit of an old-term entry by count (Figure 8) | not within 11 steps; `RaftKCTerms4`: `LeaderCompleteness` at 32 steps (15 min) | nightly sweep (found at seed 12500) | 5 of 6 traces |
 
 ## `tla/TraceRaftKC.tla`: trace validation (gap Q3)
 

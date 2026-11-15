@@ -17,7 +17,7 @@ SequencerBounded:SequencerBoundedEvict SequencerBounded:SequencerBoundedRing
 MCRaftKC:MCRaftKC"
 [ "${1:-}" = "--large" ] && configs="$configs
 Sequencer:SequencerLarge SequencerBounded:SequencerBoundedEvictLarge
-RaftKC:RaftKC RaftKC:RaftKCLarge RaftKC:RaftKCTerms3"
+RaftKC:RaftKC RaftKC:RaftKCLarge RaftKC:RaftKCTerms3 RaftKC:RaftKCTerms4"
 
 status=0
 for pair in $configs; do

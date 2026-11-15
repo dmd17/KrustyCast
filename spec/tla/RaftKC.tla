@@ -252,9 +252,11 @@ Actions ==
     \/ \E s \in Servers : Timeout(s) \/ BecomeLeader(s) \/ StepDown(s) \/ AdvanceCommit(s) \/ Restart(s)
     \/ \E s, t \in Servers : RequestVote(s, t)
     \/ \E s \in Servers, v \in Values : ClientRequest(s, v)
-    \* The leader sends everything after any prefix (krusty-raft sends up to
-    \* its batch limit; a shorter batch is a prefix of this one's effect).
-    \/ \E s, t \in Servers : \E prev \in 0..MaxLog : AppendEntries(s, t, prev, Len(log[s]))
+    \* Any range of the leader's log: krusty-raft sends at most
+    \* max_append_entries at a time, so a follower can hold part of what the
+    \* leader has. (Sending only whole suffixes hid Figure 8: the old-term
+    \* entry must reach a quorum without the leader's no-op after it.)
+    \/ \E s, t \in Servers : \E prev, last \in 0..MaxLog : AppendEntries(s, t, prev, last)
     \/ \E m \in msgs : Receive(m) \/ Drop(m)
 
 Next == Actions /\ RecordCommits
