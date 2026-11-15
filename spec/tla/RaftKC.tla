@@ -19,7 +19,9 @@
 (*    are lost.                                                            *)
 (*                                                                         *)
 (* Safety: ElectionSafety, LogMatching, StateMachineSafety (committed      *)
-(* entries agree on every node), LeaderCompleteness.                       *)
+(* entries agree on every node), CommittedStable (they never change) and   *)
+(* LeaderCompleteness (an entry committed in term T is in the log of every *)
+(* leader of term T or later). The last two read the ghost `committed`.    *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -33,7 +35,12 @@ Quorum(S) == 2 * Cardinality(S) > Cardinality(Servers)
 
 VARIABLES currentTerm, role, votedFor, log, commitIndex, votes, matchIndex, msgs
 
-vars == <<currentTerm, role, votedFor, log, commitIndex, votes, matchIndex, msgs>>
+\* Ghost, read only by the properties: the committed log, each entry with
+\* the term of the node that first committed it (at or above the term it
+\* was committed in; exactly that term when a leader commits it).
+VARIABLE committed
+
+vars == <<currentTerm, role, votedFor, log, commitIndex, votes, matchIndex, msgs, committed>>
 
 LastTerm(l) == IF Len(l) = 0 THEN 0 ELSE l[Len(l)].term
 Min(a, b) == IF a < b THEN a ELSE b
@@ -48,6 +55,7 @@ Init ==
     /\ votes = [s \in Servers |-> {}]
     /\ matchIndex = [s \in Servers |-> [t \in Servers |-> 0]]
     /\ msgs = {}
+    /\ committed = << >>
 
 Send(m) == msgs' = msgs \cup {m}
 
@@ -229,7 +237,18 @@ Restart(s) ==
     /\ matchIndex' = [matchIndex EXCEPT ![s] = [t \in Servers |-> 0]]
     /\ UNCHANGED <<currentTerm, votedFor, log, msgs>>
 
-Next ==
+\* Extends the ghost when a commit index passes it (one node changes per step).
+RecordCommits ==
+    LET top == CHOOSE s \in Servers : \A t \in Servers : commitIndex'[s] >= commitIndex'[t]
+        have == Len(committed)
+        c == Min(commitIndex'[top], Len(log'[top]))
+    IN committed' =
+        IF c > have
+        THEN committed \o [i \in 1..(c - have) |->
+                            [entry |-> log'[top][have + i], term |-> currentTerm'[top]]]
+        ELSE committed
+
+Actions ==
     \/ \E s \in Servers : Timeout(s) \/ BecomeLeader(s) \/ StepDown(s) \/ AdvanceCommit(s) \/ Restart(s)
     \/ \E s, t \in Servers : RequestVote(s, t)
     \/ \E s \in Servers, v \in Values : ClientRequest(s, v)
@@ -237,6 +256,8 @@ Next ==
     \* its batch limit; a shorter batch is a prefix of this one's effect).
     \/ \E s, t \in Servers : \E prev \in 0..MaxLog : AppendEntries(s, t, prev, Len(log[s]))
     \/ \E m \in msgs : Receive(m) \/ Drop(m)
+
+Next == Actions /\ RecordCommits
 
 Spec == Init /\ [][Next]_vars
 
@@ -257,12 +278,22 @@ StateMachineSafety ==
         LET c == Min(commitIndex[s], commitIndex[t]) IN
         c <= Len(log[s]) /\ c <= Len(log[t]) /\ SubSeq(log[s], 1, c) = SubSeq(log[t], 1, c)
 
-\* A leader holds every entry committed anywhere in its term or earlier.
+\* What a node has committed is the committed log, and stays so (a commit
+\* index lost in a restart is relearned, never contradicted).
+CommittedStable ==
+    \A s \in Servers : \A n \in 1..Min(commitIndex[s], Len(log[s])) :
+        n <= Len(committed) /\ log[s][n] = committed[n].entry
+
+\* A leader holds every entry committed in its term or earlier. A stale
+\* leader of an older term need not hold what a newer leader committed
+\* (it cannot commit: a quorum has moved on), so the guard is the term the
+\* entry was committed in, not the entry's own term.
 LeaderCompleteness ==
-    \A s, t \in Servers :
+    \A s \in Servers :
         role[s] = "leader" =>
-            \A n \in 1..Min(commitIndex[t], Len(log[t])) :
-                log[t][n].term <= currentTerm[s] => (n <= Len(log[s]) /\ log[s][n] = log[t][n])
+            \A n \in 1..Len(committed) :
+                committed[n].term <= currentTerm[s] =>
+                    (n <= Len(log[s]) /\ log[s][n] = committed[n].entry)
 
 TypeOK ==
     /\ \A s \in Servers : Len(log[s]) <= MaxLog /\ commitIndex[s] <= Len(log[s])

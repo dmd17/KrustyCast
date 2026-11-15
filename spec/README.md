@@ -69,7 +69,18 @@ treating entries at or below their commit index as matching, a lossy and
 reordering network, process crash-restarts (term, vote and log survive),
 and leaders stepping down at any time (which covers check-quorum; pre-vote
 only decides when a node times out). Invariants: `ElectionSafety`,
-`LogMatching`, `StateMachineSafety`, `LeaderCompleteness`.
+`LogMatching`, `StateMachineSafety`, `CommittedStable` (what a node has
+committed is the one committed log, which never changes) and
+`LeaderCompleteness` (an entry committed in term T is in the log of every
+leader of term T or later). The last two read a ghost variable,
+`committed`: each committed entry with the term it was committed in.
+
+`LeaderCompleteness` used to guard on the entry's own term, which is too
+strong. A stale leader of term 2 need not hold a term-1 entry that a
+term-3 leader committed after the stale leader's election. Two terms
+cannot reach that, so the 2-term configs never reported it; with three,
+TLC does (23 steps). The randomized harness in `krusty-raft` had the same
+over-strict check and failed on nightly seed 415446889 (fixed 2026-11-15).
 
 **Why two specs compose.** `Sequencer.tla` and `SequencerBounded.tla` show
 the sequencer's guarantees hold over *any* single growing log of inputs
@@ -85,13 +96,14 @@ outside G3's assumptions.
 | `MCRaftKC.cfg` (CI) | all behaviours up to 11 steps; 3 servers, 2 terms, logs of 2, ≤3 messages, restarts and step-downs | 141 k | ~3 min (2 workers) |
 | `RaftKC.cfg` | exhaustive; 2 terms, logs of 2, ≤2 messages, no restarts or step-downs | 9.41 M (depth 39), no violation | 43 min (3 workers) |
 | `RaftKCLarge.cfg` | exhaustive; 2 terms, logs of 3, ≤3 messages, restarts and step-downs | > 10 M explored without a violation in 20 min, not exhausted | hours |
+| `RaftKCTerms3.cfg` | exhaustive; 3 terms, logs of 2, ≤2 messages, no restarts or step-downs | > 18.6 M explored without a violation in 12 min, not exhausted | hours |
 
 What finds which bug (mutations of the spec, and of `krusty-raft`'s code):
 
 | Bug | Bounded TLC (CI) | `krusty-raft` harness | Trace validation |
 |---|---|---|---|
 | Double vote in a term | `ElectionSafety` | CI tests | 2 of 6 traces |
-| Vote ignores log freshness | not within 11 steps | CI tests | 2 of 6 traces |
+| Vote ignores log freshness | not within 11 steps; `RaftKCTerms3`: `LeaderCompleteness` at 23 steps (6 min) | CI tests | 2 of 6 traces |
 | Follower skips the prev-term check | not within 11 steps | CI tests | 4 of 6 traces |
 | Commit of an old-term entry by count (Figure 8) | not within 11 steps | nightly sweep (found at seed 12500) | 5 of 6 traces |
 
@@ -108,6 +120,10 @@ actions; TLC checks every action is enabled and that the node's term,
 role, vote, log, commit index and sent messages match the code exactly.
 The plan only picks *which* spec actions to try; whether they fit is
 TLC's verdict.
+
+Along each trace TLC also checks `ElectionSafety`, `LogMatching`,
+`StateMachineSafety`, `CommittedStable` and `LeaderCompleteness`
+(`TraceSafety`).
 
 Abstractions: the network (a delivered message is injected; every message
 was itself checked when it was sent), pre-vote (no RaftKC state; a

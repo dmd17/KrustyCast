@@ -58,17 +58,18 @@ Matches ==
     /\ msgs = E.sends
 
 TraceNext ==
-    \/ /\ k <= Len(E.plan)
-       /\ Do(Step)
-       /\ k' = k + 1
-       /\ UNCHANGED l
-    \/ /\ k = Len(E.plan) + 1
-       /\ Matches
-       /\ l < Len(Trace)
-       /\ l' = l + 1
-       /\ k' = 1
-       /\ msgs' = {}
-       /\ UNCHANGED <<currentTerm, role, votedFor, log, commitIndex, votes, matchIndex>>
+    /\ \/ /\ k <= Len(E.plan)
+          /\ Do(Step)
+          /\ k' = k + 1
+          /\ UNCHANGED l
+       \/ /\ k = Len(E.plan) + 1
+          /\ Matches
+          /\ l < Len(Trace)
+          /\ l' = l + 1
+          /\ k' = 1
+          /\ msgs' = {}
+          /\ UNCHANGED <<currentTerm, role, votedFor, log, commitIndex, votes, matchIndex>>
+    /\ RecordCommits   \* last: it reads the primed state
 
 TraceSpec == TraceInit /\ [][TraceNext]_traceVars
 
@@ -76,5 +77,5 @@ TraceSpec == TraceInit /\ [][TraceNext]_traceVars
 Unfinished == ~(l = Len(Trace) /\ k = Len(E.plan) + 1 /\ Matches)
 
 \* RaftKC's safety properties hold along the trace too.
-TraceSafety == ElectionSafety /\ LogMatching /\ StateMachineSafety
+TraceSafety == ElectionSafety /\ LogMatching /\ StateMachineSafety /\ CommittedStable /\ LeaderCompleteness
 =============================================================================
