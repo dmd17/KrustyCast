@@ -5,16 +5,17 @@ use krusty_client::{
 use krusty_node::{Durability, Node, NodeConfig, StorageConfig};
 use krusty_wire::ingress::Append;
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+mod common {
+    pub mod ports;
+}
+
+/// A port no other test or `bind(0)` will be handed (see `common::ports`).
 fn free_port() -> SocketAddrV4 {
-    let s = UdpSocket::bind("127.0.0.1:0").unwrap();
-    match s.local_addr().unwrap() {
-        SocketAddr::V4(a) => a,
-        _ => unreachable!(),
-    }
+    common::ports::Ports::new(1).take()
 }
 
 fn payload(i: u64) -> Vec<u8> {

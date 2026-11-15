@@ -6,18 +6,15 @@ use krusty_client::{
 use krusty_node::{ClusterConfig, Durability, Node, NodeConfig, StorageConfig};
 use krusty_wire::ingress::Append;
 use std::collections::{HashMap, HashSet};
-use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-fn free_port() -> SocketAddrV4 {
-    let s = UdpSocket::bind("127.0.0.1:0").unwrap();
-    match s.local_addr().unwrap() {
-        SocketAddr::V4(a) => a,
-        _ => unreachable!(),
-    }
+mod common {
+    pub mod ports;
 }
+use common::ports::Ports;
 
 /// One cluster at a time: three nodes already outnumber this machine's
 /// spare cores.
@@ -34,15 +31,16 @@ struct Cluster {
 impl Cluster {
     fn new(n: u32, tag: &str, durability: Durability) -> Cluster {
         let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let feed = free_port();
-        let repl: Vec<(u32, SocketAddrV4)> = (1..=n).map(|id| (id, free_port())).collect();
+        let mut ports = Ports::new(1 + 3 * n as usize);
+        let feed = ports.take();
+        let repl: Vec<(u32, SocketAddrV4)> = (1..=n).map(|id| (id, ports.take())).collect();
         let mut cfgs = Vec::new();
         let mut dirs = Vec::new();
         for id in 1..=n {
             let dir = std::env::temp_dir()
                 .join(format!("krusty-cluster-{tag}-{}-{id}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
-            let mut cfg = NodeConfig::new(free_port(), feed, free_port());
+            let mut cfg = NodeConfig::new(ports.take(), feed, ports.take());
             cfg.heartbeat_us = 5_000;
             cfg.storage = Some(StorageConfig {
                 log: krusty_log::LogConfig::new(&dir),
@@ -53,6 +51,7 @@ impl Cluster {
             cfgs.push(cfg);
             dirs.push(dir);
         }
+        drop(ports);
         let mut c = Cluster {
             _serial: serial,
             cfgs,

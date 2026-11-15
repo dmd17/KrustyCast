@@ -15,7 +15,6 @@ krusty-core = { path = "../krusty-core" }
 krusty-ring = { path = "../krusty-ring" }
 krusty-net = { path = "../krusty-net" }
 krusty-session = { path = "../krusty-session" }
-krusty-stream = { path = "../krusty-stream" }
 krusty-mold = { path = "../krusty-mold" }
 krusty-log = { path = "../krusty-log" }
 krusty-raft = { path = "../krusty-raft" }
@@ -29,3 +28,5 @@ toml = "1"
 [dev-dependencies]
 # The interop-tested MoldUDP64 decoder of the old crate.
 krustycast = { path = "../.." }
+# Tracks the feed in tests/end_to_end.rs.
+krusty-stream = { path = "../krusty-stream" }

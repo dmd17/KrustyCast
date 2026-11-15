@@ -17,17 +17,13 @@ use krusty_client::{
 };
 use krusty_node::{ClusterConfig, Durability, Node, NodeConfig, StorageConfig};
 use krusty_wire::ingress::Append;
-use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::SocketAddrV4;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-fn free_port() -> SocketAddrV4 {
-    let s = UdpSocket::bind("127.0.0.1:0").unwrap();
-    match s.local_addr().unwrap() {
-        SocketAddr::V4(a) => a,
-        _ => unreachable!(),
-    }
-}
+#[path = "../tests/common/ports.rs"]
+mod ports;
+use ports::Ports;
 
 fn leader(nodes: &[Option<Node>]) -> Option<usize> {
     let l: Vec<usize> = (0..nodes.len())
@@ -54,11 +50,12 @@ fn main() {
         Ok("b") => Durability::Sync,
         _ => Durability::Async,
     };
-    let feed = free_port();
-    let repl: Vec<(u32, SocketAddrV4)> = (1..=3).map(|id| (id, free_port())).collect();
+    let mut ports = Ports::new(10);
+    let feed = ports.take();
+    let repl: Vec<(u32, SocketAddrV4)> = (1..=3).map(|id| (id, ports.take())).collect();
     let cfgs: Vec<NodeConfig> = (1..=3u32)
         .map(|id| {
-            let mut cfg = NodeConfig::new(free_port(), feed, free_port());
+            let mut cfg = NodeConfig::new(ports.take(), feed, ports.take());
             cfg.heartbeat_us = 5_000;
             cfg.storage = Some(StorageConfig {
                 log: krusty_log::LogConfig::new(base.join(id.to_string())),
@@ -79,6 +76,7 @@ fn main() {
             cfg
         })
         .collect();
+    drop(ports); // release the reserved ports for the nodes to bind
     let mut nodes: Vec<Option<Node>> = cfgs
         .iter()
         .map(|c| Some(krusty_node::start(c.clone()).unwrap()))
