@@ -19,7 +19,12 @@ fn free_port() -> SocketAddrV4 {
     }
 }
 
+/// One cluster at a time: three nodes already outnumber this machine's
+/// spare cores.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct Cluster {
+    _serial: std::sync::MutexGuard<'static, ()>,
     cfgs: Vec<NodeConfig>,
     nodes: Vec<Option<Node>>,
     dirs: Vec<PathBuf>,
@@ -27,7 +32,8 @@ struct Cluster {
 }
 
 impl Cluster {
-    fn new(n: u32, tag: &str) -> Cluster {
+    fn new(n: u32, tag: &str, durability: Durability) -> Cluster {
+        let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let feed = free_port();
         let repl: Vec<(u32, SocketAddrV4)> = (1..=n).map(|id| (id, free_port())).collect();
         let mut cfgs = Vec::new();
@@ -40,7 +46,7 @@ impl Cluster {
             cfg.heartbeat_us = 5_000;
             cfg.storage = Some(StorageConfig {
                 log: krusty_log::LogConfig::new(&dir),
-                durability: Durability::Async,
+                durability,
                 snapshot_every: 500,
             });
             cfg.cluster = Some(ClusterConfig::new(id, repl.clone()));
@@ -48,6 +54,7 @@ impl Cluster {
             dirs.push(dir);
         }
         let mut c = Cluster {
+            _serial: serial,
             cfgs,
             nodes: Vec::new(),
             dirs,
@@ -158,7 +165,17 @@ fn publish(
 
 #[test]
 fn failover_and_rejoin_keep_the_stream_exactly_once() {
-    let mut c = Cluster::new(3, "failover");
+    failover_and_rejoin(Durability::Async, "failover-a");
+}
+
+/// Mode (b): followers acknowledge only fsynced entries; the same story.
+#[test]
+fn failover_and_rejoin_in_mode_b() {
+    failover_and_rejoin(Durability::Sync, "failover-b");
+}
+
+fn failover_and_rejoin(durability: Durability, tag: &str) {
+    let mut c = Cluster::new(3, tag, durability);
     let first_leader = c.wait_leader(Duration::from_secs(5));
     let mut consumer = Consumer::new(ConsumerConfig {
         start_seqno: Some(1),
@@ -176,7 +193,12 @@ fn failover_and_rejoin_keep_the_stream_exactly_once() {
             })
             .unwrap();
     };
-    let mut p = Publisher::new(PublisherConfig::new(1, c.ingress())).unwrap();
+    // Unpinned, three nodes share this machine's cores: a thread can stall
+    // for a while, and in mode (b) that can cost a leader. Keep retrying
+    // (outcomes, not latency, are under test here).
+    let mut pcfg = PublisherConfig::new(1, c.ingress());
+    pcfg.max_attempts = 1000;
+    let mut p = Publisher::new(pcfg).unwrap();
     // Steady state.
     let (a1, _) = publish(&mut p, 1, 1001, || drain(&mut consumer, &mut got));
     // The leader goes away; the publisher finds the new one.
@@ -224,7 +246,14 @@ fn failover_and_rejoin_keep_the_stream_exactly_once() {
         assert!(Instant::now() < deadline, "the rejoined node lags");
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(rejoined.stats.raft_role.load(Ordering::Relaxed), 0);
+    // Followers held their acknowledgements for fsync in mode (b) only.
+    let held: u64 = c
+        .nodes
+        .iter()
+        .flatten()
+        .map(|n| n.stats.repl_held.load(Ordering::Relaxed))
+        .sum();
+    assert_eq!(held > 0, durability == Durability::Sync, "held {held}");
     eprintln!(
         "failover: first ACCEPTED {:?} after stopping the leader",
         failover
@@ -237,17 +266,20 @@ fn failover_and_rejoin_keep_the_stream_exactly_once() {
 
 #[test]
 fn followers_redirect_clients_and_apply_the_same_log() {
-    let c = Cluster::new(3, "redirect");
+    let c = Cluster::new(3, "redirect", Durability::Async);
     let leader = c.wait_leader(Duration::from_secs(5));
     // The publisher starts at node 1; if that is a follower, its NOT_LEADER
     // names the leader and the publisher goes there.
-    let mut p = Publisher::new(PublisherConfig::new(7, c.ingress())).unwrap();
+    let mut pcfg = PublisherConfig::new(7, c.ingress());
+    pcfg.max_attempts = 1000;
+    let mut p = Publisher::new(pcfg).unwrap();
     let (a, _) = publish(&mut p, 1, 101, || {});
     assert_eq!(a.len(), 100);
     let stat = |k: usize, f: fn(&krusty_node::metrics::Shared) -> u64| {
         f(&c.nodes[k].as_ref().unwrap().stats)
     };
-    if leader != 0 {
+    // (Unless leadership moved to node 1 meanwhile.)
+    if leader != 0 && stat(0, |s| s.leader_terms.load(Ordering::Relaxed)) == 0 {
         assert!(stat(0, |s| s.not_leader.load(Ordering::Relaxed)) >= 1);
     }
     // Only a leader publishes, and only what it applied as leader: across

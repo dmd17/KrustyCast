@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAGIC: u64 = 0x5354_4154_534B_434B; // "KCKSTATS"
-pub const LAYOUT_VERSION: u64 = 4;
+pub const LAYOUT_VERSION: u64 = 5;
 pub const BUCKETS: usize = 64;
 
 /// log2 histogram: bucket `b` counts values in `[2^(b-1), 2^b)` ns (bucket 0: 0).
@@ -118,6 +118,7 @@ counters! {
     repl_out: "Raft messages sent.",
     repl_dropped: "Raft messages dropped (ring full or undecodable).",
     repl_unservable: "Appends not sent: entries no longer retained (needs InstallSnapshot).",
+    repl_held: "Mode (b): AppendReplies held until the entries they acknowledge were fsynced.",
 }
 
 /// Counters that are levels, not totals (no rate is computed for them).

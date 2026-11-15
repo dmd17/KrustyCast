@@ -31,7 +31,7 @@ jobs:
           done
           # Cluster runs (Raft, failover) are ~100x slower: fewer seeds.
           cbase=$(( $(date +%s) / 86400 * 1000 ))
-          for s in cluster3 cluster5 cluster3-harsh; do
+          for s in cluster3 cluster5 cluster3-harsh cluster3-b; do
             ./target/release/krusty-sim --scenario $s --seeds "$cbase..$((cbase + 1000))"
           done
       - name: Raft cluster sweep (harsh faults, new seeds every night)

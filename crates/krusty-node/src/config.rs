@@ -257,12 +257,8 @@ impl NodeConfig {
             return Err("limits.outcome_ring and limits.max_clients must be at least 1".into());
         }
         if let Some(c) = &self.cluster {
-            match &self.storage {
-                None => return Err("[cluster] needs [storage] (the Raft log)".into()),
-                Some(st) if st.durability != crate::Durability::Async => {
-                    return Err("[cluster] supports durability \"a\" only for now (mode b with replication: PRD open question 7)".into());
-                }
-                _ => {}
+            if self.storage.is_none() {
+                return Err("[cluster] needs [storage] (the Raft log)".into());
             }
             let mut ids: Vec<u32> = c.members.iter().map(|m| m.0).collect();
             ids.sort_unstable();
@@ -371,7 +367,13 @@ mod tests {
         assert!(
             bad("[cluster]\nid = 1\nmembers = [\"1@10.0.0.5:7100\"]").contains("needs [storage]")
         );
-        assert!(bad("[storage]\ndir = \"/x\"\ndurability = \"b\"\n[cluster]\nid = 1\nmembers = [\"1@10.0.0.5:7100\"]").contains("only"));
+        // Mode (b) replicates too.
+        let mut b = base();
+        FileConfig::parse("[storage]\ndir = \"/x\"\ndurability = \"b\"\n[cluster]\nid = 1\nmembers = [\"1@10.0.0.5:7100\"]")
+            .unwrap()
+            .apply(&mut b)
+            .unwrap();
+        assert_eq!(b.storage.unwrap().durability, crate::Durability::Sync);
         assert!(
             bad("[storage]\ndir = \"/x\"\n[cluster]\nid = 4\nmembers = [\"1@10.0.0.5:7100\"]")
                 .contains("not among")

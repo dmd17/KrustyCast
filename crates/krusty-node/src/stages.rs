@@ -205,6 +205,11 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             let (snap_tx, snap_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
             let (back_tx, back_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
             r.start.snapshots = Some((snap_tx, back_rx, st.snapshot_every.max(1)));
+            // Mode (b): Raft counts an entry only once the storage stage
+            // has fsynced it.
+            let synced = (st.durability == crate::Durability::Sync)
+                .then(|| Arc::new(std::sync::atomic::AtomicU64::new(0)));
+            r.start.synced = synced.clone();
             let (log, positions) = (r.log, r.positions);
             let (c2, done, sdone, st2) = (
                 cfg.clone(),
@@ -224,6 +229,7 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
                     done,
                     sdone,
                     st2,
+                    synced,
                 )
             }));
             cluster_start = Some(r.start);
@@ -305,6 +311,7 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
                     done,
                     sdone,
                     st2,
+                    None,
                 )
             }));
             let egress_done = if sync {
@@ -403,9 +410,12 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             stats.clone(),
             leader_flag.clone(),
         );
-        // Mode (b): Mold may publish only what is durable.
+        // Mode (b): Mold may publish only what is durable (in a cluster,
+        // everything applied is: a quorum fsynced it before it committed).
         let durable = match &cfg.storage {
-            Some(st) if st.durability == crate::Durability::Sync => disk.clone(),
+            Some(st) if st.durability == crate::Durability::Sync && cfg.cluster.is_none() => {
+                disk.clone()
+            }
             _ => None,
         };
         threads.push(spawn("krusty-mold", cfg.stage_init, move || {

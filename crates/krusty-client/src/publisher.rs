@@ -15,7 +15,10 @@ pub struct PublisherConfig {
     pub client_id: u32,
     /// Nodes' ingress addresses, in node id order (`nodes[k]` is node
     /// k + 1). After NOT_LEADER the publisher goes to the leader it names
-    /// (or the next node); after `failover_ns` without any answer while
+    /// and resends there; NOT_LEADERs naming the node it already uses
+    /// answer earlier transmissions and are ignored. A NOT_LEADER that
+    /// names no leader moves it to the next node, at most once per
+    /// `retry_interval_ns`. After `failover_ns` without any answer while
     /// messages are outstanding, it tries the next node.
     pub nodes: Vec<SocketAddrV4>,
     pub failover_ns: u64,
@@ -70,6 +73,8 @@ pub struct Publisher {
     node: usize,
     /// When feedback last arrived (or the node last changed).
     heard_at: u64,
+    /// When a NOT_LEADER without a leader last moved us on.
+    rotated_at: u64,
     /// Payload copies for resends: `window` slots of `max_payload` bytes.
     payloads: Vec<u8>,
     lens: Vec<usize>,
@@ -114,6 +119,7 @@ impl Publisher {
             buf: vec![0; 65_536],
             node: 0,
             heard_at: 0,
+            rotated_at: 0,
             cfg,
             sock,
             session,
@@ -184,12 +190,22 @@ impl Publisher {
             if let Ok(fb) = Feedback::decode(&self.buf[..n]) {
                 self.heard_at = now;
                 if let krusty_wire::feedback::Outcome::NotLeader { leader } = fb.outcome {
-                    let k = self.cfg.nodes.len() as u64;
-                    self.node = if (1..=k).contains(&leader) {
+                    // A window of messages to a follower comes back as a
+                    // burst of NOT_LEADERs: switch (and resend) once.
+                    let k = self.cfg.nodes.len();
+                    let current = self.node % k;
+                    let next = if (1..=k as u64).contains(&leader) {
                         (leader - 1) as usize
+                    } else if now.saturating_sub(self.rotated_at) >= self.cfg.retry_interval_ns {
+                        self.rotated_at = now;
+                        current + 1
                     } else {
-                        self.node + 1
+                        current
                     };
+                    if next % k == current {
+                        continue; // the ordinary retries go on
+                    }
+                    self.node = next;
                 }
                 self.session.on_feedback(&fb, now, &mut self.ev);
             }

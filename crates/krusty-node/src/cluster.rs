@@ -19,18 +19,25 @@
 //!   replies to clients (followers answer NOT_LEADER with the leader's id).
 //!   A node that proposed an entry remembers the client's address and
 //!   replies when the entry is applied, if it is still the same entry.
-//! - Durability mode (a) only: an entry handed to the storage stage counts
-//!   as persisted for Raft, so followers acknowledge on receipt and a
-//!   committed entry is in the memory of a majority. The hard state (term,
-//!   vote) is written before any message that depends on it is sent.
+//! - Durability (PRD FR-8). Mode (a): an entry handed to the storage stage
+//!   counts as persisted for Raft, so followers acknowledge on receipt and a
+//!   committed entry is in the memory of a majority. Mode (b): an entry
+//!   counts only once the storage stage has fsynced it (it reports how many
+//!   entries are synced); the leader's own entries join its quorum then, and
+//!   a follower holds back each successful AppendReply until everything it
+//!   acknowledges is synced, so a committed entry is on the disks of a
+//!   majority. Leader and followers fsync in parallel (group commit on
+//!   each). A held reply is dropped if the entries it covers are truncated
+//!   or the term moves on (Raft tolerates the loss). In both modes the hard
+//!   state (term, vote) is written before any message that depends on it is
+//!   sent; in mode (b) it is fsynced too.
 //! - Restart: the latest snapshot (taken at an applied, hence committed,
 //!   index) restores the core; entries after it are loaded into the Raft
 //!   log, uncommitted as far as this node knows, and applied once a leader
 //!   confirms the commit index.
 //!
 //! Not yet: InstallSnapshot (a follower that lags past the log's retention
-//! cannot catch up; `repl_unservable` counts it), mode (b) with
-//! replication, membership changes.
+//! cannot catch up; `repl_unservable` counts it), membership changes.
 
 use crate::metrics::{Metrics, mono_ns};
 use crate::stages::{
@@ -52,7 +59,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::net::{SocketAddrV4, UdpSocket};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Largest Raft datagram.
@@ -89,6 +96,8 @@ pub(crate) struct ClusterStart {
     pub last_ts: u64,
     pub disk: LogReader,
     pub snapshots: Option<crate::stages::SnapshotLink>,
+    /// Mode (b): how many entries the storage stage has fsynced.
+    pub synced: Option<Arc<AtomicU64>>,
 }
 
 pub(crate) struct Restored {
@@ -154,7 +163,8 @@ pub(crate) fn restore(
         voted_for: (vote != 0).then_some(vote),
     };
     let raft = Raft::new(raft_config(cl), hs, rl, snap, mono_ns());
-    log.flush()?;
+    // Raft takes the entries it starts with as durable.
+    log.sync()?;
     let disk = log.reader();
     Ok(Restored {
         start: ClusterStart {
@@ -165,6 +175,7 @@ pub(crate) fn restore(
             last_ts,
             disk,
             snapshots: None,
+            synced: None,
         },
         log,
         positions,
@@ -244,6 +255,16 @@ struct Shell {
     stats: Arc<Metrics>,
     /// Entries this node proposed: (index, term, client).
     pending: VecDeque<(u64, u64, SocketAddrV4)>,
+    /// Mode (b): the storage stage's count of synced entries.
+    synced: Option<Arc<AtomicU64>>,
+    /// Entries handed to the storage stage so far.
+    handed: u64,
+    /// Mode (b): (count when handed, log index) of entries not yet synced.
+    unsynced: VecDeque<(u64, u64)>,
+    /// Mode (b): the local log is durable up to here.
+    durable: u64,
+    /// Mode (b): successful AppendReplies waiting for `durable`.
+    held: VecDeque<(u32, Message)>,
     last_ts: u64,
     proposals: u64,
     msg: Vec<u8>,
@@ -269,9 +290,10 @@ fn send_feedback(out: &mut Out, fb: &mut [u8], to: SocketAddrV4, f: &Feedback) {
 impl Shell {
     /// Carries out the outbox: hard state, log changes, then messages.
     fn carry_out(&mut self) {
+        let sync = self.synced.is_some();
         if let Some(hs) = self.ob.hard_state.take() {
             self.hs_file
-                .store(hs.term, hs.voted_for.unwrap_or(0), false)
+                .store(hs.term, hs.voted_for.unwrap_or(0), sync)
                 .unwrap_or_else(|e| fatal("hard state", e));
         }
         if let Some(t) = self.ob.truncate_from.take() {
@@ -280,6 +302,14 @@ impl Shell {
             while self.pending.back().is_some_and(|p| p.0 >= t) {
                 self.pending.pop_back();
             }
+            // Entries from `t` on are gone: their syncs no longer count, and
+            // replies that acknowledged them must not go out.
+            while self.unsynced.back().is_some_and(|e| e.1 >= t) {
+                self.unsynced.pop_back();
+            }
+            self.durable = self.durable.min(t - 1);
+            self.held
+                .retain(|(_, m)| !matches!(m, Message::AppendReply { index, .. } if *index >= t));
         }
         if let Some(from) = self.ob.store_from.take() {
             let last = self.raft.last_index();
@@ -295,15 +325,64 @@ impl Shell {
                     .store(S_ENTRY, S_ENTRY_HEADER + payload.len(), |b| {
                         put_entry(b, i, term, ts, payload)
                     });
+                self.handed += 1;
+                if sync {
+                    self.unsynced.push_back((self.handed, i));
+                }
             }
-            // Mode (a): handed to the storage stage counts as persisted.
-            self.raft.persisted(last, &mut self.ob);
+            if !sync {
+                // Mode (a): handed to the storage stage counts as persisted.
+                self.raft.persisted(last, &mut self.ob);
+            }
         }
         let mut sends = std::mem::take(&mut self.ob.sends);
         for (to, m) in sends.drain(..) {
-            self.send(to, m);
+            match m {
+                // Mode (b): acknowledge only what is on disk.
+                Message::AppendReply {
+                    success: true,
+                    index,
+                    ..
+                } if sync && index > self.durable => {
+                    self.stats.repl_held.fetch_add(1, Ordering::Relaxed);
+                    self.held.push_back((to, m));
+                }
+                m => self.send(to, m),
+            }
         }
         self.ob.sends = sends;
+    }
+
+    /// Mode (b): takes in what the storage stage has synced; Raft counts it
+    /// and held replies covered by it go out. Returns whether anything did.
+    fn poll_durable(&mut self) -> bool {
+        let Some(synced) = &self.synced else {
+            return false;
+        };
+        let n = synced.load(Ordering::Acquire);
+        let mut durable = self.durable;
+        while self.unsynced.front().is_some_and(|e| e.0 <= n) {
+            durable = self.unsynced.pop_front().unwrap().1;
+        }
+        if durable <= self.durable {
+            return false;
+        }
+        self.durable = durable;
+        self.raft.persisted(durable, &mut self.ob);
+        let term = self.raft.term();
+        let mut held = std::mem::take(&mut self.held);
+        held.retain(|&(to, m)| match m {
+            Message::AppendReply { term: t, index, .. } if index <= durable => {
+                if t == term {
+                    self.send(to, m);
+                }
+                false
+            }
+            _ => true,
+        });
+        self.held = held;
+        self.carry_out();
+        true
     }
 
     /// An entry's (term, data) into `self.data`, from memory or disk.
@@ -517,6 +596,7 @@ pub(crate) fn cluster_core_stage(
         last_ts,
         disk,
         snapshots,
+        synced,
     } = start;
     let mut sh = Shell {
         id: cl.id,
@@ -533,6 +613,11 @@ pub(crate) fn cluster_core_stage(
         history,
         stats: stats.clone(),
         pending: VecDeque::with_capacity(1 << 16),
+        synced,
+        handed: 0,
+        unsynced: VecDeque::with_capacity(1 << 16),
+        durable: 0,
+        held: VecDeque::with_capacity(1024),
         last_ts,
         proposals: 0,
         msg: vec![0u8; MAX_DATAGRAM],
@@ -545,6 +630,7 @@ pub(crate) fn cluster_core_stage(
         fb: [0u8; krusty_wire::feedback::LEN],
         cfg: cfg.clone(),
     };
+    sh.durable = sh.raft.last_index(); // synced by `restore`
     let mut last_snapshot = sh.applied;
     let mut snap_buf: Option<Vec<u8>> = Some(Vec::new());
     let heartbeat = Duration::from_micros(cfg.heartbeat_us);
@@ -561,6 +647,9 @@ pub(crate) fn cluster_core_stage(
             sh.raft.replicate(&mut sh.ob, false);
         }
         sh.carry_out();
+        if sh.poll_durable() {
+            work += 1;
+        }
         let now = mono_ns();
         if now >= next_tick {
             sh.raft.tick(now, &mut sh.ob);
