@@ -50,6 +50,12 @@ jobs:
           echo "TLA2TOOLS=$RUNNER_TEMP/tla/tla2tools.jar" >> "$GITHUB_ENV"
       - name: Model-check (CI bounds)
         run: spec/tla/check.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Trace validation (krusty-raft against RaftKC, 3 traces)
+        run: |
+          KRUSTY_RAFT_TRACE_DIR="$RUNNER_TEMP/traces" KRUSTY_RAFT_TRACE_SEEDS=3 \
+            cargo test -q -p krusty-raft --test trace -- --ignored
+          spec/tla/check-traces.sh "$RUNNER_TEMP/traces"
 
   verus:
     runs-on: ubuntu-latest

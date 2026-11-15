@@ -38,6 +38,15 @@ jobs:
         run: |
           base=$(( $(date +%s) / 86400 * 20000 ))
           KRUSTY_RAFT_SEEDS=20000 KRUSTY_RAFT_BASE=$base cargo test --release -p krusty-raft --test cluster harsh_sweep -- --ignored
+      - name: Trace validation (20 new traces every night, ~4 min of TLC)
+        run: |
+          mkdir -p "$RUNNER_TEMP/tla"
+          curl -sSfL -o "$RUNNER_TEMP/tla/tla2tools.jar" \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+          base=$(( $(date +%s) / 86400 * 20 ))
+          KRUSTY_RAFT_TRACE_DIR="$RUNNER_TEMP/traces" KRUSTY_RAFT_TRACE_SEEDS=20 KRUSTY_RAFT_TRACE_BASE=$base \
+            cargo test -q --release -p krusty-raft --test trace -- --ignored
+          TLA2TOOLS="$RUNNER_TEMP/tla/tla2tools.jar" spec/tla/check-traces.sh "$RUNNER_TEMP/traces"
       - name: Node failover smoke (3 nodes over loopback, 20 leader stops)
         run: FAILOVER_MAX_MS=1000 cargo run --release -p krusty-client --example failover -- 20
 

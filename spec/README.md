@@ -88,12 +88,55 @@ outside G3's assumptions.
 
 What finds which bug (mutations of the spec, and of `krusty-raft`'s code):
 
-| Bug | Bounded TLC (CI) | `krusty-raft` harness |
-|---|---|---|
-| Double vote in a term | `ElectionSafety` | CI tests |
-| Vote ignores log freshness | not within 11 steps | CI tests |
-| Follower skips the prev-term check | not within 11 steps | CI tests |
-| Commit of an old-term entry by count (Figure 8) | not within 11 steps | nightly sweep (found at seed 12500) |
+| Bug | Bounded TLC (CI) | `krusty-raft` harness | Trace validation |
+|---|---|---|---|
+| Double vote in a term | `ElectionSafety` | CI tests | 2 of 6 traces |
+| Vote ignores log freshness | not within 11 steps | CI tests | 2 of 6 traces |
+| Follower skips the prev-term check | not within 11 steps | CI tests | 4 of 6 traces |
+| Commit of an old-term entry by count (Figure 8) | not within 11 steps | nightly sweep (found at seed 12500) | 5 of 6 traces |
+
+## `tla/TraceRaftKC.tla`: trace validation (gap Q3)
+
+Checks that runs of the real `krusty-raft` code are behaviours of
+`RaftKC`. A randomized harness (`crates/krusty-raft/tests/trace.rs`: loss,
+delay, reordering, partitions, crashes and restarts) logs one record per
+call into the core: the received message and the sent messages in RaftKC's
+form, the node's state afterwards, and a *plan*, the RaftKC actions that
+explain the call (for example `inject, receive, advanceCommit(n),
+append(t, prev, last)`). `TraceRaftKC` replays each plan with RaftKC's own
+actions; TLC checks every action is enabled and that the node's term,
+role, vote, log, commit index and sent messages match the code exactly.
+The plan only picks *which* spec actions to try; whether they fit is
+TLC's verdict.
+
+Abstractions: the network (a delivered message is injected; every message
+was itself checked when it was sent), pre-vote (no RaftKC state; a
+pre-candidate's role is not compared), and duplicate deliveries (the
+generator does not duplicate). Calls RaftKC cannot see are left out as
+stuttering steps.
+
+```
+KRUSTY_RAFT_TRACE_DIR=/tmp/traces KRUSTY_RAFT_TRACE_SEEDS=6 \
+    cargo test -p krusty-raft --test trace -- --ignored
+spec/tla/check-traces.sh /tmp/traces      # accepted / REJECTED per trace
+```
+
+A trace of ~250–1000 records (2–5 elections, conflicts truncated) takes
+about 10 s. CI checks 3 traces; the nightly workflow 20 new ones.
+
+Mutations of `krusty-raft`, 6 traces each:
+
+| Bug | Traces rejected |
+|---|---|
+| Vote ignores log freshness | 2 of 6 |
+| Double vote in a term | 2 of 6 |
+| Follower skips the prev-term check | 4 of 6 |
+| Follower commits past what it matched | 4 of 6 (the code's own assertion stopped the other runs) |
+| Commit of an old-term entry by count (Figure 8) | 5 of 6 |
+
+The bounded model check misses three of these within its CI depth, and the
+randomized harness needs a long sweep for Figure 8; trace validation
+catches all five in a minute. Unchanged code: every trace accepted.
 
 ## `lean/`
 
