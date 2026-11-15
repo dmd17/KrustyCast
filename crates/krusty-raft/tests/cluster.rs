@@ -158,6 +158,9 @@ fn run(seed: u64, n: u32, f: Faults) {
     let mut net: Vec<(u64, NodeId, Vec<u8>)> = Vec::new();
     let mut leaders: HashMap<u64, NodeId> = HashMap::new(); // term -> leader
     let mut committed: Vec<(u64, Vec<u8>)> = Vec::new(); // the one true committed log
+    // The term of the node that first saw each entry committed: at or above
+    // the term it was committed in.
+    let mut committed_in: Vec<u64> = Vec::new();
     let mut proposed = 0u64;
     // Partition: group[id] (nodes talk only within their group).
     let mut group: Vec<u32> = vec![0; n as usize + 1];
@@ -243,8 +246,14 @@ fn run(seed: u64, n: u32, f: Faults) {
                     "seed {seed}: two leaders in term {}",
                     raft.term()
                 );
-                // Leader completeness: holds everything committed so far.
+                // Leader completeness: holds everything committed in its
+                // term or earlier. A stale leader of an older term need not
+                // hold what a newer one committed (it cannot commit).
+                let term = raft.term();
                 for (i, e) in committed.iter().enumerate() {
+                    if committed_in[i] > term {
+                        continue;
+                    }
                     assert_eq!(
                         &node.store.log[i],
                         e,
@@ -272,6 +281,7 @@ fn run(seed: u64, n: u32, f: Faults) {
                     None => {
                         assert_eq!(committed.len() as u64, i - 1);
                         committed.push(e.clone());
+                        committed_in.push(raft.term());
                     }
                 }
             }
