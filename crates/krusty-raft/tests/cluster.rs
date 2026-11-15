@@ -39,6 +39,7 @@ fn config(id: NodeId, n: u32, seed: u64) -> Config {
     Config {
         retain_entries: 8,      // small: lagging followers are served from storage
         max_append_entries: 12, // larger than the window: batches outrun it
+        max_append_bytes: 200,  // some batches are cut short by size
         max_inflight: 4,
         seed,
         ..Config::new(id, (1..=n).collect())
@@ -231,7 +232,7 @@ fn run(seed: u64, n: u32, f: Faults) {
         }
         // Invariants.
         for (k, node) in nodes.iter_mut().enumerate() {
-            let Some(raft) = node.raft.as_ref() else {
+            let Some(raft) = node.raft.as_mut() else {
                 continue;
             };
             if raft.role() == Role::Leader {
@@ -275,6 +276,7 @@ fn run(seed: u64, n: u32, f: Faults) {
                 }
             }
             node.applied = node.applied.max(c);
+            raft.applied(node.applied);
         }
     }
     // Liveness: after healing, a leader exists and work got committed.

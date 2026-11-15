@@ -1,15 +1,22 @@
 //! Storage for one stream (ARCHITECTURE §9; gaps S1–S3, R4).
 //!
 //! - **Log segments** `log-<first index>.seg`: preallocated files of
-//!   committed entries (log index, leader timestamp, raw submission). Each
-//!   record is `size u32 | crc32c u32 | log_index u64 | timestamp u64 |
-//!   payload`, padded to 8 bytes, where `size` counts the 24-byte header plus
-//!   the payload (so it is never 0). A zero size marks the end.
+//!   entries (log index, Raft term, leader timestamp, raw submission). Each
+//!   record is `size u32 | crc32c u32 | log_index u64 | term u64 |
+//!   timestamp u64 | payload`, padded to 8 bytes, where `size` counts the
+//!   32-byte header plus the payload (so it is never 0). A zero size marks
+//!   the end. Entries past the commit index may be removed again
+//!   ([`Log::truncate_from`], when a new Raft leader overrides them).
 //! - **Egress index** `egress-<first seqno>.idx`: fixed 16-byte slots, one
 //!   per published stream message, holding the log index and offset of the
 //!   entry that produced it, so a recovery read is one lookup plus one read.
 //! - **Snapshots** `snap-<log index>.snap`: the sequencer core's state after
 //!   that entry (written atomically; the latest two are kept).
+//! - **Raft hard state** `raft.state` ([`HardStateFile`]): term and vote.
+//!
+//! Each segment keeps a sparse in-memory index (the offset of every
+//! [`SPARSE`]th entry), so an entry can be found by log index with one short
+//! read (Raft followers that lag are served from here).
 //!
 //! One writer ([`Log`], on the storage thread) and any number of readers
 //! ([`LogReader`], e.g. recovery servers) that see everything flushed.
@@ -28,13 +35,16 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 const SEG_MAGIC: u64 = 0x4745_5347_4F4C_434B; // "KCLOGSEG"
 const IDX_MAGIC: u64 = 0x5844_4E49_4745_434B; // "KCEGINDX"
 const SNAP_MAGIC: u64 = 0x5041_4E53_4F4C_434B; // "KCLOSNAP"
 const FILE_HEADER: u64 = 64;
-const REC_HEADER: usize = 24;
+const FORMAT: u64 = 2;
+const REC_HEADER: usize = 32;
+/// Every SPARSE-th entry of a segment has its offset kept in memory.
+pub const SPARSE: u64 = 64;
 const IDX_SLOT: u64 = 16;
 /// Bytes zeroed after a recovered end, to cover any torn batch.
 const ZERO_AHEAD: u64 = 8 << 20;
@@ -72,6 +82,9 @@ struct Segment {
     first_index: u64,
     path: PathBuf,
     file: Arc<File>,
+    /// Offsets of entries `first_index + k * SPARSE`; None until needed
+    /// (built by a scan) for segments from before the last open.
+    sparse: Arc<Mutex<Option<Vec<u32>>>>,
 }
 
 struct IndexFile {
@@ -110,6 +123,11 @@ pub struct Log {
     /// Segments rolled since the last sync (they still need an fsync).
     unsynced: Vec<Arc<File>>,
     latest_snapshot: u64,
+    /// Sparse offsets of the active segment not yet handed to readers.
+    sparse_pending: Vec<u32>,
+    active_sparse: Arc<Mutex<Option<Vec<u32>>>>,
+    /// Log index of the latest published entry (truncation stays above it).
+    last_published_index: u64,
 }
 
 /// What `open` found.
@@ -151,7 +169,7 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
 fn header(magic: u64, first: u64, size: u64) -> [u8; FILE_HEADER as usize] {
     let mut h = [0u8; FILE_HEADER as usize];
     h[0..8].copy_from_slice(&magic.to_le_bytes());
-    h[8..16].copy_from_slice(&1u64.to_le_bytes()); // format version
+    h[8..16].copy_from_slice(&FORMAT.to_le_bytes());
     h[16..24].copy_from_slice(&first.to_le_bytes());
     h[24..32].copy_from_slice(&size.to_le_bytes());
     h
@@ -161,7 +179,7 @@ fn check_header(f: &File, magic: u64, first: u64) -> io::Result<()> {
     let mut h = [0u8; FILE_HEADER as usize];
     f.read_exact_at(&mut h, 0)?;
     let ok = u64::from_le_bytes(h[0..8].try_into().unwrap()) == magic
-        && u64::from_le_bytes(h[8..16].try_into().unwrap()) == 1
+        && u64::from_le_bytes(h[8..16].try_into().unwrap()) == FORMAT
         && u64::from_le_bytes(h[16..24].try_into().unwrap()) == first;
     if ok {
         Ok(())
@@ -197,11 +215,19 @@ fn record_len(payload: usize) -> u64 {
     ((REC_HEADER + payload + 7) & !7) as u64
 }
 
-fn crc(len: u32, log_index: u64, ts: u64, payload: &[u8]) -> u32 {
+fn crc(len: u32, log_index: u64, term: u64, ts: u64, payload: &[u8]) -> u32 {
     let c = crc32c::crc32c(&len.to_le_bytes());
     let c = crc32c::crc32c_append(c, &log_index.to_le_bytes());
+    let c = crc32c::crc32c_append(c, &term.to_le_bytes());
     let c = crc32c::crc32c_append(c, &ts.to_le_bytes());
     crc32c::crc32c_append(c, payload)
+}
+
+/// A record's header fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Header {
+    pub term: u64,
+    pub timestamp_ns: u64,
 }
 
 /// Reads the record at `off` if it is valid and has `expect` as log index.
@@ -211,7 +237,7 @@ fn read_record(
     expect: u64,
     seg_bytes: u64,
     payload: &mut Vec<u8>,
-) -> io::Result<Option<u64>> {
+) -> io::Result<Option<Header>> {
     if off + REC_HEADER as u64 > seg_bytes {
         return Ok(None);
     }
@@ -220,7 +246,8 @@ fn read_record(
     let size = u32::from_le_bytes(h[0..4].try_into().unwrap());
     let sum = u32::from_le_bytes(h[4..8].try_into().unwrap());
     let log_index = u64::from_le_bytes(h[8..16].try_into().unwrap());
-    let ts = u64::from_le_bytes(h[16..24].try_into().unwrap());
+    let term = u64::from_le_bytes(h[16..24].try_into().unwrap());
+    let ts = u64::from_le_bytes(h[24..32].try_into().unwrap());
     if (size as usize) < REC_HEADER || log_index != expect {
         return Ok(None);
     }
@@ -230,10 +257,13 @@ fn read_record(
     }
     payload.resize(len as usize, 0);
     f.read_exact_at(payload, off + REC_HEADER as u64)?;
-    if crc(len, log_index, ts, payload) != sum {
+    if crc(len, log_index, term, ts, payload) != sum {
         return Ok(None);
     }
-    Ok(Some(ts))
+    Ok(Some(Header {
+        term,
+        timestamp_ns: ts,
+    }))
 }
 
 /// Reads one segment's records in order through a large buffer (one
@@ -244,15 +274,22 @@ struct Scanner<'f> {
     buf: Vec<u8>,
     /// File offset of `buf[0]`.
     at: u64,
+    /// Bytes read at a time.
+    chunk: u64,
 }
 
 impl<'f> Scanner<'f> {
     fn new(f: &'f File, seg_bytes: u64) -> Scanner<'f> {
+        Scanner::with_chunk(f, seg_bytes, 1 << 20)
+    }
+
+    fn with_chunk(f: &'f File, seg_bytes: u64, chunk: u64) -> Scanner<'f> {
         Scanner {
             f,
             seg_bytes,
             buf: Vec::new(),
             at: 0,
+            chunk,
         }
     }
 
@@ -264,7 +301,7 @@ impl<'f> Scanner<'f> {
         if off >= self.at && off + len <= self.at + self.buf.len() as u64 {
             return Ok(true);
         }
-        let n = len.max(1 << 20).min(self.seg_bytes - off) as usize;
+        let n = len.max(self.chunk).min(self.seg_bytes - off) as usize;
         self.buf.resize(n, 0);
         self.f.read_exact_at(&mut self.buf, off)?;
         self.at = off;
@@ -272,8 +309,8 @@ impl<'f> Scanner<'f> {
     }
 
     /// The record at `off` if it is valid and has index `expect`:
-    /// (timestamp, payload, record length).
-    fn record(&mut self, off: u64, expect: u64) -> io::Result<Option<(u64, &[u8], u64)>> {
+    /// (header, payload, record length).
+    fn record(&mut self, off: u64, expect: u64) -> io::Result<Option<(Header, &[u8], u64)>> {
         if !self.ensure(off, REC_HEADER as u64)? {
             return Ok(None);
         }
@@ -281,7 +318,8 @@ impl<'f> Scanner<'f> {
         let size = u32::from_le_bytes(h[0..4].try_into().unwrap());
         let sum = u32::from_le_bytes(h[4..8].try_into().unwrap());
         let log_index = u64::from_le_bytes(h[8..16].try_into().unwrap());
-        let ts = u64::from_le_bytes(h[16..24].try_into().unwrap());
+        let term = u64::from_le_bytes(h[16..24].try_into().unwrap());
+        let ts = u64::from_le_bytes(h[24..32].try_into().unwrap());
         if (size as usize) < REC_HEADER || log_index != expect {
             return Ok(None);
         }
@@ -292,11 +330,40 @@ impl<'f> Scanner<'f> {
         }
         let start = (off - self.at) as usize + REC_HEADER;
         let payload = &self.buf[start..start + len];
-        if crc(len as u32, log_index, ts, payload) != sum {
+        if crc(len as u32, log_index, term, ts, payload) != sum {
             return Ok(None);
         }
-        Ok(Some((ts, payload, rec)))
+        Ok(Some((
+            Header {
+                term,
+                timestamp_ns: ts,
+            },
+            payload,
+            rec,
+        )))
     }
+}
+
+/// Room for a segment's sparse offsets (allocated once, so appends never
+/// allocate).
+fn sparse_capacity(seg_bytes: u64) -> usize {
+    (seg_bytes / (REC_HEADER as u64 * SPARSE)) as usize + 1
+}
+
+/// Scans a segment and returns its sparse offsets and where its data ends.
+fn scan_segment(f: &File, first: u64, seg_bytes: u64) -> io::Result<(Vec<u32>, u64, u64)> {
+    let mut sparse = Vec::with_capacity(sparse_capacity(seg_bytes));
+    let mut off = FILE_HEADER;
+    let mut next = first;
+    let mut scan = Scanner::new(f, seg_bytes);
+    while let Some((_, _, rec)) = scan.record(off, next)? {
+        if (next - first).is_multiple_of(SPARSE) {
+            sparse.push(off as u32);
+        }
+        off += rec;
+        next += 1;
+    }
+    Ok((sparse, off, next))
 }
 
 impl Log {
@@ -331,6 +398,7 @@ impl Log {
                 first_index: *first,
                 path,
                 file: Arc::new(file),
+                sparse: Arc::new(Mutex::new(None)),
             });
         }
         if segments.is_empty() {
@@ -345,20 +413,16 @@ impl Log {
                 first_index: 1,
                 path,
                 file: Arc::new(file),
+                sparse: Arc::new(Mutex::new(None)),
             });
         }
 
         // Find the end of the last segment; earlier ones end where the next begins.
         let last = segments.last().unwrap();
         let (active, active_first) = (last.file.clone(), last.first_index);
-        let mut off = FILE_HEADER;
-        let mut next_index = active_first;
-        let mut scan = Scanner::new(&active, cfg.segment_bytes);
-        while let Some((_, _, rec)) = scan.record(off, next_index)? {
-            off += rec;
-            next_index += 1;
-        }
-        drop(scan);
+        let (sparse, off, next_index) = scan_segment(&active, active_first, cfg.segment_bytes)?;
+        let active_sparse = last.sparse.clone();
+        *active_sparse.lock().unwrap() = Some(sparse);
         let zero_to = (off + ZERO_AHEAD).min(cfg.segment_bytes);
         if zero_to > off {
             active.write_all_at(&vec![0u8; (zero_to - off) as usize], off)?;
@@ -458,6 +522,9 @@ impl Log {
             idx_bytes: Vec::with_capacity(4096 * IDX_SLOT as usize),
             unsynced: Vec::new(),
             latest_snapshot,
+            sparse_pending: Vec::with_capacity(4096),
+            active_sparse,
+            last_published_index: 0,
         };
         Ok(Opened {
             log,
@@ -487,6 +554,15 @@ impl Log {
     /// Calls `f(pos, timestamp, payload)` for every entry from `from` to the
     /// end (for recovery replay). Entries must be contiguous.
     pub fn replay(&self, from: u64, mut f: impl FnMut(Pos, u64, &[u8])) -> io::Result<()> {
+        self.replay_entries(from, |pos, h, payload| f(pos, h.timestamp_ns, payload))
+    }
+
+    /// Like [`Log::replay`], with each record's term.
+    pub fn replay_entries(
+        &self,
+        from: u64,
+        mut f: impl FnMut(Pos, Header, &[u8]),
+    ) -> io::Result<()> {
         let segs = self.shared.segments.read().unwrap();
         let start = segs
             .partition_point(|s| s.first_index <= from)
@@ -503,14 +579,14 @@ impl Log {
             let mut scan = Scanner::new(&s.file, self.cfg.segment_bytes);
             while expect < self.next_index {
                 match scan.record(off, expect)? {
-                    Some((ts, payload, rec)) => {
+                    Some((h, payload, rec)) => {
                         if expect >= from {
                             f(
                                 Pos {
                                     log_index: expect,
                                     offset: off,
                                 },
-                                ts,
+                                h,
                                 payload,
                             );
                         }
@@ -527,8 +603,18 @@ impl Log {
         Ok(())
     }
 
-    /// Buffers entry `next_index()`; it is readable after `flush`.
+    /// Buffers entry `next_index()` (term 0); it is readable after `flush`.
     pub fn append(&mut self, timestamp_ns: u64, payload: &[u8]) -> io::Result<Pos> {
+        self.append_entry(0, timestamp_ns, payload)
+    }
+
+    /// Buffers entry `next_index()` with its Raft term.
+    pub fn append_entry(
+        &mut self,
+        term: u64,
+        timestamp_ns: u64,
+        payload: &[u8],
+    ) -> io::Result<Pos> {
         let n = record_len(payload.len());
         assert!(
             n + FILE_HEADER <= self.cfg.segment_bytes,
@@ -543,14 +629,18 @@ impl Log {
         self.buf.resize(at + n as usize, 0);
         let r = &mut self.buf[at..];
         r[0..4].copy_from_slice(&(len + REC_HEADER as u32).to_le_bytes());
-        r[4..8].copy_from_slice(&crc(len, log_index, timestamp_ns, payload).to_le_bytes());
+        r[4..8].copy_from_slice(&crc(len, log_index, term, timestamp_ns, payload).to_le_bytes());
         r[8..16].copy_from_slice(&log_index.to_le_bytes());
-        r[16..24].copy_from_slice(&timestamp_ns.to_le_bytes());
+        r[16..24].copy_from_slice(&term.to_le_bytes());
+        r[24..32].copy_from_slice(&timestamp_ns.to_le_bytes());
         r[REC_HEADER..REC_HEADER + payload.len()].copy_from_slice(payload);
         let pos = Pos {
             log_index,
             offset: self.write_off,
         };
+        if (log_index - self.active_first).is_multiple_of(SPARSE) {
+            self.sparse_pending.push(self.write_off as u32);
+        }
         self.write_off += n;
         self.next_index += 1;
         Ok(pos)
@@ -564,6 +654,7 @@ impl Log {
         );
         self.idx_buf.push((seqno, pos));
         self.next_seqno += 1;
+        self.last_published_index = pos.log_index;
     }
 
     /// Rewrites the index from `seqno` on (recovery replay regenerates it).
@@ -578,6 +669,9 @@ impl Log {
 
     fn roll(&mut self) -> io::Result<()> {
         self.flush()?;
+        let sparse = Arc::new(Mutex::new(Some(Vec::with_capacity(sparse_capacity(
+            self.cfg.segment_bytes,
+        )))));
         let first = self.next_index;
         let (path, file) = create_file(
             &self.cfg.dir,
@@ -592,11 +686,86 @@ impl Log {
         self.active_first = first;
         self.write_off = FILE_HEADER;
         self.buf_off = FILE_HEADER;
+        self.active_sparse = sparse.clone();
         self.shared.segments.write().unwrap().push(Segment {
             first_index: first,
             path,
             file,
+            sparse,
         });
+        Ok(())
+    }
+
+    /// Where entry `log_index` is (it must exist and be flushed or
+    /// buffered).
+    pub fn pos_of(&mut self, log_index: u64) -> io::Result<Pos> {
+        if log_index >= self.active_first && log_index < self.next_index {
+            self.flush()?;
+        }
+        let r = self.reader();
+        r.locate(log_index)?
+            .map(|(_, off)| Pos {
+                log_index,
+                offset: off,
+            })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such entry"))
+    }
+
+    /// Removes entries `from..` (uncommitted entries a new leader
+    /// overrides). Entries that were published cannot be removed.
+    pub fn truncate_from(&mut self, from: u64) -> io::Result<()> {
+        assert!(
+            from > self.last_published_index && from >= 1,
+            "truncating published entries"
+        );
+        if from >= self.next_index {
+            return Ok(());
+        }
+        self.flush()?;
+        let off = self
+            .reader()
+            .locate(from)?
+            .map(|(_, off)| off)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "entry to cut not found"))?;
+        let mut segs = self.shared.segments.write().unwrap();
+        let k = segs.partition_point(|s| s.first_index <= from) - 1;
+        // Later segments go entirely.
+        while segs.len() > k + 1 {
+            let s = segs.pop().unwrap();
+            fs::remove_file(&s.path)?;
+        }
+        let seg = &segs[k];
+        let end = if seg.first_index == self.active_first {
+            self.write_off
+        } else {
+            self.cfg.segment_bytes
+        };
+        // Zero the cut tail so a later scan cannot bring it back.
+        let zeros = vec![0u8; 1 << 20];
+        let mut at = off;
+        while at < end {
+            let n = (end - at).min(zeros.len() as u64) as usize;
+            seg.file.write_all_at(&zeros[..n], at)?;
+            at += n as u64;
+        }
+        seg.file.sync_data()?;
+        let first = seg.first_index;
+        {
+            let mut sp = seg.sparse.lock().unwrap();
+            if let Some(v) = sp.as_mut() {
+                v.truncate((from - first).div_ceil(SPARSE) as usize);
+            }
+        }
+        self.active = seg.file.clone();
+        self.active_sparse = seg.sparse.clone();
+        self.active_first = first;
+        drop(segs);
+        self.unsynced.clear();
+        self.sparse_pending.clear();
+        self.write_off = off;
+        self.buf_off = off;
+        self.next_index = from;
+        self.shared.flushed_index.store(from - 1, Ordering::Release);
         Ok(())
     }
 
@@ -607,6 +776,12 @@ impl Log {
             self.active.write_all_at(&self.buf, self.buf_off)?;
             self.buf_off += self.buf.len() as u64;
             self.buf.clear();
+        }
+        if !self.sparse_pending.is_empty() {
+            let mut sp = self.active_sparse.lock().unwrap();
+            sp.get_or_insert_with(Vec::new)
+                .extend_from_slice(&self.sparse_pending);
+            self.sparse_pending.clear();
         }
         let mut i = 0;
         while i < self.idx_buf.len() {
@@ -853,15 +1028,69 @@ impl LogReader {
             self.segment_bytes,
             payload,
         )? {
-            Some(ts) => Ok(Some(Stored {
+            Some(h) => Ok(Some(Stored {
                 log_index: pos.log_index,
-                timestamp_ns: ts,
+                timestamp_ns: h.timestamp_ns,
             })),
             None => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "egress index points at a bad record",
             )),
         }
+    }
+
+    /// Highest log index readable.
+    pub fn last_index(&self) -> u64 {
+        self.shared.flushed_index.load(Ordering::Acquire)
+    }
+
+    /// The segment file and offset of entry `log_index`, if retained and
+    /// flushed.
+    fn locate(&self, log_index: u64) -> io::Result<Option<(Arc<File>, u64)>> {
+        if log_index == 0 || log_index > self.last_index() {
+            return Ok(None);
+        }
+        let (file, first, sparse) = {
+            let segs = self.shared.segments.read().unwrap();
+            let i = segs.partition_point(|s| s.first_index <= log_index);
+            if i == 0 {
+                return Ok(None);
+            }
+            let s = &segs[i - 1];
+            (s.file.clone(), s.first_index, s.sparse.clone())
+        };
+        let k = (log_index - first) / SPARSE;
+        let start = {
+            let mut sp = sparse.lock().unwrap();
+            if sp.is_none() {
+                *sp = Some(scan_segment(&file, first, self.segment_bytes)?.0);
+            }
+            match sp.as_ref().unwrap().get(k as usize) {
+                Some(o) => *o as u64,
+                None => return Ok(None),
+            }
+        };
+        // Walk forward from the sparse entry (a few KiB for small entries).
+        let mut off = start;
+        let mut at = first + k * SPARSE;
+        let mut scan = Scanner::with_chunk(&file, self.segment_bytes, 16 << 10);
+        while at < log_index {
+            match scan.record(off, at)? {
+                Some((_, _, rec)) => off += rec,
+                None => return Ok(None),
+            }
+            at += 1;
+        }
+        Ok(Some((file, off)))
+    }
+
+    /// Reads entry `log_index` into `payload`. None if it is not retained
+    /// or not flushed.
+    pub fn read_entry(&self, log_index: u64, payload: &mut Vec<u8>) -> io::Result<Option<Header>> {
+        let Some((file, off)) = self.locate(log_index)? else {
+            return Ok(None);
+        };
+        read_record(&file, off, log_index, self.segment_bytes, payload)
     }
 
     /// The first seqno whose entry is at or after `log_index` (binary search).
@@ -875,6 +1104,73 @@ impl LogReader {
             }
         }
         Ok(lo)
+    }
+}
+
+/// The Raft hard state (term, vote), in its own small file. Two 32-byte
+/// slots are written alternately, each with a generation and a CRC, so a
+/// torn write leaves the previous state readable.
+pub struct HardStateFile {
+    file: File,
+    generation: u64,
+}
+
+const HS_MAGIC: u32 = 0x5348_434B; // "KCHS"
+
+impl HardStateFile {
+    /// Opens (or creates) `dir/raft.state`; returns the latest (term, vote).
+    pub fn open(dir: &Path) -> io::Result<(HardStateFile, (u64, u32))> {
+        fs::create_dir_all(dir)?;
+        let path = dir.join("raft.state");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        let mut best = (0u64, (0u64, 0u32));
+        for slot in 0..2u64 {
+            let mut b = [0u8; 32];
+            if file.read_exact_at(&mut b, slot * 32).is_err() {
+                continue;
+            }
+            let magic = u32::from_le_bytes(b[0..4].try_into().unwrap());
+            let sum = u32::from_le_bytes(b[4..8].try_into().unwrap());
+            let generation = u64::from_le_bytes(b[8..16].try_into().unwrap());
+            if magic != HS_MAGIC || crc32c::crc32c(&b[8..32]) != sum {
+                continue;
+            }
+            let term = u64::from_le_bytes(b[16..24].try_into().unwrap());
+            let vote = u32::from_le_bytes(b[24..28].try_into().unwrap());
+            if generation > best.0 {
+                best = (generation, (term, vote));
+            }
+        }
+        sync_dir(dir)?;
+        Ok((
+            HardStateFile {
+                file,
+                generation: best.0,
+            },
+            best.1,
+        ))
+    }
+
+    /// Writes (term, vote; 0 = none); with `sync`, also fdatasync.
+    pub fn store(&mut self, term: u64, vote: u32, sync: bool) -> io::Result<()> {
+        self.generation += 1;
+        let mut b = [0u8; 32];
+        b[0..4].copy_from_slice(&HS_MAGIC.to_le_bytes());
+        b[8..16].copy_from_slice(&self.generation.to_le_bytes());
+        b[16..24].copy_from_slice(&term.to_le_bytes());
+        b[24..28].copy_from_slice(&vote.to_le_bytes());
+        let sum = crc32c::crc32c(&b[8..32]);
+        b[4..8].copy_from_slice(&sum.to_le_bytes());
+        self.file.write_all_at(&b, (self.generation % 2) * 32)?;
+        if sync {
+            self.file.sync_data()?;
+        }
+        Ok(())
     }
 }
 

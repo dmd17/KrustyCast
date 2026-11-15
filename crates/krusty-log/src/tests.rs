@@ -246,3 +246,104 @@ fn reindexing_after_restart_can_rewrite_an_earlier_index_file() {
     log.flush().unwrap();
     assert_eq!(log.next_seqno(), 501);
 }
+
+#[test]
+fn entries_are_found_by_index_and_carry_their_term() {
+    let d = Dir::new("byindex");
+    let mut log = Log::open(cfg(&d)).unwrap().log;
+    for i in 1..3001u64 {
+        log.append_entry(i / 100, i * 1000, &payload(i)).unwrap();
+    }
+    log.sync().unwrap();
+    let r = log.reader();
+    let mut p = Vec::new();
+    for i in [1u64, 2, 63, 64, 65, 128, 1000, 2999, 3000] {
+        let h = r.read_entry(i, &mut p).unwrap().unwrap();
+        assert_eq!(
+            (h.term, h.timestamp_ns, &p[..]),
+            (i / 100, i * 1000, &payload(i)[..])
+        );
+    }
+    assert!(r.read_entry(3001, &mut p).unwrap().is_none());
+    drop(log);
+    // After reopening, older segments' sparse indexes are rebuilt on demand.
+    let o = Log::open(cfg(&d)).unwrap();
+    let r = o.log.reader();
+    for i in [1u64, 777, 3000] {
+        let h = r.read_entry(i, &mut p).unwrap().unwrap();
+        assert_eq!((h.term, &p[..]), (i / 100, &payload(i)[..]));
+    }
+    let mut terms = Vec::new();
+    o.log
+        .replay_entries(2990, |pos, h, _| terms.push((pos.log_index, h.term)))
+        .unwrap();
+    assert_eq!(terms.len(), 11);
+    assert_eq!(terms[0], (2990, 29));
+}
+
+#[test]
+fn truncation_removes_the_tail_for_good() {
+    let d = Dir::new("truncate");
+    let mut log = Log::open(cfg(&d)).unwrap().log;
+    for i in 1..3001u64 {
+        log.append_entry(1, i, &payload(i)).unwrap();
+    }
+    log.sync().unwrap();
+    // Cut in an earlier segment (later segments go too), then write
+    // different, shorter entries in a new term.
+    log.truncate_from(1500).unwrap();
+    assert_eq!(log.next_index(), 1500);
+    for i in 1500..1510u64 {
+        log.append_entry(2, i, b"x").unwrap();
+    }
+    log.sync().unwrap();
+    // A cut in the active segment, between buffered and flushed entries.
+    log.truncate_from(1505).unwrap();
+    log.append_entry(3, 1505, b"yy").unwrap();
+    log.sync().unwrap();
+    drop(log);
+    let o = Log::open(cfg(&d)).unwrap();
+    assert_eq!(o.last_index, 1505);
+    let mut seen = Vec::new();
+    o.log
+        .replay_entries(1495, |pos, h, p| {
+            seen.push((pos.log_index, h.term, p.to_vec()))
+        })
+        .unwrap();
+    assert_eq!(seen.len(), 11);
+    assert_eq!(seen[4], (1499, 1, payload(1499)));
+    assert_eq!(seen[5], (1500, 2, b"x".to_vec()));
+    assert_eq!(seen[10], (1505, 3, b"yy".to_vec()));
+    let mut p = Vec::new();
+    assert_eq!(
+        o.log
+            .reader()
+            .read_entry(1505, &mut p)
+            .unwrap()
+            .unwrap()
+            .term,
+        3
+    );
+}
+
+#[test]
+fn hard_state_survives_and_tolerates_a_torn_slot() {
+    let d = Dir::new("hardstate");
+    let (mut f, hs) = HardStateFile::open(&d.0).unwrap();
+    assert_eq!(hs, (0, 0));
+    f.store(3, 2, true).unwrap();
+    f.store(4, 0, true).unwrap();
+    drop(f);
+    let (mut f, hs) = HardStateFile::open(&d.0).unwrap();
+    assert_eq!(hs, (4, 0));
+    f.store(5, 1, true).unwrap();
+    drop(f);
+    // Tear the newest slot: the previous state comes back.
+    let file = OpenOptions::new()
+        .write(true)
+        .open(d.0.join("raft.state"))
+        .unwrap();
+    file.write_all_at(&[0xFF; 4], 3 * 32 % 64 + 20).unwrap();
+    let (_, hs) = HardStateFile::open(&d.0).unwrap();
+    assert_eq!(hs, (4, 0));
+}

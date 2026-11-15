@@ -38,6 +38,8 @@ jobs:
         run: |
           base=$(( $(date +%s) / 86400 * 20000 ))
           KRUSTY_RAFT_SEEDS=20000 KRUSTY_RAFT_BASE=$base cargo test --release -p krusty-raft --test cluster harsh_sweep -- --ignored
+      - name: Node failover smoke (3 nodes over loopback, 20 leader stops)
+        run: FAILOVER_MAX_MS=1000 cargo run --release -p krusty-client --example failover -- 20
 
   tla-large:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.tla_large }}

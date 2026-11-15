@@ -7,6 +7,17 @@
 //!
 //!   krusty-load [--rate N] [--duration S] [--warmup S] [--senders K] [--payload B]
 //!               [--pin-senders a,b] [--pin-receiver c] [--node-cores i,c,e,r] [--spin]
+//!               [--combined] [--storage DIR] [--durability a|b]
+//!               [--cluster N] [--cluster-cores c1,c2,..] [--sleep-us U]
+//!               [--leader-cores i,c,e,repl]
+//!
+//! `--leader-cores`: node 1 gets shorter election timeouts (so it leads),
+//! spins, and pins ingress, core, egress and replication there; the other
+//! nodes sleep when idle, on `--cluster-cores` (indexed from node 2).
+//!
+//! `--cluster N` runs N replicated nodes in this process (storage under
+//! `--storage`, default a temporary directory) and sends to the leader;
+//! `--cluster-cores` puts all of node k's stages on core ck.
 use hdrhistogram::Histogram;
 use krusty_net::{RecvBatch, SendBatch};
 use krusty_node::{Idle, NodeConfig};
@@ -54,6 +65,10 @@ struct Args {
     combined: bool,
     storage: Option<std::path::PathBuf>,
     durability: krusty_node::Durability,
+    cluster: u32,
+    cluster_cores: Vec<usize>,
+    sleep_us: Option<u64>,
+    leader_cores: Vec<usize>,
 }
 
 fn parse() -> Args {
@@ -70,6 +85,10 @@ fn parse() -> Args {
         combined: false,
         storage: None,
         durability: krusty_node::Durability::Async,
+        cluster: 0,
+        cluster_cores: Vec::new(),
+        sleep_us: None,
+        leader_cores: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -90,6 +109,14 @@ fn parse() -> Args {
             "--spin" => a.spin = true,
             "--combined" => a.combined = true,
             "--storage" => a.storage = Some(v().into()),
+            "--cluster" => a.cluster = v().parse().unwrap(),
+            "--sleep-us" => a.sleep_us = Some(v().parse().unwrap()),
+            "--leader-cores" => {
+                a.leader_cores = v().split(',').map(|c| c.parse().unwrap()).collect()
+            }
+            "--cluster-cores" => {
+                a.cluster_cores = v().split(',').map(|c| c.parse().unwrap()).collect()
+            }
             "--durability" => {
                 a.durability = match v().as_str() {
                     "a" => krusty_node::Durability::Async,
@@ -260,6 +287,8 @@ fn main() {
     cfg.cores = a.node_cores;
     if a.spin {
         cfg.idle = Idle::Spin;
+    } else if let Some(us) = a.sleep_us {
+        cfg.idle = Idle::Sleep { sleep_us: us };
     }
     cfg.core.outcome_ring = 64;
     if let Some(dir) = &a.storage {
@@ -270,7 +299,73 @@ fn main() {
             snapshot_every: 1_000_000,
         });
     }
-    let node = krusty_node::start(cfg).unwrap();
+    let mut followers = Vec::new();
+    let node = if a.cluster == 0 {
+        krusty_node::start(cfg).unwrap()
+    } else {
+        let base = a.storage.clone().unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("krusty-load-{}", std::process::id()))
+        });
+        let _ = std::fs::remove_dir_all(&base);
+        let free = || {
+            v4(UdpSocket::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap())
+        };
+        let members: Vec<(u32, SocketAddrV4)> = (1..=a.cluster).map(|id| (id, free())).collect();
+        let mut nodes: Vec<krusty_node::Node> = (1..=a.cluster)
+            .map(|id| {
+                let mut c = cfg.clone();
+                c.ingress = free();
+                c.recovery = free();
+                c.storage = Some(krusty_node::StorageConfig {
+                    log: krusty_log::LogConfig::new(base.join(id.to_string())),
+                    durability: krusty_node::Durability::Async,
+                    snapshot_every: 1_000_000,
+                });
+                let mut cl = krusty_node::ClusterConfig::new(id, members.clone());
+                if !a.leader_cores.is_empty() {
+                    if id == 1 {
+                        let lc = &a.leader_cores;
+                        c.cores = [Some(lc[0]), Some(lc[1]), Some(lc[2]), None];
+                        cl.core = lc.get(3).copied();
+                        c.idle = Idle::Spin;
+                        cl.election_min_us = 20_000;
+                        cl.election_max_us = 30_000;
+                    } else {
+                        c.idle = Idle::Sleep {
+                            sleep_us: a.sleep_us.unwrap_or(50),
+                        };
+                        if let Some(&core) = a.cluster_cores.get(id as usize - 2) {
+                            c.cores = [Some(core); 4];
+                            cl.core = Some(core);
+                        }
+                    }
+                } else if let Some(&core) = a.cluster_cores.get(id as usize - 1) {
+                    c.cores = [Some(core); 4];
+                    cl.core = Some(core);
+                }
+                c.cluster = Some(cl);
+                krusty_node::start(c).unwrap()
+            })
+            .collect();
+        // Wait for a leader, then send to it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let k = loop {
+            let l: Vec<usize> = (0..nodes.len())
+                .filter(|&k| nodes[k].stats.raft_role.load(Ordering::Relaxed) == 3)
+                .collect();
+            if l.len() == 1 {
+                break l[0];
+            }
+            assert!(Instant::now() < deadline, "no leader");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let leader = nodes.remove(k);
+        followers = nodes;
+        leader
+    };
     let ingress = node.ingress_addr();
 
     let per_sender = (a.warmup + a.duration) * a.rate / a.senders;
@@ -361,7 +456,11 @@ fn main() {
         receiver.join().unwrap()
     };
     let busy = node.stats.busy.load(Ordering::Relaxed);
+    let leader_terms = node.stats.leader_terms.load(Ordering::Relaxed);
     node.stop();
+    for f in followers {
+        f.stop();
+    }
 
     let achieved = total as f64 / elapsed.as_secs_f64();
     println!(
@@ -377,6 +476,12 @@ fn main() {
             "sleeping when idle"
         }
     );
+    if a.cluster > 0 {
+        println!(
+            "replicated: {} nodes, the leader led {} term(s)",
+            a.cluster, leader_terms
+        );
+    }
     println!(
         "achieved {:.0} msg/s; {} submits >100 µs late; feed {} of {}; {} failed; {} BUSY",
         achieved, late, got, total, failed, busy

@@ -188,10 +188,56 @@ opening a log read every record with two system calls (1.4 s for a full
 segment; now 1 MiB reads, 64 ms), and a restart from a snapshot older
 than the last index file failed ("index entry out of order").
 
+## M3 replication, 2026-11-15
+
+Three replicated nodes in one process over loopback (`krusty-node` cluster
+mode, durability (a)).
+
+**Failover (NFR-6: leader crash to the first new message on the feed,
+p99 ≤ 200 ms).** `crates/krusty-client/examples/failover.rs`: a publisher
+sends one message every 200 µs, a consumer follows the feed, and each trial
+stops the leader (its threads end, it sends nothing more), waits for a
+message with a seqno beyond anything the old leader assigned, then
+restarts the stopped node from its log. Default timeouts (election
+50–100 ms, heartbeat 10 ms; publisher moves on after 30 ms of silence).
+Each node's stages share one isolated core (`FAILOVER_CORES=2,3,4`).
+
+```
+FAILOVER_CORES=2,3,4 cargo run --release -p krusty-client --example failover -- 100
+```
+
+| Trials | New leader p50 | max | New messages on the feed p50 | p90 | max | Failed messages |
+|---|---|---|---|---|---|---|
+| 100 | 68.6 ms | 170.1 ms | 70.1 ms | 96.2 ms | 171.3 ms | 0 |
+
+All 100 within 200 ms; most of it is the election timeout (the earliest
+follower notices after 50–100 ms without a heartbeat). Unpinned, and even
+confined to the two non-isolated cores (`taskset -c 0,1`, 20 trials), the
+worst trial took 91 ms. This is loopback on a laptop; the servers decide.
+The nightly workflow runs 20 trials and fails above 1 s.
+
+The benchmark found two bugs, now fixed: finding an entry by log index read
+1 MiB per lookup, and a restarted node looked up every re-applied entry
+that way, so it fell seconds behind, missed heartbeats and set off repeated
+elections (terms climbed by dozens). Lookups now read 16 KiB, and a
+restart hands the storage stage the positions it already found.
+
+**Latency and throughput could not be measured meaningfully here.** A
+3-node cluster plus the generator needs about ten dedicated cores; this
+laptop isolates four. With each node's stages sharing one core,
+`krusty-load --cluster 3 --cluster-cores 2,3,4 --combined --pin-senders 5`
+gives p50 ≈ 1.2 ms at 10 k msg/s and tops out at 45 k msg/s (window-bound:
+64 messages per ≈ 1.4 ms round trip). For comparison, one *single* node
+with all its stages on one core gives p50 310 µs (against 15 µs on
+dedicated cores, M1): sharing a core dominates. The cluster mode of
+`krusty-load` is there for the servers.
+
 ## Next
 
 - Run the same tool on the reference servers (real NICs, multicast, isolated
-  cores) and record the results here, next to the laptop numbers.
+  cores) and record the results here, next to the laptop numbers; for M3,
+  `krusty-load --cluster 3` across three machines (the in-process mode
+  needs a multi-host variant) and the failover example.
 - Aeron Cluster baseline on the same hardware (E3).
 - A perf smoke test in CI (a short low-rate run that must not lose messages)
   is in `ci.yml`. It fails on loss and on generator lag, not on latency,

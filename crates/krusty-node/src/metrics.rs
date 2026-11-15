@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAGIC: u64 = 0x5354_4154_534B_434B; // "KCKSTATS"
-pub const LAYOUT_VERSION: u64 = 3;
+pub const LAYOUT_VERSION: u64 = 4;
 pub const BUCKETS: usize = 64;
 
 /// log2 histogram: bucket `b` counts values in `[2^(b-1), 2^b)` ns (bucket 0: 0).
@@ -107,7 +107,21 @@ counters! {
     recovered_from_disk: "Messages served to RECOVER from disk.",
     recover_on_feed: "RECOVERs answered once on the feed because several consumers asked.",
     recover_suppressed: "RECOVERs ignored: the range was just retransmitted on the feed.",
+    stream_next: "Gauge: the next stream seqno this node's core assigns.",
+    raft_role: "Gauge: 0 follower, 1 pre-candidate, 2 candidate, 3 leader.",
+    raft_term: "Gauge: current Raft term.",
+    raft_commit: "Gauge: Raft commit index.",
+    applied: "Committed log entries applied to the core (every node).",
+    not_leader: "SUBMITs answered NOT_LEADER.",
+    leader_terms: "Terms in which this node became leader.",
+    repl_in: "Raft messages received.",
+    repl_out: "Raft messages sent.",
+    repl_dropped: "Raft messages dropped (ring full or undecodable).",
+    repl_unservable: "Appends not sent: entries no longer retained (needs InstallSnapshot).",
 }
+
+/// Counters that are levels, not totals (no rate is computed for them).
+pub const GAUGES: &[&str] = &["stream_next", "raft_role", "raft_term", "raft_commit"];
 
 /// The node's metrics: a shared mapping (or private memory when no path is
 /// given). Dereferences to [`Shared`].

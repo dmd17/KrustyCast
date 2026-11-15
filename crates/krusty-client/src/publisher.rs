@@ -13,8 +13,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[derive(Clone, Debug)]
 pub struct PublisherConfig {
     pub client_id: u32,
-    /// Nodes' ingress addresses; the publisher moves on after NOT_LEADER.
+    /// Nodes' ingress addresses, in node id order (`nodes[k]` is node
+    /// k + 1). After NOT_LEADER the publisher goes to the leader it names
+    /// (or the next node); after `failover_ns` without any answer while
+    /// messages are outstanding, it tries the next node.
     pub nodes: Vec<SocketAddrV4>,
+    pub failover_ns: u64,
     /// Most unanswered messages (≤ the cluster's outcome ring).
     pub window: usize,
     pub retry_interval_ns: u64,
@@ -28,6 +32,7 @@ impl PublisherConfig {
         PublisherConfig {
             client_id,
             nodes,
+            failover_ns: 60_000_000,
             window: 64,
             retry_interval_ns: 20_000_000,
             max_attempts: 50,
@@ -63,6 +68,8 @@ pub struct Publisher {
     sock: UdpSocket,
     session: Session,
     node: usize,
+    /// When feedback last arrived (or the node last changed).
+    heard_at: u64,
     /// Payload copies for resends: `window` slots of `max_payload` bytes.
     payloads: Vec<u8>,
     lens: Vec<usize>,
@@ -106,6 +113,7 @@ impl Publisher {
             ev: Vec::with_capacity(cfg.window),
             buf: vec![0; 65_536],
             node: 0,
+            heard_at: 0,
             cfg,
             sock,
             session,
@@ -174,11 +182,27 @@ impl Publisher {
                 Err(e) => return Err(e),
             };
             if let Ok(fb) = Feedback::decode(&self.buf[..n]) {
-                if matches!(fb.outcome, krusty_wire::feedback::Outcome::NotLeader { .. }) {
-                    self.node += 1;
+                self.heard_at = now;
+                if let krusty_wire::feedback::Outcome::NotLeader { leader } = fb.outcome {
+                    let k = self.cfg.nodes.len() as u64;
+                    self.node = if (1..=k).contains(&leader) {
+                        (leader - 1) as usize
+                    } else {
+                        self.node + 1
+                    };
                 }
                 self.session.on_feedback(&fb, now, &mut self.ev);
             }
+        }
+        // Silence while messages are outstanding: the node may be gone.
+        if self.session.in_flight() == 0 {
+            self.heard_at = now;
+        } else if self.cfg.nodes.len() > 1
+            && self.session.in_flight() > 0
+            && now.saturating_sub(self.heard_at) > self.cfg.failover_ns
+        {
+            self.node += 1;
+            self.heard_at = now;
         }
         self.report(&mut f);
         Ok(())

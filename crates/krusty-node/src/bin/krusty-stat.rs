@@ -59,8 +59,11 @@ fn main() {
         );
         for ((name, v), (_, p)) in now.iter().zip(&prev) {
             match interval {
-                Some(dt) => println!("  {name:<18} {v:>14} {:>12.0}/s", (v - p) as f64 / dt),
-                None => println!("  {name:<18} {v:>14}"),
+                Some(dt) if !krusty_node::metrics::GAUGES.contains(name) => println!(
+                    "  {name:<18} {v:>14} {:>12.0}/s",
+                    v.saturating_sub(*p) as f64 / dt
+                ),
+                _ => println!("  {name:<18} {v:>14}"),
             }
         }
         println!(

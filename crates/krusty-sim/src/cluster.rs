@@ -240,11 +240,12 @@ impl Sim<'_> {
         let id = k as NodeId + 1;
         loop {
             let node = &mut self.nodes[k];
-            let raft = node.raft.as_ref().unwrap();
+            let raft = node.raft.as_mut().unwrap();
             if node.applied >= raft.commit_index() {
                 return;
             }
             node.applied += 1;
+            raft.applied(node.applied);
             let leader = raft.role() == Role::Leader;
             let data = node.store.log[node.applied as usize - 1].1.clone();
             if data.is_empty() {

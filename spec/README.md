@@ -83,7 +83,7 @@ outside G3's assumptions.
 | Config | Bounds | States | Time (laptop) |
 |---|---|---|---|
 | `MCRaftKC.cfg` (CI) | all behaviours up to 11 steps; 3 servers, 2 terms, logs of 2, ≤3 messages, restarts and step-downs | 141 k | ~3 min (2 workers) |
-| `RaftKC.cfg` | exhaustive; 2 terms, logs of 2, ≤2 messages, no restarts or step-downs | > 2.4 M, see below | > 20 min |
+| `RaftKC.cfg` | exhaustive; 2 terms, logs of 2, ≤2 messages, no restarts or step-downs | 9.41 M (depth 39), no violation | 43 min (3 workers) |
 | `RaftKCLarge.cfg` | exhaustive; 2 terms, logs of 3, ≤3 messages, restarts and step-downs | > 10 M explored without a violation in 20 min, not exhausted | hours |
 
 What finds which bug (mutations of the spec, and of `krusty-raft`'s code):

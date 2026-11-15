@@ -217,6 +217,28 @@ list.
 - The commit index advances at quorum. Log index and egress seqno are
   different numbers: rejected entries consume a log index but no seqno.
 
+As built (M3, `krusty-node/src/cluster.rs`):
+
+- Raft runs inside T-core, next to the sequencer core (single writer of
+  both). T-repl is an I/O stage only: datagrams from peers into ring R,
+  ring O out to peers (one UDP datagram per message, up to 60 KB).
+- An entry is `leader timestamp u64 | raw SUBMIT`; an empty entry is the
+  term's no-op. The core keeps its own index (SUBMITs only), so no-ops do
+  not reach `krusty-core`.
+- Every node stores entries when they are appended, applies them when
+  committed, and fills its history; only the leader publishes DATA frames
+  and heartbeats (and Mold), and answers clients. Followers answer
+  NOT_LEADER with the leader's id. A node stopping does not end the stream
+  (no END_OF_SESSION).
+- Mode (a) only: an entry handed to T-store counts as persisted, so
+  followers acknowledge on receipt. The hard state goes to `raft.state`
+  (two slots, CRC) before any message that depends on it. Mode (b) with
+  replication needs acknowledgements after fsync (PRD open question 7).
+- Lagging followers are served from memory (`retain_entries`) or the log
+  (a sparse in-memory index per segment finds an entry with one short
+  read). InstallSnapshot is not implemented: a follower behind the log's
+  retention cannot catch up (`repl_unservable`).
+
 ### 8.3 Native stream (cluster → consumers)
 
 The backbone egress protocol: our SDK on one end, the cluster on the
@@ -298,7 +320,11 @@ For external consumers that expect a standard feed (UC4):
   length-prefixed with CRC32C and aligned. Written by `T-store` via
   io_uring. A torn tail is truncated on recovery, as today.
 - **Indices.** log index → offset; egress seqno → log index. Both are
-  rebuildable from segments.
+  rebuildable from segments. As built: the log-index side is a sparse
+  in-memory index (every 64th entry's offset per segment, built on first
+  use for older segments); records carry the Raft term (format 2), and
+  uncommitted entries can be truncated (the cut tail is zeroed so a later
+  scan cannot bring it back).
 - **Snapshots.** Sequencer core state (dedup and outcome rings, key
   versions, next seqno) at a log index, written asynchronously. Recovery
   loads the latest snapshot and replays the log suffix. Raft log compaction

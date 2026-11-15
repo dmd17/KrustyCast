@@ -16,9 +16,13 @@
 //! - egress: `sendmmsg` of frames to the feed and feedback to clients.
 //! - recovery: answers RECOVER from the history.
 //!
-//! Nothing on these paths allocates after startup. State is in memory only
-//! (durability arrives with storage and replication, M2/M3).
+//! Nothing on these paths allocates after startup. With storage (M2), a
+//! storage stage writes the log (`storage`). With a cluster (M3), the core
+//! stage also runs Raft (`cluster`): a replication stage moves Raft
+//! messages, every node applies committed entries, and only the leader
+//! publishes the feed and answers clients.
 
+mod cluster;
 pub mod config;
 pub mod metrics;
 pub mod stages;
@@ -47,6 +51,48 @@ pub struct MoldConfig {
     pub feed: SocketAddrV4,
     /// The standard re-request server's address.
     pub rerequest: SocketAddrV4,
+}
+
+/// Replication (M3): this node's Raft identity and its peers.
+#[derive(Clone, Debug)]
+pub struct ClusterConfig {
+    /// This node's id (≥ 1).
+    pub id: u32,
+    /// Every member's replication address, by id (this node's too: it binds
+    /// there).
+    pub members: Vec<(u32, SocketAddrV4)>,
+    pub election_min_us: u64,
+    pub election_max_us: u64,
+    /// Raft heartbeat (an empty Append) interval.
+    pub heartbeat_us: u64,
+    /// Most entry bytes per Append datagram.
+    pub max_append_bytes: usize,
+    pub max_inflight: u32,
+    /// Committed entries kept in memory for lagging followers (older ones
+    /// are read from the log).
+    pub retain_entries: u64,
+    /// Core for the replication I/O stage (None: not pinned).
+    pub core: Option<usize>,
+}
+
+impl ClusterConfig {
+    pub fn new(id: u32, members: Vec<(u32, SocketAddrV4)>) -> ClusterConfig {
+        ClusterConfig {
+            id,
+            members,
+            election_min_us: 50_000,
+            election_max_us: 100_000,
+            heartbeat_us: 10_000,
+            max_append_bytes: 60_000,
+            max_inflight: 16,
+            retain_entries: 1 << 16,
+            core: None,
+        }
+    }
+
+    pub fn addr_of(&self, id: u32) -> Option<SocketAddrV4> {
+        self.members.iter().find(|m| m.0 == id).map(|m| m.1)
+    }
 }
 
 /// Storage (M2): the log, its durability mode and the snapshot cadence.
@@ -87,6 +133,8 @@ pub struct NodeConfig {
     pub mold: Option<MoldConfig>,
     /// Durable storage (None: in memory only).
     pub storage: Option<StorageConfig>,
+    /// Replication (None: a single node). Needs storage in mode (a).
+    pub cluster: Option<ClusterConfig>,
     /// Suppression (ARCHITECTURE §8.5): when a second consumer asks for the
     /// same range within this window, retransmit once on the feed instead
     /// of answering each one (0: always answer unicast).
@@ -117,6 +165,7 @@ impl NodeConfig {
             cores: [None; 4],
             mold: None,
             storage: None,
+            cluster: None,
             recover_suppress_us: 1_000,
             metrics_path: None,
             stage_init: None,

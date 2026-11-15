@@ -30,6 +30,14 @@
 //! session = "KC20261114"
 //! feed = "239.1.1.2:7004"
 //! rerequest = "0.0.0.0:7003"
+//!
+//! [cluster]                     # optional replication (M3); needs [storage], mode "a"
+//! id = 1
+//! members = ["1@10.0.0.5:7100", "2@10.0.0.6:7100", "3@10.0.0.7:7100"]
+//! election_min_ms = 50
+//! election_max_ms = 100
+//! heartbeat_ms = 10
+//! core = 6                      # replication I/O stage
 //! ```
 use crate::{Idle, MoldConfig, NodeConfig};
 use serde::Deserialize;
@@ -50,6 +58,21 @@ pub struct FileConfig {
     pub limits: Option<Limits>,
     pub storage: Option<Storage>,
     pub mold: Option<Mold>,
+    pub cluster: Option<Cluster>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cluster {
+    pub id: u32,
+    /// `"<id>@<ip>:<port>"`, one per member.
+    pub members: Vec<String>,
+    pub election_min_ms: Option<u64>,
+    pub election_max_ms: Option<u64>,
+    pub heartbeat_ms: Option<u64>,
+    pub max_append_bytes: Option<usize>,
+    pub retain_entries: Option<u64>,
+    pub core: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +186,39 @@ impl FileConfig {
                 snapshot_every: st.snapshot_every.unwrap_or(1_000_000),
             });
         }
+        if let Some(c) = &self.cluster {
+            let mut members = Vec::new();
+            for m in &c.members {
+                let (id, addr) = m
+                    .split_once('@')
+                    .ok_or_else(|| format!("cluster.members: {m:?} is not \"<id>@<ip>:<port>\""))?;
+                let id: u32 = id
+                    .parse()
+                    .map_err(|_| format!("cluster.members: bad id in {m:?}"))?;
+                let addr: SocketAddrV4 = addr
+                    .parse()
+                    .map_err(|_| format!("cluster.members: bad address in {m:?}"))?;
+                members.push((id, addr));
+            }
+            let mut cl = crate::ClusterConfig::new(c.id, members);
+            if let Some(v) = c.election_min_ms {
+                cl.election_min_us = v * 1000;
+            }
+            if let Some(v) = c.election_max_ms {
+                cl.election_max_us = v * 1000;
+            }
+            if let Some(v) = c.heartbeat_ms {
+                cl.heartbeat_us = v * 1000;
+            }
+            if let Some(v) = c.max_append_bytes {
+                cl.max_append_bytes = v;
+            }
+            if let Some(v) = c.retain_entries {
+                cl.retain_entries = v;
+            }
+            cl.core = c.core;
+            cfg.cluster = Some(cl);
+        }
         if let Some(m) = &self.mold {
             let session = krusty_mold::Session::new(&m.session)
                 .ok_or("mold.session: 1-10 printable ASCII characters")?;
@@ -199,6 +255,34 @@ impl NodeConfig {
         }
         if self.core.outcome_ring == 0 || self.core.max_clients == 0 {
             return Err("limits.outcome_ring and limits.max_clients must be at least 1".into());
+        }
+        if let Some(c) = &self.cluster {
+            match &self.storage {
+                None => return Err("[cluster] needs [storage] (the Raft log)".into()),
+                Some(st) if st.durability != crate::Durability::Async => {
+                    return Err("[cluster] supports durability \"a\" only for now (mode b with replication: PRD open question 7)".into());
+                }
+                _ => {}
+            }
+            let mut ids: Vec<u32> = c.members.iter().map(|m| m.0).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            if ids.len() != c.members.len() || ids.contains(&0) {
+                return Err("cluster.members: ids must be distinct and at least 1".into());
+            }
+            if !ids.contains(&c.id) {
+                return Err(format!("cluster.id {} is not among the members", c.id));
+            }
+            if !(c.heartbeat_us < c.election_min_us && c.election_min_us < c.election_max_us) {
+                return Err("cluster: need heartbeat < election_min < election_max".into());
+            }
+            if c.max_append_bytes < krusty_raft::wire::entry_len(8 + self.max_payload + 64)
+                || c.max_append_bytes > 65_000
+            {
+                return Err(
+                    "cluster.max_append_bytes: must hold one entry and fit a datagram".into(),
+                );
+            }
         }
         Ok(())
     }
@@ -255,6 +339,47 @@ mod tests {
                 .unwrap()
                 .apply(&mut base())
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn cluster_section_parses_and_is_checked() {
+        let text = r#"
+            [storage]
+            dir = "/tmp/x"
+            [cluster]
+            id = 2
+            members = ["1@10.0.0.5:7100", "2@10.0.0.6:7100", "3@10.0.0.7:7100"]
+            election_min_ms = 80
+            election_max_ms = 160
+            core = 6
+        "#;
+        let mut cfg = base();
+        FileConfig::parse(text).unwrap().apply(&mut cfg).unwrap();
+        let c = cfg.cluster.as_ref().unwrap();
+        assert_eq!(
+            (c.id, c.members.len(), c.election_min_us, c.core),
+            (2, 3, 80_000, Some(6))
+        );
+        assert_eq!(c.addr_of(3), Some("10.0.0.7:7100".parse().unwrap()));
+        let bad = |t: &str| {
+            FileConfig::parse(t)
+                .unwrap()
+                .apply(&mut base())
+                .unwrap_err()
+        };
+        assert!(
+            bad("[cluster]\nid = 1\nmembers = [\"1@10.0.0.5:7100\"]").contains("needs [storage]")
+        );
+        assert!(bad("[storage]\ndir = \"/x\"\ndurability = \"b\"\n[cluster]\nid = 1\nmembers = [\"1@10.0.0.5:7100\"]").contains("only"));
+        assert!(
+            bad("[storage]\ndir = \"/x\"\n[cluster]\nid = 4\nmembers = [\"1@10.0.0.5:7100\"]")
+                .contains("not among")
+        );
+        assert!(bad("[storage]\ndir = \"/x\"\n[cluster]\nid = 1\nmembers = [\"1@10.0.0.5:7100\", \"1@10.0.0.6:7100\"]").contains("distinct"));
+        assert!(
+            bad("[storage]\ndir = \"/x\"\n[cluster]\nid = 1\nmembers = [\"10.0.0.5:7100\"]")
+                .contains("<id>@")
         );
     }
 }

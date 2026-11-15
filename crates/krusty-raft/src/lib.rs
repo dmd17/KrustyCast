@@ -47,6 +47,11 @@ pub struct Config {
     pub heartbeat_ns: u64,
     /// Most entries per Append.
     pub max_append_entries: u64,
+    /// Most entry bytes per Append (the encoded size, see
+    /// [`wire::entry_len`]); at least one entry is always sent. Entries
+    /// served from storage are not counted: the shell sends fewer if they
+    /// do not fit, which the follower's reply reports.
+    pub max_append_bytes: usize,
     /// Most unacknowledged Appends per follower.
     pub max_inflight: u32,
     /// Committed entries kept in memory for followers that lag.
@@ -63,6 +68,7 @@ impl Config {
             election_max_ns: 100_000_000,
             heartbeat_ns: 10_000_000,
             max_append_entries: 256,
+            max_append_bytes: usize::MAX,
             max_inflight: 16,
             retain_entries: 1 << 16,
             seed: 0,
@@ -196,6 +202,8 @@ pub struct Raft {
     commit: u64,
     /// Highest local index durable (counts toward the leader's quorum).
     durable: u64,
+    /// Highest index the shell has applied (entries above stay in memory).
+    applied: u64,
     peers: Vec<Progress>,
     now: u64,
     election_deadline: u64,
@@ -235,15 +243,17 @@ impl Raft {
             })
             .collect();
         let durable = log.last_index();
+        let commit = commit.min(durable);
         let rng = cfg.seed ^ (cfg.id as u64).wrapping_mul(0x9E37_79B9);
         let mut r = Raft {
-            commit: commit.min(log.last_index()),
+            commit,
             cfg,
             role: Role::Follower,
             hs,
             leader: None,
             log,
             durable,
+            applied: commit,
             peers,
             now,
             election_deadline: 0,
@@ -446,7 +456,7 @@ impl Raft {
             let mut inflight = p.inflight;
             let mut sent = false;
             while next <= last && inflight < self.cfg.max_inflight {
-                let count = (last + 1 - next).min(self.cfg.max_append_entries);
+                let count = self.batch_len(next, last);
                 let prev = next - 1;
                 let prev_term = self.term_at_or_storage(prev);
                 out.sends.push((
@@ -487,6 +497,35 @@ impl Raft {
         }
     }
 
+    /// How many entries from `next` go in one Append: up to the count and
+    /// byte limits (entries in memory only; at least one).
+    fn batch_len(&self, next: u64, last: u64) -> u64 {
+        let most = (last + 1 - next).min(self.cfg.max_append_entries);
+        if self.cfg.max_append_bytes == usize::MAX {
+            return most;
+        }
+        let mut bytes = 0usize;
+        let mut n = 0;
+        while n < most {
+            let Some((_, d)) = self.log.get(next + n) else {
+                return most; // from storage: the shell fits them
+            };
+            bytes += wire::entry_len(d.len());
+            if n > 0 && bytes > self.cfg.max_append_bytes {
+                break;
+            }
+            n += 1;
+        }
+        n
+    }
+
+    /// The shell applied entries up to `upto` (they may leave memory).
+    pub fn applied(&mut self, upto: u64) {
+        self.applied = self.applied.max(upto.min(self.commit));
+        self.log
+            .compact(self.compact_point(), self.cfg.retain_entries);
+    }
+
     /// The term of `i` from memory, or 0 if it was compacted away: the
     /// shell then fills `prev_term` (and the entries) from storage.
     fn term_at_or_storage(&self, i: u64) -> u64 {
@@ -515,11 +554,11 @@ impl Raft {
         }
     }
 
-    /// Entries below this may leave memory: committed, and already stored
-    /// by the shell (which reads new entries from memory to persist them).
-    /// Followers lagging further are served from storage.
+    /// Entries below this may leave memory: committed, already stored by
+    /// the shell (which reads new entries from memory to persist them) and
+    /// applied. Followers lagging further are served from storage.
     fn compact_point(&self) -> u64 {
-        self.commit.min(self.durable)
+        self.commit.min(self.durable).min(self.applied)
     }
 
     fn peer(&mut self, id: NodeId) -> Option<&mut Progress> {

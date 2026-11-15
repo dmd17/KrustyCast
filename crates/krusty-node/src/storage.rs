@@ -31,9 +31,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 
 /// Ring S record kinds.
+/// `log_index u64 | term u64 | timestamp u64 | payload`
 pub(crate) const S_ENTRY: u32 = 1;
+/// `seqno u64 | log_index u64`: stream message `seqno` came from that entry.
 pub(crate) const S_PUBLISHED: u32 = 2;
+/// `log_index u64`: a snapshot taken after that entry follows on the channel.
 pub(crate) const S_SNAPSHOT: u32 = 3;
+/// `log_index u64`: remove entries from there on (Raft, uncommitted only).
+pub(crate) const S_TRUNCATE: u32 = 4;
+pub(crate) const S_ENTRY_HEADER: usize = 24;
+
+/// Fills an S_ENTRY record.
+pub(crate) fn put_entry(b: &mut [u8], log_index: u64, term: u64, ts: u64, payload: &[u8]) {
+    b[..8].copy_from_slice(&log_index.to_le_bytes());
+    b[8..16].copy_from_slice(&term.to_le_bytes());
+    b[16..24].copy_from_slice(&ts.to_le_bytes());
+    b[S_ENTRY_HEADER..].copy_from_slice(payload);
+}
 /// Egress records in mode (b): ring B kind + this.
 pub(crate) const S_EGRESS: u32 = 100;
 
@@ -141,6 +155,7 @@ fn fatal(what: &str, e: io::Error) -> ! {
 pub(crate) fn store_stage(
     cfg: NodeConfig,
     mut log: Log,
+    mut recent: std::collections::VecDeque<Pos>,
     mut input: Consumer,
     mut egress: Producer,
     snapshots: Receiver<Vec<u8>>,
@@ -152,10 +167,9 @@ pub(crate) fn store_stage(
     // Staged egress records: kind u32 | len u32 | bytes, back to back.
     let mut pending: Vec<u8> = Vec::with_capacity(PENDING_BYTES);
     let mut empty = 0;
-    let mut last_pos = Pos {
-        log_index: 0,
-        offset: 0,
-    };
+    // Positions of entries appended but not yet published (in order).
+    recent.reserve(1 << 16);
+    let u64_at = |b: &[u8], i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
     loop {
         let finished = core_done.load(Ordering::Acquire);
         let mut appended = 0u64;
@@ -163,17 +177,40 @@ pub(crate) fn store_stage(
         pending.clear();
         let n = input.read(cfg.batch * 4, |kind, rec| match kind {
             S_ENTRY => {
-                let ts = u64::from_le_bytes(rec[..8].try_into().unwrap());
-                last_pos = log
-                    .append(ts, &rec[8..])
+                let (li, term, ts) = (u64_at(rec, 0), u64_at(rec, 8), u64_at(rec, 16));
+                if li != log.next_index() {
+                    fatal(
+                        "append",
+                        io::Error::other(format!("entry {li}, expected {}", log.next_index())),
+                    );
+                }
+                let pos = log
+                    .append_entry(term, ts, &rec[S_ENTRY_HEADER..])
                     .unwrap_or_else(|e| fatal("append", e));
+                recent.push_back(pos);
                 appended += 1;
             }
             S_PUBLISHED => {
-                let seqno = u64::from_le_bytes(rec[..8].try_into().unwrap());
-                log.index_published(seqno, last_pos);
+                let (seqno, li) = (u64_at(rec, 0), u64_at(rec, 8));
+                while recent.front().is_some_and(|p| p.log_index < li) {
+                    recent.pop_front();
+                }
+                let pos = match recent.front() {
+                    Some(p) if p.log_index == li => *p,
+                    // Appended before a restart.
+                    _ => log.pos_of(li).unwrap_or_else(|e| fatal("index", e)),
+                };
+                log.index_published(seqno, pos);
             }
-            S_SNAPSHOT => snapshot_at = Some(u64::from_le_bytes(rec[..8].try_into().unwrap())),
+            S_TRUNCATE => {
+                let from = u64_at(rec, 0);
+                while recent.back().is_some_and(|p| p.log_index >= from) {
+                    recent.pop_back();
+                }
+                log.truncate_from(from)
+                    .unwrap_or_else(|e| fatal("truncate", e));
+            }
+            S_SNAPSHOT => snapshot_at = Some(u64_at(rec, 0)),
             k => {
                 pending.extend_from_slice(&(k - S_EGRESS).to_le_bytes());
                 pending.extend_from_slice(&(rec.len() as u32).to_le_bytes());

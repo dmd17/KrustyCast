@@ -26,3 +26,13 @@ retain_gib = 64               # whole segments beyond this are deleted (below a 
 session = "KC20261114"
 feed = "239.1.1.2:7004"
 rerequest = "0.0.0.0:7003"
+
+# Optional replication (M3). Needs [storage] in mode "a". Each node gets the
+# same member list and its own id; members are "<id>@<replication address>".
+# [cluster]
+# id = 1
+# members = ["1@10.0.0.5:7100", "2@10.0.0.6:7100", "3@10.0.0.7:7100"]
+# election_min_ms = 50
+# election_max_ms = 100
+# heartbeat_ms = 10
+# core = 6                    # replication I/O stage

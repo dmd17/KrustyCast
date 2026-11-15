@@ -623,6 +623,7 @@ dependencies = [
  "krusty-log",
  "krusty-mold",
  "krusty-net",
+ "krusty-raft",
  "krusty-ring",
  "krusty-session",
  "krusty-stream",

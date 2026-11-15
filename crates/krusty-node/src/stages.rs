@@ -18,11 +18,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const REC_SUBMIT: u32 = 1;
-const REC_FEED: u32 = 1;
-const REC_TO: u32 = 2;
+pub(crate) const REC_FEED: u32 = 1;
+pub(crate) const REC_TO: u32 = 2;
 /// Ring record header: ip (4) + port (2) + padding (2), then the monotonic
 /// time the record was queued (8), for the dwell histograms.
-const REC_HDR: usize = 16;
+pub(crate) const REC_HDR: usize = 16;
 /// History entry header: timestamp, client, flags, key, version.
 pub(crate) const HIST_HEADER: usize = 32;
 /// Most messages one RECOVER is answered with.
@@ -54,8 +54,14 @@ impl Node {
     /// Ends the stream (END_OF_SESSION) and stops all stages.
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::Release);
+        let debug = std::env::var_os("KRUSTY_DEBUG_STOP").is_some();
+        let t0 = Instant::now();
         for t in self.threads.drain(..) {
+            let name = t.thread().name().unwrap_or("?").to_string();
             let _ = t.join();
+            if debug {
+                eprintln!("stop: {name} joined after {:?}", t0.elapsed());
+            }
         }
     }
 }
@@ -67,21 +73,21 @@ fn v4(a: SocketAddr) -> SocketAddrV4 {
     }
 }
 
-fn put_addr(b: &mut [u8], a: SocketAddrV4) {
+pub(crate) fn put_addr(b: &mut [u8], a: SocketAddrV4) {
     b[..4].copy_from_slice(&u32::from(*a.ip()).to_le_bytes());
     b[4..6].copy_from_slice(&a.port().to_le_bytes());
     b[6..8].fill(0);
 }
 
-fn put_ts(b: &mut [u8], t: u64) {
+pub(crate) fn put_ts(b: &mut [u8], t: u64) {
     b[8..16].copy_from_slice(&t.to_le_bytes());
 }
 
-fn get_ts(b: &[u8]) -> u64 {
+pub(crate) fn get_ts(b: &[u8]) -> u64 {
     u64::from_le_bytes(b[8..16].try_into().unwrap())
 }
 
-fn get_addr(b: &[u8]) -> SocketAddrV4 {
+pub(crate) fn get_addr(b: &[u8]) -> SocketAddrV4 {
     let ip = u32::from_le_bytes(b[..4].try_into().unwrap());
     SocketAddrV4::new(
         Ipv4Addr::from(ip),
@@ -89,7 +95,7 @@ fn get_addr(b: &[u8]) -> SocketAddrV4 {
     )
 }
 
-fn pin(core: Option<usize>) {
+pub(crate) fn pin(core: Option<usize>) {
     if let Some(core) = core {
         // SAFETY: cpu_set_t is plain data; sched_setaffinity only reads it.
         unsafe {
@@ -117,14 +123,14 @@ pub(crate) fn idle(how: Idle, empty_polls: &mut u32) {
     }
 }
 
-fn now_ns() -> u64 {
+pub(crate) fn now_ns() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
 }
 
-fn bind(addr: SocketAddrV4, interface: Ipv4Addr) -> io::Result<UdpSocket> {
+pub(crate) fn bind(addr: SocketAddrV4, interface: Ipv4Addr) -> io::Result<UdpSocket> {
     let s = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::DGRAM,
@@ -181,7 +187,63 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
 
     // Who feeds ring B, and when egress may finish.
     let mut disk: Option<krusty_log::LogReader> = None;
+    let mut cluster_start: Option<crate::cluster::ClusterStart> = None;
+    let leader_flag = Arc::new(AtomicBool::new(cfg.cluster.is_none()));
     let (history, core_start, out, egress_done) = match &cfg.storage {
+        Some(st) if cfg.cluster.is_some() => {
+            let cl = cfg.cluster.as_ref().unwrap();
+            let mut r = crate::cluster::restore(&cfg, st, cl)?;
+            eprintln!(
+                "krusty-node: node {} restored: snapshot at {}, {} entries after it, next seqno {}",
+                cl.id,
+                r.snapshot_index,
+                r.loaded,
+                r.start.core.next_seqno()
+            );
+            disk = Some(r.log.reader());
+            let (s_tx, s_rx) = byte_ring(cfg.ring_bytes);
+            let (snap_tx, snap_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+            let (back_tx, back_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+            r.start.snapshots = Some((snap_tx, back_rx, st.snapshot_every.max(1)));
+            let (log, positions) = (r.log, r.positions);
+            let (c2, done, sdone, st2) = (
+                cfg.clone(),
+                core_done.clone(),
+                store_done.clone(),
+                stats.clone(),
+            );
+            threads.push(spawn("krusty-store", cfg.stage_init, move || {
+                crate::storage::store_stage(
+                    c2,
+                    log,
+                    positions,
+                    s_rx,
+                    byte_ring(64).0,
+                    snap_rx,
+                    back_tx,
+                    done,
+                    sdone,
+                    st2,
+                )
+            }));
+            cluster_start = Some(r.start);
+            (
+                r.history,
+                // Unused in a cluster (the cluster core stage starts from `cluster_start`).
+                CoreStart {
+                    core: Core::new(cfg.core),
+                    log_index: 0,
+                    last_ts: 0,
+                    snapshots: None,
+                },
+                Out {
+                    b: b_tx,
+                    s: Some(s_tx),
+                    through_storage: false,
+                },
+                core_done.clone(),
+            )
+        }
         None => (
             History::new(cfg.history, HIST_HEADER + cfg.max_payload),
             CoreStart {
@@ -233,7 +295,16 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             );
             threads.push(spawn("krusty-store", cfg.stage_init, move || {
                 crate::storage::store_stage(
-                    c2, log, s_rx, store_b, snap_rx, back_tx, done, sdone, st2,
+                    c2,
+                    log,
+                    Default::default(),
+                    s_rx,
+                    store_b,
+                    snap_rx,
+                    back_tx,
+                    done,
+                    sdone,
+                    st2,
                 )
             }));
             let egress_done = if sync {
@@ -261,7 +332,34 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             ingress(cfg, ingress_sock, a_tx, stop, stats)
         }));
     }
-    {
+    if let Some(start) = cluster_start {
+        let cl = cfg.cluster.clone().unwrap();
+        let me = cl.addr_of(cl.id).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "no address for this node")
+        })?;
+        let repl_sock = bind(me, cfg.interface)?;
+        let (r_tx, r_rx) = byte_ring(cfg.ring_bytes);
+        let (o_tx, o_rx) = byte_ring(cfg.ring_bytes);
+        {
+            let (cfg, stop, stats) = (cfg.clone(), stop.clone(), stats.clone());
+            threads.push(spawn("krusty-repl", cfg.stage_init, move || {
+                crate::cluster::repl_stage(cfg, cl, repl_sock, r_tx, o_rx, stop, stats)
+            }));
+        }
+        let (cfg, stop, done, h, stats, lf) = (
+            cfg.clone(),
+            stop.clone(),
+            core_done.clone(),
+            history.clone(),
+            stats.clone(),
+            leader_flag.clone(),
+        );
+        threads.push(spawn("krusty-core", cfg.stage_init, move || {
+            crate::cluster::cluster_core_stage(
+                cfg, a_rx, r_rx, o_tx, out, h, start, lf, stop, done, stats,
+            )
+        }));
+    } else {
         let (cfg, stop, done, h, stats) = (
             cfg.clone(),
             stop.clone(),
@@ -298,11 +396,12 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
         mold_rerequest_addr = Some(v4(rereq.local_addr()?));
         let out = sender(m.feed, cfg.interface)?;
         // Ends after whatever feeds egress has finished (the storage stage in mode b).
-        let (cfg, done, h, stats) = (
+        let (cfg, done, h, stats, lf) = (
             cfg.clone(),
             egress_done.clone(),
             history.clone(),
             stats.clone(),
+            leader_flag.clone(),
         );
         // Mode (b): Mold may publish only what is durable.
         let durable = match &cfg.storage {
@@ -310,7 +409,7 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             _ => None,
         };
         threads.push(spawn("krusty-mold", cfg.stage_init, move || {
-            mold(cfg, m, out, rereq, h, durable, done, stats)
+            mold(cfg, m, out, rereq, h, durable, lf, done, stats)
         }));
     }
     Ok(Node {
@@ -438,7 +537,7 @@ pub(crate) struct Out {
 }
 
 impl Out {
-    fn egress(&mut self, kind: u32, len: usize, fill: impl FnMut(&mut [u8])) {
+    pub(crate) fn egress(&mut self, kind: u32, len: usize, fill: impl FnMut(&mut [u8])) {
         if self.through_storage {
             write_ring(
                 self.s.as_mut().unwrap(),
@@ -451,13 +550,20 @@ impl Out {
         }
     }
 
-    fn store(&mut self, kind: u32, len: usize, fill: impl FnMut(&mut [u8])) {
+    pub(crate) fn store(&mut self, kind: u32, len: usize, fill: impl FnMut(&mut [u8])) {
         if let Some(s) = self.s.as_mut() {
             write_ring(s, kind, len, fill);
         }
     }
 
-    fn publish(&mut self) {
+    pub(crate) fn store_published(&mut self, seqno: u64, log_index: u64) {
+        self.store(crate::storage::S_PUBLISHED, 16, |b| {
+            b[..8].copy_from_slice(&seqno.to_le_bytes());
+            b[8..].copy_from_slice(&log_index.to_le_bytes());
+        });
+    }
+
+    pub(crate) fn publish(&mut self) {
         self.b.publish();
         if let Some(s) = self.s.as_mut() {
             s.publish();
@@ -466,7 +572,7 @@ impl Out {
 }
 
 /// Queues a frame for the feed.
-fn feed_record(out: &mut Out, frame: &[u8]) {
+pub(crate) fn feed_record(out: &mut Out, frame: &[u8]) {
     let t = mono_ns();
     out.egress(REC_FEED, REC_HDR + frame.len(), |b| {
         b[..8].fill(0);
@@ -493,7 +599,7 @@ pub(crate) fn write_ring(
 
 /// Packs messages `from..to` (from the history) into DATA frames on ring B.
 #[allow(clippy::too_many_arguments)]
-fn emit_frames(
+pub(crate) fn emit_frames(
     cfg: &NodeConfig,
     h: &History,
     from: u64,
@@ -590,15 +696,14 @@ fn core_stage(
                 .apply(log_index, ts, &s)
                 .expect("entries are applied in order");
             let raw = &rec[REC_HDR..];
-            out.store(crate::storage::S_ENTRY, 8 + raw.len(), |b| {
-                b[..8].copy_from_slice(&ts.to_le_bytes());
-                b[8..].copy_from_slice(raw);
-            });
+            out.store(
+                crate::storage::S_ENTRY,
+                crate::storage::S_ENTRY_HEADER + raw.len(),
+                |b| crate::storage::put_entry(b, log_index, 0, ts, raw),
+            );
             if let Some(p) = e.publish {
                 put_history(&history, p.seqno, &p.meta, s.payload, &mut scratch);
-                out.store(crate::storage::S_PUBLISHED, 8, |b| {
-                    b.copy_from_slice(&p.seqno.to_le_bytes())
-                });
+                out.store_published(p.seqno, log_index);
             }
             if let Some(f) = e.reply {
                 replies += 1;
@@ -611,6 +716,7 @@ fn core_stage(
             }
         });
         let last = core.next_seqno();
+        stats.stream_next.store(last, Ordering::Relaxed);
         if last > first {
             // Publish after the batch is decided (P5: nothing goes out early).
             let frames = emit_frames(
@@ -932,6 +1038,7 @@ fn mold(
     rereq: UdpSocket,
     history: Arc<History>,
     durable: Option<krusty_log::LogReader>,
+    leader: Arc<AtomicBool>,
     core_done: Arc<AtomicBool>,
     stats: Arc<Metrics>,
 ) {
@@ -950,7 +1057,11 @@ fn mold(
             None => history.committed(),
         };
         let mut busy = false;
-        if next <= committed {
+        // In a cluster only the leader publishes (re-requests: any node).
+        let leading = leader.load(Ordering::Acquire);
+        if next <= committed && !leading {
+            next = committed + 1;
+        } else if next <= committed {
             let lost = mold_range(
                 &m,
                 &history,
@@ -970,10 +1081,12 @@ fn mold(
             last_sent = Instant::now();
             busy = true;
         } else if done {
-            let n = krusty_mold::encode_end_of_session(&mut pkt, m.session, next);
-            let _ = sock.send_to(&pkt[..n], m.feed);
+            if cfg.cluster.is_none() {
+                let n = krusty_mold::encode_end_of_session(&mut pkt, m.session, next);
+                let _ = sock.send_to(&pkt[..n], m.feed);
+            }
             return;
-        } else if last_sent.elapsed() >= heartbeat {
+        } else if leading && last_sent.elapsed() >= heartbeat {
             let n = krusty_mold::encode_heartbeat(&mut pkt, m.session, next);
             let _ = sock.send_to(&pkt[..n], m.feed);
             last_sent = Instant::now();
