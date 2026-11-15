@@ -531,9 +531,8 @@ pub fn run_cluster(seed: u64, p: &ClusterParams) -> Report {
             let k = sim.rng.below(n as u64) as usize;
             // Mode (b): power losses, sometimes of every node at once.
             let all = p.durable_acks && sim.rng.below(3) == 0;
-            for j in 0..n as usize {
+            for (j, node) in sim.nodes.iter_mut().enumerate() {
                 if j == k || all {
-                    let node = &mut sim.nodes[j];
                     node.raft = None; // memory is gone; the store survives
                     if p.durable_acks {
                         node.store.log.truncate(node.synced as usize);
