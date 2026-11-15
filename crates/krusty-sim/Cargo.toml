@@ -13,3 +13,4 @@ krusty-wire = { path = "../krusty-wire" }
 krusty-core = { path = "../krusty-core" }
 krusty-session = { path = "../krusty-session" }
 krusty-stream = { path = "../krusty-stream" }
+krusty-raft = { path = "../krusty-raft" }

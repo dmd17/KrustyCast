@@ -515,10 +515,11 @@ impl Raft {
         }
     }
 
-    /// Entries below this may leave memory (followers lagging further are
-    /// served from storage).
+    /// Entries below this may leave memory: committed, and already stored
+    /// by the shell (which reads new entries from memory to persist them).
+    /// Followers lagging further are served from storage.
     fn compact_point(&self) -> u64 {
-        self.commit
+        self.commit.min(self.durable)
     }
 
     fn peer(&mut self, id: NodeId) -> Option<&mut Progress> {
@@ -751,7 +752,8 @@ impl Raft {
         let matched = prev_index + n;
         if commit > self.commit {
             self.commit = commit.min(matched).max(self.commit);
-            self.log.compact(self.commit, self.cfg.retain_entries);
+            self.log
+                .compact(self.compact_point(), self.cfg.retain_entries);
         }
         out.sends.push((
             from,

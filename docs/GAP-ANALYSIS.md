@@ -65,7 +65,7 @@ Columns:
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
 | R1 | Single sequencer process; recovery is a manual restart | Raft cluster with automatic failover (FR-5, NFR-6) | C, O | **XL** | M3 |
-| R2 | The journal records *decisions* and lives on one disk | Log of raw inputs, replicated; the state machine re-derives decisions on every node (ADR-4) | C | L | M3 |
+| R2 | **Done in simulation 2026-11-15** (`krusty-sim::cluster`): the replicated log holds raw inputs with the leader's timestamp; every node re-derives decisions. The journal records *decisions* and lives on one disk | Log of raw inputs, replicated; the state machine re-derives decisions on every node (ADR-4) | C | L | M3 |
 | R3 | Clients target one fixed sequencer address | Member list, `NOT_LEADER` redirect, client rotation | C | M | M3 |
 | R4 | **Done 2026-11-14:** snapshots every N entries; restart = latest snapshot + log suffix replay. No snapshots: restart replays the whole journal | Snapshots of core state plus log suffix replay (FR-9) | O | M | M2 |
 
@@ -123,7 +123,7 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 | Q2 | V2 | **Started 2026-11-14:** `krusty-core` translates to Lean (`spec/lean`, `regen.sh`); first three theorems proved; CI re-checks them and fails if the Lean is stale. No proofs | Aeneas→Lean proof of `krusty-core::step` (refinement plus invariants) | C | XL | M1–M3 |
 | Q3 | V3 | — | Trace validation of `krusty-raft` against the spec | C | L | M3 |
 | Q4 | V4 | **Done 2026-11-14:** Verus-verified batched SPSC ring of `Copy` values (memory safety, data-race freedom; FIFO tested, not proved), 1.3× the cost of an Acquire/Release twin; not yet used by the node (its rings carry variable-length records). — | Verus-verified SPSC ring (or loom + Kani) | C | L | M2 |
-| Q5 | V6 | **Started 2026-11-14:** `krusty-sim` drives clients, core and consumers through the real codecs over a faulty network; G1, G2, G4–G6, exactly-once and liveness checkers; 5 scenarios; nightly sweep of 100 k runs. No simulation | `krusty-sim`: seeded network, disk and clock faults; G1–G9 checkers; nightly runs | C | L | M1→ |
+| Q5 | V6 | **2026-11-15:** cluster mode (3 and 5 nodes, partitions, crash-restarts, failover), nightly. **Started 2026-11-14:** `krusty-sim` drives clients, core and consumers through the real codecs over a faulty network; G1, G2, G4–G6, exactly-once and liveness checkers; 5 scenarios; nightly sweep of 100 k runs. No simulation | `krusty-sim`: seeded network, disk and clock faults; G1–G9 checkers; nightly runs | C | L | M1→ |
 | Q6 | V7 | **Started 2026-11-14:** `cargo-fuzz` target for every `krusty-wire` decoder (canonical re-encoding asserted), 60 s per CI run. No fuzzing | `cargo-fuzz` on all decoders and on ingress | C | S | M1 |
 | Q7 | — | **Started 2026-11-14:** fmt, clippy, tests, TLC model checking and Lean proof re-check in GitHub Actions | CI: build, tests, Kani/Miri, model checking, proof re-check, alloc guard, perf smoke test | O | M | M0 |
 | Q8 | V8 | — | Jepsen-style real-network fault testing | C | M | M4 |

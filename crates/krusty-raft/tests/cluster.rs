@@ -37,8 +37,8 @@ const MS: u64 = 1_000_000;
 
 fn config(id: NodeId, n: u32, seed: u64) -> Config {
     Config {
-        retain_entries: 8, // small: lagging followers are served from storage
-        max_append_entries: 4,
+        retain_entries: 8,      // small: lagging followers are served from storage
+        max_append_entries: 12, // larger than the window: batches outrun it
         max_inflight: 4,
         seed,
         ..Config::new(id, (1..=n).collect())

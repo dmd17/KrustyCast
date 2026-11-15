@@ -655,6 +655,7 @@ name = "krusty-sim"
 version = "0.1.0"
 dependencies = [
  "krusty-core",
+ "krusty-raft",
  "krusty-session",
  "krusty-stream",
  "krusty-wire",

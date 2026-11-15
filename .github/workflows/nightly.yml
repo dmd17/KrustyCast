@@ -26,7 +26,14 @@ jobs:
           cargo build --release -p krusty-sim
           # A different 20 000-seed window each day; failures print their seed.
           base=$(( $(date +%s) / 86400 * 20000 ))
-          ./target/release/krusty-sim --seeds "$base..$((base + 20000))"
+          for s in default lossy short-retention contention eviction; do
+            ./target/release/krusty-sim --scenario $s --seeds "$base..$((base + 20000))"
+          done
+          # Cluster runs (Raft, failover) are ~100x slower: fewer seeds.
+          cbase=$(( $(date +%s) / 86400 * 1000 ))
+          for s in cluster3 cluster5 cluster3-harsh; do
+            ./target/release/krusty-sim --scenario $s --seeds "$cbase..$((cbase + 1000))"
+          done
       - name: Raft cluster sweep (harsh faults, new seeds every night)
         run: |
           base=$(( $(date +%s) / 86400 * 20000 ))

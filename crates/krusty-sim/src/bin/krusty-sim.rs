@@ -4,6 +4,7 @@
 //!
 //! Exits non-zero on any violation and prints the seed, so a failure can be
 //! replayed exactly with `--seeds N..N+1`.
+use krusty_sim::cluster::{CLUSTER_SCENARIOS, cluster_scenario, simulate};
 use krusty_sim::{SCENARIOS, run, scenario};
 use std::time::Instant;
 
@@ -23,17 +24,30 @@ fn main() {
         }
     }
     let names: Vec<&str> = if name == "all" {
-        SCENARIOS.to_vec()
+        SCENARIOS
+            .iter()
+            .chain(CLUSTER_SCENARIOS.iter())
+            .copied()
+            .collect()
     } else {
         vec![name.as_str()]
     };
     let mut failures = 0;
     for n in names {
-        let p = scenario(n).unwrap_or_else(|| panic!("unknown scenario {n}"));
+        let single = scenario(n);
+        let cluster = cluster_scenario(n);
+        assert!(
+            single.is_some() || cluster.is_some(),
+            "unknown scenario {n}"
+        );
         let t = Instant::now();
         let (mut published, mut datagrams) = (0, 0);
         for seed in start..end {
-            let r = run(seed, &p);
+            let r = match (&single, &cluster) {
+                (Some(p), _) => run(seed, p),
+                (_, Some(p)) => simulate(seed, p),
+                _ => unreachable!(),
+            };
             published += r.published;
             datagrams += r.datagrams;
             if !r.violations.is_empty() {

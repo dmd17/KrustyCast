@@ -15,6 +15,8 @@
 //! order, loss only explicit), G4/G5/G6 on the node's stream, exactly-once
 //! outcomes for the clients, and liveness.
 
+pub mod cluster;
+
 use krusty_core::{Config as CoreConfig, Core};
 use krusty_session::{Config as SessionConfig, Event, Session, Transmit};
 use krusty_stream::{Config as TrackerConfig, Delivered, Frame as TFrame, Kind, Tracker};
@@ -143,10 +145,10 @@ enum To {
 }
 
 /// SplitMix64.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -154,11 +156,11 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, n: u64) -> u64 {
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
         if n == 0 { 0 } else { self.next() % n }
     }
 
-    fn per_mille(&mut self, p: u64) -> bool {
+    pub(crate) fn per_mille(&mut self, p: u64) -> bool {
         self.below(1000) < p
     }
 }
@@ -196,16 +198,16 @@ impl Net {
     }
 }
 
-const STREAM_ID: u64 = 0x5EED;
+pub(crate) const STREAM_ID: u64 = 0x5EED;
 
-fn payload(client: u32, handle: u64) -> [u8; 12] {
+pub(crate) fn payload(client: u32, handle: u64) -> [u8; 12] {
     let mut b = [0u8; 12];
     b[..4].copy_from_slice(&client.to_le_bytes());
     b[4..].copy_from_slice(&handle.to_le_bytes());
     b
 }
 
-fn parse_payload(b: &[u8]) -> (u32, u64) {
+pub(crate) fn parse_payload(b: &[u8]) -> (u32, u64) {
     (
         u32::from_le_bytes(b[..4].try_into().unwrap()),
         u64::from_le_bytes(b[4..12].try_into().unwrap()),
@@ -221,10 +223,10 @@ struct Client {
     appends: HashMap<u64, Append>,
 }
 
-struct Consumer {
-    tracker: Tracker,
-    stash: HashMap<u64, (MessageMeta, Vec<u8>)>,
-    delivered: Vec<(u64, MessageMeta, Vec<u8>)>,
+pub(crate) struct Consumer {
+    pub(crate) tracker: Tracker,
+    pub(crate) stash: HashMap<u64, (MessageMeta, Vec<u8>)>,
+    pub(crate) delivered: Vec<(u64, MessageMeta, Vec<u8>)>,
 }
 
 /// Runs one simulation. Deterministic in `seed` and `p`.
@@ -538,7 +540,7 @@ fn node_receive(
     ));
 }
 
-fn consumer_receive(bytes: &[u8], cons: &mut Consumer, k: usize, r: &mut Report) {
+pub(crate) fn consumer_receive(bytes: &[u8], cons: &mut Consumer, k: usize, r: &mut Report) {
     let frame = match Frame::decode(bytes) {
         Ok(f) => f,
         Err(e) => {
@@ -597,7 +599,7 @@ fn consumer_receive(bytes: &[u8], cons: &mut Consumer, k: usize, r: &mut Report)
     take_deliveries(cons, out, k, r);
 }
 
-fn take_deliveries(cons: &mut Consumer, out: Vec<Delivered>, k: usize, r: &mut Report) {
+pub(crate) fn take_deliveries(cons: &mut Consumer, out: Vec<Delivered>, k: usize, r: &mut Report) {
     for d in out {
         match cons.stash.remove(&d.handle) {
             Some((meta, pl)) => cons.delivered.push((d.seqno, meta, pl)),
