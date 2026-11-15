@@ -234,7 +234,7 @@ pub(crate) fn store_stage(
         empty = 0;
         if appended > 0 || !pending.is_empty() {
             let t0 = crate::metrics::mono_ns();
-            log.sync().unwrap_or_else(|e| fatal("sync", e));
+            log.sync_entries().unwrap_or_else(|e| fatal("sync", e));
             stats.store_sync.record(crate::metrics::mono_ns() - t0);
             stats.stored.fetch_add(appended, Ordering::Relaxed);
             if let Some(s) = &synced {

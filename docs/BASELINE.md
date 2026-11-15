@@ -166,8 +166,41 @@ Submit-to-feed latency from the scheduled send time, µs:
   30 µs (PRD open question 7), 1.81–2.25 ms with the floor above. Against
   that, 1 000 msg/s (p99 2.06 ms) is borderline and 10 000 msg/s (p99
   2.57 ms) misses. The floor and the latencies were measured in separate
-  runs, and the floor's p99 varies by 25% between runs. Re-measure both in
-  one session before calling NFR-9 met. Mode (b) in a cluster: see M3.
+  runs; the re-measure below explains the gap. Mode (b) in a cluster: see M3.
+- **Each group commit was two device flushes, not one.** `Log::sync`
+  fdatasynced the segment *and* the egress index file; the `fsync` example
+  writes no index, so it measured one. The index need not be durable per
+  batch (recovery rewrites it from the last snapshot, and a snapshot
+  syncs it fully), so the storage stage now calls `Log::sync_entries`
+  (segments only). Fixed on 2026-11-15, together with full syncs now
+  covering every index file written since the last one (they synced only
+  the newest, so a roll between syncs could leave an older file's tail
+  unsynced).
+
+**Re-measured in one session, 2026-11-15**, on the second machine
+(i9-9980HK, WD Blue SN570 consumer NVMe, ext4, no isolated cores; node on
+cores 2–4, generator on 5; another workload using about 1.3 cores was
+running). The floor and each latency run alternate; five rounds:
+
+| | p50 | p90 | p99 | p99.9 | max |
+|---|---|---|---|---|---|
+| Device floor (`fsync` example) | 212–231 | 251–283 | 284–325 | 351–571 (one 2 839) | 1.4–5.7 ms |
+| (b) 1 000 msg/s, two flushes | 375–380 | 402–490 | 510–536 | 736–6 029 | 1.6–9.7 ms |
+| (b) 10 000 msg/s, two flushes | 572–575 | 746–750 | 969–1 022 | 1 684–4 239 | 3.2–6.7 ms |
+| (b) 1 000 msg/s, one flush | 198–202 | 218–253 | 270 | 315–3 179 | 0.9–7.6 ms |
+| (b) 10 000 msg/s, one flush | 292–294 | 374–376 | 495–499 | 1 492–2 994 | 4.7–7.7 ms |
+
+(µs unless stated; submit to feed. The 10 000 msg/s one-flush row leaves
+out one round in which the generator was more than 100 µs late 435 times,
+p99 1 428 µs.) The target in the same session is 2 × 284–325 + 30 =
+598–680 µs: **NFR-9 is met at both rates**, with p99 at about one flush
+at 1 000 msg/s and 1.6 flushes at 10 000. The p99.9 and max are 2–10 ms,
+from the drive (the floor's own max is 1.4–5.7 ms) and from the
+neighbouring workload. NFR-9 bounds p99 only. This drive's flush is about
+3× faster than the laptop's. Server NVMe with power-loss protection
+acknowledges a flush from its capacitor-backed cache in tens of µs, so
+there the stage's own overheads matter more than the device. Measure on
+the servers.
 - At 50 000 msg/s in mode (b) a single client is window-bound: 64 messages
   in flight over a ~2.5 ms round trip is ~25 k msg/s.
 

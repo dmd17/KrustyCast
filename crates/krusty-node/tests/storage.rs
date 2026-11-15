@@ -91,7 +91,36 @@ fn recover(recovery: SocketAddrV4, from: u64, count: u64) -> Vec<(u64, Vec<u8>)>
     got
 }
 
+/// Zeroes the egress index slots of seqnos above `after`, as a power loss
+/// may leave them: group commit syncs only the log segments, and the index
+/// is synced fully only with a snapshot. (The layout is krusty-log's: a
+/// 64-byte header, then a 16-byte slot per seqno.)
+fn lose_index_after(dir: &Path, after: u64, per_file: u64) {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let path = e.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        let Some(first) = name
+            .strip_prefix("egress-")
+            .and_then(|n| n.strip_suffix(".idx"))
+            .map(|n| n.parse::<u64>().unwrap())
+        else {
+            continue;
+        };
+        let from = after.max(first - 1) + 1 - first; // first slot to lose
+        if from >= per_file {
+            continue;
+        }
+        let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let zeros = vec![0u8; ((per_file - from) * 16) as usize];
+        std::os::unix::fs::FileExt::write_all_at(&f, &zeros, 64 + from * 16).unwrap();
+    }
+}
+
 fn run(durability: Durability, tag: &str) {
+    run_with(durability, tag, false)
+}
+
+fn run_with(durability: Durability, tag: &str, lose_index: bool) {
     let dir =
         std::env::temp_dir().join(format!("krusty-node-storage-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -116,6 +145,10 @@ fn run(durability: Durability, tag: &str) {
             >= 2
     );
     node.stop();
+    if lose_index {
+        // The last snapshot was taken after entry 1400 (= seqno 1400).
+        lose_index_after(&dir, 1400, 1024);
+    }
 
     // Restart on the same directory.
     let node = krusty_node::start(node_cfg(&dir, feed_addr, durability)).unwrap();
@@ -166,4 +199,9 @@ fn restart_and_disk_recovery_mode_a() {
 #[test]
 fn restart_and_disk_recovery_mode_b() {
     run(Durability::Sync, "b");
+}
+
+#[test]
+fn restart_rebuilds_an_egress_index_lost_after_the_snapshot() {
+    run_with(Durability::Sync, "lost-index", true);
 }

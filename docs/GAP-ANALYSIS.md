@@ -196,7 +196,7 @@ the M0 spikes.
 - *Exit:*
   - Full-session replay and re-request from disk.
   - Snapshot recovery within its budget.
-  - Mode (b) target met.
+  - Mode (b) target met. (Met 2026-11-15 on a consumer NVMe, after group commit went from two flushes to one; BASELINE M2.)
 
 **M3: Replication and failover.**
 - Gaps R1–R3, Q3; Q1 complete, Q2 complete.

@@ -122,6 +122,9 @@ pub struct Log {
     idx_bytes: Vec<u8>,
     /// Segments rolled since the last sync (they still need an fsync).
     unsynced: Vec<Arc<File>>,
+    /// Highest seqno whose egress index slot is durable (`sync`, not
+    /// `sync_entries`).
+    idx_synced: u64,
     latest_snapshot: u64,
     /// Sparse offsets of the active segment not yet handed to readers.
     sparse_pending: Vec<u32>,
@@ -521,6 +524,7 @@ impl Log {
             idx_buf: Vec::with_capacity(4096),
             idx_bytes: Vec::with_capacity(4096 * IDX_SLOT as usize),
             unsynced: Vec::new(),
+            idx_synced: next_seqno - 1,
             latest_snapshot,
             sparse_pending: Vec::with_capacity(4096),
             active_sparse,
@@ -661,6 +665,7 @@ impl Log {
     pub fn reset_index_to(&mut self, seqno: u64) {
         assert!(self.idx_buf.is_empty());
         self.next_seqno = seqno;
+        self.idx_synced = self.idx_synced.min(seqno - 1);
         self.shared
             .flushed_seqno
             .store(seqno - 1, Ordering::Release);
@@ -850,17 +855,37 @@ impl Log {
         Ok((first, file))
     }
 
-    /// `flush`, then make it durable (fdatasync). Group commit: call once
-    /// per batch of appends.
+    /// `flush`, then make everything durable (fdatasync), the egress index
+    /// included.
     pub fn sync(&mut self) -> io::Result<()> {
+        self.sync_entries()?;
+        // Every index file written since the last full sync, not only the
+        // last one (the index may have rolled in between).
+        let last = self.next_seqno - 1;
+        if last > self.idx_synced {
+            for ix in self.shared.indexes.read().unwrap().iter() {
+                let end = ix.first_seqno + self.cfg.index_entries - 1;
+                if end > self.idx_synced && ix.first_seqno <= last {
+                    ix.file.sync_data()?;
+                }
+            }
+            self.idx_synced = last;
+        }
+        Ok(())
+    }
+
+    /// `flush`, then make the entries durable (fdatasync of the segments
+    /// only). Group commit: call once per batch of appends. The egress index
+    /// is written but not synced: after a crash, recovery rewrites it from
+    /// the last snapshot (whose [`write_snapshot`](Self::write_snapshot)
+    /// syncs it fully), so a published message is durable once its entry
+    /// is. One device flush per batch instead of two.
+    pub fn sync_entries(&mut self) -> io::Result<()> {
         self.flush()?;
         for f in self.unsynced.drain(..) {
             f.sync_data()?;
         }
         self.active.sync_data()?;
-        if let Some(ix) = self.shared.indexes.read().unwrap().last() {
-            ix.file.sync_data()?;
-        }
         self.shared
             .synced_seqno
             .store(self.next_seqno - 1, Ordering::Release);
