@@ -77,11 +77,14 @@ fn node(id: NodeId) -> String {
     format!("\"n{id}\"")
 }
 
-/// RaftKC's form of a message (None for pre-vote, which RaftKC lacks).
+/// RaftKC's form of a message (None for pre-vote and leadership transfer's
+/// TimeoutNow, which RaftKC lacks: the election it starts is a `timeout`).
 fn spec_msg(from: NodeId, to: NodeId, m: &Message, entries: &[(u64, Vec<u8>)]) -> Option<String> {
     let (f, t) = (node(from), node(to));
     Some(match *m {
-        Message::PreVote { .. } | Message::PreVoteReply { .. } => return None,
+        Message::PreVote { .. } | Message::PreVoteReply { .. } | Message::TimeoutNow { .. } => {
+            return None;
+        }
         Message::Vote {
             term,
             last_index,
@@ -131,7 +134,7 @@ fn role(r: Role) -> &'static str {
 /// What a call into the core was.
 enum Call {
     Tick,
-    Receive(String, bool), // RaftKC form of the message (if any), was it a PreVoteReply
+    Receive(String, bool), // RaftKC form of the message (if any); can it start an election
     Propose(String),
     Restart,
 }
@@ -146,6 +149,7 @@ struct Tracer {
     /// Calls that removed log entries (a follower dropping a conflict).
     truncations: u64,
     elections: u64,
+    transfers: u64,
 }
 
 impl Tracer {
@@ -334,6 +338,7 @@ fn run(seed: u64, n: u32) -> Tracer {
         records: Vec::new(),
         truncations: 0,
         elections: 0,
+        transfers: 0,
     };
     let mut nodes: Vec<Node> = (1..=n)
         .map(|id| Node {
@@ -410,7 +415,9 @@ fn run(seed: u64, n: u32) -> Tracer {
                 term: raft.term(),
             };
             let c0 = raft.commit_index();
-            let pre_vote_reply = matches!(m, Message::PreVoteReply { .. });
+            // A won pre-vote, or a leader's TimeoutNow, starts an election.
+            let pre_vote_reply =
+                matches!(m, Message::PreVoteReply { .. } | Message::TimeoutNow { .. });
             let mut out = Outbox::default();
             raft.on_message(from, m, &entries, &mut out);
             let _ = entries.len();
@@ -456,7 +463,34 @@ fn run(seed: u64, n: u32) -> Tracer {
                 &mut tracer,
             );
             let raft = node.raft.as_mut().unwrap();
-            if raft.role() == Role::Leader && rng.below(10) == 0 {
+            // Now and then the leader hands over to a random peer (a stutter
+            // step for RaftKC; the election it leads to is the target's).
+            if raft.role() == Role::Leader && raft.transferring().is_none() && rng.below(200) == 0 {
+                let to = 1 + (id + rng.below(n as u64 - 1) as u32) % n;
+                let before = Before {
+                    role: raft.role(),
+                    term: raft.term(),
+                };
+                let c0 = raft.commit_index();
+                let mut out = Outbox::default();
+                assert!(raft.transfer_leadership(to, &mut out));
+                tracer.transfers += 1;
+                carry_out(
+                    id,
+                    node,
+                    out,
+                    Call::Tick,
+                    before,
+                    c0,
+                    &mut net,
+                    &mut rng,
+                    now,
+                    &up,
+                    &mut tracer,
+                );
+            }
+            let raft = node.raft.as_mut().unwrap();
+            if raft.role() == Role::Leader && raft.transferring().is_none() && rng.below(10) == 0 {
                 proposed += 1;
                 let before = Before {
                     role: raft.role(),
@@ -522,10 +556,11 @@ fn export_traces() {
         let t = run(seed, 3);
         write_trace(std::path::Path::new(&dir), seed, 3, &t);
         eprintln!(
-            "seed {seed}: {} records, {} elections, {} truncations",
+            "seed {seed}: {} records, {} elections, {} truncations, {} transfers",
             t.records.len(),
             t.elections,
-            t.truncations
+            t.truncations,
+            t.transfers
         );
     }
 }
@@ -534,11 +569,12 @@ fn export_traces() {
 /// elections, commits and followers dropping conflicting entries.
 #[test]
 fn traces_cover_elections_commits_and_conflicts() {
-    let (mut elections, mut truncations, mut commits) = (0, 0, 0);
+    let (mut elections, mut truncations, mut commits, mut transfers) = (0, 0, 0, 0);
     for seed in 0..5 {
         let t = run(seed, 3);
         elections += t.elections;
         truncations += t.truncations;
+        transfers += t.transfers;
         commits += t
             .records
             .iter()
@@ -548,4 +584,5 @@ fn traces_cover_elections_commits_and_conflicts() {
     assert!(elections >= 10, "{elections} elections");
     assert!(truncations >= 1, "no conflicts");
     assert!(commits >= 50, "{commits} commits");
+    assert!(transfers >= 3, "{transfers} leadership transfers");
 }

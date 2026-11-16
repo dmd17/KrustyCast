@@ -182,6 +182,13 @@ impl NodeConfig {
 
 pub use stages::{Node, start};
 
+/// [`Control::transfer_done`]: the transfer started.
+pub const TRANSFER_STARTED: u64 = 1;
+/// [`Control::transfer_done`]: this node is not the leader.
+pub const TRANSFER_NOT_LEADER: u64 = 2;
+/// [`Control::transfer_done`]: the target is not a peer.
+pub const TRANSFER_BAD_TARGET: u64 = 3;
+
 /// Operator requests to a running node, set by the admin endpoint and read
 /// by the stages.
 #[derive(Debug, Default)]
@@ -191,4 +198,8 @@ pub struct Control {
     /// The last `snapshot` request the core stage has answered: a snapshot
     /// was taken, or the last one is already current.
     pub snapshot_done: std::sync::atomic::AtomicU64,
+    /// A leadership transfer to ask for: `seq << 32 | target id` (0: none).
+    pub transfer: std::sync::atomic::AtomicU64,
+    /// The core stage's answer: `seq << 32 | TRANSFER_*`.
+    pub transfer_done: std::sync::atomic::AtomicU64,
 }

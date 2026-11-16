@@ -473,7 +473,7 @@ impl Shell {
             .record(batch_start.saturating_sub(get_ts(rec)));
         let raw = &rec[REC_HDR..];
         let Ok(s) = Submit::decode(raw) else { return };
-        if self.raft.role() == Role::Leader {
+        if self.raft.role() == Role::Leader && self.raft.transferring().is_none() {
             let ts = now_ns().max(self.last_ts);
             self.last_ts = ts;
             self.data.clear();
@@ -491,8 +491,9 @@ impl Shell {
                 client_id: s.client_id,
                 incarnation: s.incarnation,
                 client_seqno: s.client_seqno,
+                // While handing over, point clients at the next leader.
                 outcome: Outcome::NotLeader {
-                    leader: self.raft.leader().unwrap_or(0) as u64,
+                    leader: self.raft.transferring().or(self.raft.leader()).unwrap_or(0) as u64,
                 },
             };
             send_feedback(&mut self.out, &mut self.fb, src, &f);
@@ -698,6 +699,21 @@ pub(crate) fn cluster_core_stage(
         stats
             .clients
             .store(sh.core.clients() as u64, Ordering::Relaxed);
+        let t = control.transfer.swap(0, Ordering::AcqRel);
+        if t != 0 {
+            let (seq, to) = (t >> 32, (t & 0xFFFF_FFFF) as u32);
+            let code = if sh.raft.role() != Role::Leader {
+                crate::TRANSFER_NOT_LEADER
+            } else if sh.raft.transfer_leadership(to, &mut sh.ob) {
+                sh.carry_out();
+                crate::TRANSFER_STARTED
+            } else {
+                crate::TRANSFER_BAD_TARGET
+            };
+            control
+                .transfer_done
+                .store(seq << 32 | code, Ordering::Release);
+        }
         let asked = control.snapshot.load(Ordering::Relaxed);
         if let Some((tx, back, every)) = &snapshots
             && (sh.applied >= last_snapshot + every

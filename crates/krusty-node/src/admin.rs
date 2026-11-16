@@ -8,6 +8,8 @@
 //!   snapshot, clients and a few counters.
 //! - `snapshot`: take a core snapshot now (with storage), and report its
 //!   log index once the storage stage has it.
+//! - `transfer <id>`: hand leadership to member `id` (leader only); replies
+//!   once `id` leads, or with the reason it did not.
 //!
 //! The endpoint has no authentication (gap O4): bind it to loopback or to
 //! a management network.
@@ -31,12 +33,13 @@ pub(crate) fn admin_stage(
 ) {
     let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
     let mut buf = [0u8; 512];
+    let mut seq = 0u64;
     while !stop.load(Ordering::Acquire) {
         let Ok((n, from)) = sock.recv_from(&mut buf) else {
             continue;
         };
         let req = String::from_utf8_lossy(&buf[..n]);
-        let reply = answer(&cfg, &stats, &control, &stop, req.trim());
+        let reply = answer(&cfg, &stats, &control, &stop, &mut seq, req.trim());
         let _ = sock.send_to(reply.as_bytes(), from);
     }
 }
@@ -46,14 +49,22 @@ fn answer(
     stats: &Metrics,
     control: &Control,
     stop: &AtomicBool,
+    seq: &mut u64,
     req: &str,
 ) -> String {
-    let mut words = req.split_whitespace();
-    match (words.next(), words.next()) {
-        (Some("status"), None) => status(cfg, stats),
-        (Some("snapshot"), None) => snapshot(cfg, stats, control, stop),
-        (Some(cmd), _) => format!("error unknown command {cmd:?}\n"),
-        (None, _) => "error empty request\n".into(),
+    let words: Vec<&str> = req.split_whitespace().collect();
+    match words.as_slice() {
+        ["status"] => status(cfg, stats),
+        ["snapshot"] => snapshot(cfg, stats, control, stop),
+        ["transfer", id] => match id.parse::<u32>() {
+            Ok(id) => {
+                *seq += 1;
+                transfer(cfg, stats, control, stop, *seq, id)
+            }
+            Err(_) => format!("error transfer: {id:?} is not a node id\n"),
+        },
+        [cmd, ..] => format!("error unknown command {cmd:?}\n"),
+        [] => "error empty request\n".into(),
     }
 }
 
@@ -144,4 +155,54 @@ pub fn request(
             (!k.is_empty()).then(|| (k.to_string(), v.to_string()))
         })
         .collect())
+}
+
+fn transfer(
+    cfg: &NodeConfig,
+    s: &Metrics,
+    control: &Control,
+    stop: &AtomicBool,
+    seq: u64,
+    to: u32,
+) -> String {
+    let Some(cl) = &cfg.cluster else {
+        return "error not a cluster member\n".into();
+    };
+    if to == cl.id {
+        return "error transfer: that is this node\n".into();
+    }
+    control
+        .transfer
+        .store(seq << 32 | to as u64, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let code = loop {
+        let d = control.transfer_done.load(Ordering::Acquire);
+        if d >> 32 == seq {
+            break d & 0xFFFF_FFFF;
+        }
+        if Instant::now() > deadline || stop.load(Ordering::Acquire) {
+            return "error the core stage did not answer\n".into();
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let leader = || s.raft_leader.load(Ordering::Relaxed);
+    match code {
+        crate::TRANSFER_NOT_LEADER => format!("error not the leader (leader is {})\n", leader()),
+        crate::TRANSFER_BAD_TARGET => format!("error {to} is not a member\n"),
+        _ => {
+            // The target campaigns at once; give it a few election timeouts.
+            let wait = Duration::from_micros(cl.election_max_us.saturating_mul(4).max(100_000));
+            let deadline = Instant::now() + wait;
+            while Instant::now() < deadline {
+                if leader() == to as u64 && s.raft_role.load(Ordering::Relaxed) != 3 {
+                    return format!("ok\nleader {to}\n");
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            format!(
+                "error {to} did not take over in time (leader is {})\n",
+                leader()
+            )
+        }
+    }
 }

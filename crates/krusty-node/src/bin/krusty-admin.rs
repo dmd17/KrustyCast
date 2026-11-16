@@ -2,18 +2,21 @@
 //!
 //!   krusty-admin [--node ip:port]... [--raw] status
 //!   krusty-admin [--node ip:port]...         snapshot
+//!   krusty-admin [--node ip:port]...         transfer ID
 //!
 //! `--node` names an admin endpoint (`admin =` in the node's config) and
 //! may repeat; the default is 127.0.0.1:7010. `status` prints one row per
 //! node (or every field with `--raw`); `snapshot` asks each node for a core
-//! snapshot now. Exits non-zero if any node fails or does not answer.
+//! snapshot now; `transfer` finds the leader among the nodes named and asks
+//! it to hand leadership to member ID. Exits non-zero if any node fails or
+//! does not answer.
 use krusty_node::admin::request;
 use std::net::SocketAddrV4;
 use std::process::exit;
 use std::time::Duration;
 
 fn usage() -> ! {
-    eprintln!("usage: krusty-admin [--node ip:port]... [--raw] (status | snapshot)");
+    eprintln!("usage: krusty-admin [--node ip:port]... [--raw] (status | snapshot | transfer ID)");
     exit(2)
 }
 
@@ -27,6 +30,7 @@ fn main() {
     let mut nodes: Vec<SocketAddrV4> = Vec::new();
     let mut raw = false;
     let mut cmd = None;
+    let mut target: Option<u32> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -36,6 +40,14 @@ fn main() {
             },
             "--raw" => raw = true,
             "status" | "snapshot" if cmd.is_none() => cmd = Some(a),
+            "transfer" if cmd.is_none() => {
+                target = Some(
+                    args.next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or_else(|| usage()),
+                );
+                cmd = Some(a);
+            }
             _ => usage(),
         }
     }
@@ -105,6 +117,26 @@ fn main() {
                         println!("{n}: {e}");
                     }
                 }
+            }
+        }
+        "transfer" => {
+            let to = target.unwrap();
+            let leader = nodes.iter().find(|n| {
+                request(**n, "status", Duration::from_secs(1))
+                    .is_ok_and(|kv| field(&kv, "role") == "leader")
+            });
+            match leader {
+                None => {
+                    failed = true;
+                    println!("no leader among the nodes given");
+                }
+                Some(l) => match request(*l, &format!("transfer {to}"), Duration::from_secs(10)) {
+                    Ok(_) => println!("{l}: leadership handed to node {to}"),
+                    Err(e) => {
+                        failed = true;
+                        println!("{l}: {e}");
+                    }
+                },
             }
         }
         _ => unreachable!(),

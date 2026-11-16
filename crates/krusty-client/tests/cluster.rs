@@ -353,3 +353,46 @@ fn admin_reports_status_and_takes_snapshots() {
     assert_eq!(get(&kv, "snapshot_index"), get(&statuses[0], "applied"));
     assert!(request(admins[0], "bogus", Duration::from_secs(1)).is_err());
 }
+
+/// `krusty-admin transfer`: leadership moves to the named node, and the
+/// publisher follows it with no gap or duplicate in the stream.
+#[test]
+fn admin_hands_over_leadership() {
+    use krusty_node::admin::request;
+    let c = Cluster::new(3, "handover", Durability::Async);
+    let leader = c.wait_leader(Duration::from_secs(5));
+    let admins: Vec<SocketAddrV4> = c
+        .nodes
+        .iter()
+        .map(|n| n.as_ref().unwrap().admin_addr().unwrap())
+        .collect();
+    let mut pcfg = PublisherConfig::new(1, c.ingress());
+    pcfg.max_attempts = 1000;
+    let mut p = Publisher::new(pcfg).unwrap();
+    let (first, _) = publish(&mut p, 0, 100, || {});
+    let to = (leader + 1) % 3;
+    // Asking a follower is refused, naming the leader.
+    let e = request(
+        admins[to],
+        &format!("transfer {}", leader + 1),
+        Duration::from_secs(5),
+    )
+    .unwrap_err();
+    assert!(e.contains("not the leader"), "{e}");
+    let kv = request(
+        admins[leader],
+        &format!("transfer {}", to + 1),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert!(
+        kv.iter()
+            .any(|(k, v)| k == "leader" && *v == (to + 1).to_string())
+    );
+    assert_eq!(c.wait_leader(Duration::from_secs(5)), to);
+    let (second, _) = publish(&mut p, 100, 200, || {});
+    let mut seqnos: Vec<u64> = first.values().chain(second.values()).copied().collect();
+    seqnos.sort_unstable();
+    assert_eq!(seqnos, (1..=200).collect::<Vec<_>>());
+    assert!(request(admins[to], "transfer 9", Duration::from_secs(5)).is_err());
+}

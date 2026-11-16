@@ -126,6 +126,11 @@ pub enum Message {
         success: bool,
         index: u64,
     },
+    /// Leadership transfer: the leader, having caught the receiver up,
+    /// asks it to start an election now (Raft dissertation §3.10).
+    TimeoutNow {
+        term: u64,
+    },
 }
 
 /// A received Append's entries, in order: `(term, data)`.
@@ -209,8 +214,17 @@ pub struct Raft {
     election_deadline: u64,
     /// When this node last heard from a valid leader (pre-vote stickiness).
     leader_heard_at: Option<u64>,
+    /// Leader only: handing leadership to this peer, until the deadline.
+    transfer: Option<Transfer>,
     rng: u64,
     scratch: Vec<u64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Transfer {
+    to: NodeId,
+    deadline: u64,
+    sent: bool,
 }
 
 fn splitmix(state: &mut u64) -> u64 {
@@ -258,6 +272,7 @@ impl Raft {
             now,
             election_deadline: 0,
             leader_heard_at: None,
+            transfer: None,
             rng,
             scratch: Vec::with_capacity(16),
         };
@@ -326,6 +341,7 @@ impl Raft {
     fn become_follower(&mut self, term: u64, leader: Option<NodeId>, out: &mut Outbox) {
         self.set_term(term, out);
         self.role = Role::Follower;
+        self.transfer = None;
         self.leader = leader;
         for p in &mut self.peers {
             p.granted = false;
@@ -343,6 +359,10 @@ impl Raft {
         self.now = now.max(self.now);
         match self.role {
             Role::Leader => {
+                if self.transfer.is_some_and(|t| self.now >= t.deadline) {
+                    // The target did not take over in time: lead on.
+                    self.transfer = None;
+                }
                 // Check-quorum: step down if a majority has gone quiet.
                 let heard = 1 + self
                     .peers
@@ -433,9 +453,51 @@ impl Raft {
         self.replicate(out, true);
     }
 
-    /// Appends `data` as a new entry (leader only). Returns its index.
+    /// Starts handing leadership to `to` (leader only; false otherwise or
+    /// if `to` is not a peer). Until it completes, or an election timeout
+    /// passes, the leader accepts no proposals; once `to` has every entry,
+    /// it is told to start an election, which it wins with an up-to-date log.
+    pub fn transfer_leadership(&mut self, to: NodeId, out: &mut Outbox) -> bool {
+        if self.role != Role::Leader || self.peers.iter().all(|p| p.id != to) {
+            return false;
+        }
+        self.transfer = Some(Transfer {
+            to,
+            deadline: self.now + self.cfg.election_max_ns,
+            sent: false,
+        });
+        self.replicate(out, false);
+        self.maybe_timeout_now(out);
+        true
+    }
+
+    /// The peer leadership is being handed to, if a transfer is under way.
+    pub fn transferring(&self) -> Option<NodeId> {
+        self.transfer.map(|t| t.to)
+    }
+
+    fn maybe_timeout_now(&mut self, out: &mut Outbox) {
+        let last = self.log.last_index();
+        let now = self.now;
+        let hold = self.cfg.election_max_ns;
+        if let Some(t) = &mut self.transfer
+            && !t.sent
+            && self.peers.iter().any(|p| p.id == t.to && p.matched == last)
+        {
+            t.sent = true;
+            // Keep refusing proposals for a full election from now: a
+            // TimeoutNow that arrived after we had appended more would start
+            // an election the target cannot win.
+            t.deadline = now + hold;
+            out.sends
+                .push((t.to, Message::TimeoutNow { term: self.hs.term }));
+        }
+    }
+
+    /// Appends `data` as a new entry (leader only, and not while handing
+    /// leadership over). Returns its index.
     pub fn propose(&mut self, data: &[u8], out: &mut Outbox) -> Option<u64> {
-        if self.role != Role::Leader {
+        if self.role != Role::Leader || self.transfer.is_some() {
             return None;
         }
         let i = self.log.append(self.hs.term, data);
@@ -691,12 +753,21 @@ impl Raft {
                     p.next = p.next.max(p.matched + 1);
                     p.inflight = p.inflight.saturating_sub(1);
                     self.advance_commit();
+                    self.maybe_timeout_now(out);
                 } else {
                     // Back up and resend from the hint (probe: one batch at a time).
                     p.next = (index + 1).max(p.matched + 1).min(p.next);
                     p.inflight = 0;
                 }
                 self.replicate(out, false);
+            }
+            Message::TimeoutNow { term } => {
+                // Only from our current leader, in its term: start an election
+                // now, without pre-vote (the leader asked for it).
+                if term == self.hs.term && self.role == Role::Follower && self.leader == Some(from)
+                {
+                    self.start_election(out);
+                }
             }
         }
         out.committed = self.commit;

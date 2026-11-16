@@ -146,7 +146,9 @@ fn apply_outbox(
     }
 }
 
-fn run(seed: u64, n: u32, f: Faults) {
+/// Runs one simulation; returns how many leadership transfers completed
+/// (the next leader was the one the transfer named).
+fn run(seed: u64, n: u32, f: Faults) -> u64 {
     let mut rng = Rng(seed);
     let mut nodes: Vec<Node> = (1..=n)
         .map(|id| Node {
@@ -162,6 +164,9 @@ fn run(seed: u64, n: u32, f: Faults) {
     // the term it was committed in.
     let mut committed_in: Vec<u64> = Vec::new();
     let mut proposed = 0u64;
+    // A transfer under way: (target, term it started in).
+    let mut transfer: Option<(NodeId, u64)> = None;
+    let mut handovers = 0u64;
     // Partition: group[id] (nodes talk only within their group).
     let mut group: Vec<u32> = vec![0; n as usize + 1];
     let end = 6_000 * MS;
@@ -226,6 +231,20 @@ fn run(seed: u64, n: u32, f: Faults) {
             };
             let mut out = Outbox::default();
             raft.tick(now, &mut out);
+            // Now and then the leader hands over to a random peer.
+            // Only while faults run: a handover is an election, and under the
+            // harsh model (delays near the election timeout) elections can
+            // cascade; the liveness check after healing is about recovery,
+            // not about transfers (see leadership_transfers_hand_over).
+            if faulty
+                && raft.role() == Role::Leader
+                && raft.transferring().is_none()
+                && rng.below(400) == 0
+            {
+                let to = 1 + (id + rng.below(n as u64 - 1) as u32) % n;
+                assert!(raft.transfer_leadership(to, &mut out));
+                transfer = Some((to, raft.term()));
+            }
             if raft.role() == Role::Leader && rng.below(4) == 0 {
                 proposed += 1;
                 raft.propose(&proposed.to_le_bytes(), &mut out);
@@ -240,6 +259,14 @@ fn run(seed: u64, n: u32, f: Faults) {
             };
             if raft.role() == Role::Leader {
                 // Election safety: one leader per term.
+                if let Some((to, t)) = transfer
+                    && raft.term() > t
+                {
+                    if to == k as u32 + 1 {
+                        handovers += 1;
+                    }
+                    transfer = None;
+                }
                 let prev = leaders.insert(raft.term(), k as u32 + 1);
                 assert!(
                     prev.is_none() || prev == Some(k as u32 + 1),
@@ -313,6 +340,24 @@ fn run(seed: u64, n: u32, f: Faults) {
         "seed {seed}: only {} entries committed",
         committed.len()
     );
+    handovers
+}
+
+/// On a quiet network a transfer hands leadership to the named peer.
+#[test]
+fn leadership_transfers_hand_over() {
+    const QUIET: Faults = Faults {
+        loss: 0,
+        max_delay_ms: 1,
+        repartition_every: u64::MAX,
+        crash_every: u64::MAX,
+    };
+    let mut handovers = 0;
+    for seed in 0..10 {
+        handovers += run(seed, 3, QUIET);
+    }
+    // About one transfer per 200 ms of leadership, over 10 runs of 6 s.
+    assert!(handovers >= 100, "{handovers} handovers");
 }
 
 #[test]
@@ -381,5 +426,9 @@ fn wire_round_trip() {
         (2, 7, &b"hello"[..], &b""[..])
     );
     assert!(wire::decode(&buf[..at - 1], Vec::new()).is_none());
+    let t = Message::TimeoutNow { term: 12 };
+    let k = wire::encode(&mut buf, 2, &t);
+    let (from, d, _) = wire::decode(&buf[..k], Vec::new()).unwrap();
+    assert_eq!((from, d), (2, t));
     let _ = EntriesView::empty();
 }

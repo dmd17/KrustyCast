@@ -143,10 +143,15 @@ Along each trace TLC also checks `ElectionSafety`, `LogMatching`,
 `StateMachineSafety`, `CommittedStable` and `LeaderCompleteness`
 (`TraceSafety`).
 
-Abstractions: the network (a delivered message is injected; every message
-was itself checked when it was sent), pre-vote (no RaftKC state; a
-pre-candidate's role is not compared), and duplicate deliveries (the
-generator does not duplicate). Calls RaftKC cannot see are left out as
+Abstractions:
+- The network: a delivered message is injected, and every message was
+  itself checked when it was sent.
+- Pre-vote has no RaftKC state, and a pre-candidate's role is not compared.
+- Leadership transfer: the leader's TimeoutNow is not a RaftKC message,
+  and the election it starts is RaftKC's `timeout`. The leader refusing
+  proposals meanwhile is invisible to RaftKC. Transfers are mixed into the
+  runs, so handovers are validated too.
+- Duplicate deliveries: the generator does not duplicate. Calls RaftKC cannot see are left out as
 stuttering steps.
 
 ```

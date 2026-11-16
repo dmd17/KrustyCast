@@ -18,6 +18,7 @@ const T_VOTE: u8 = 3;
 const T_VOTE_REPLY: u8 = 4;
 const T_APPEND: u8 = 5;
 const T_APPEND_REPLY: u8 = 6;
+const T_TIMEOUT_NOW: u8 = 7;
 
 fn put(b: &mut [u8], at: usize, v: u64) {
     b[at..at + 8].copy_from_slice(&v.to_le_bytes());
@@ -64,6 +65,7 @@ pub fn encode(out: &mut [u8], from: NodeId, m: &Message) -> usize {
             success,
             index,
         } => (T_APPEND_REPLY, term, success as u64, index, 0, 0),
+        Message::TimeoutNow { term } => (T_TIMEOUT_NOW, term, 0, 0, 0, 0),
     };
     out[..HEADER_LEN].fill(0);
     out[0..2].copy_from_slice(&MAGIC.to_le_bytes());
@@ -166,6 +168,7 @@ pub fn decode<'a>(
             success: flag(a)?,
             index: bb,
         },
+        T_TIMEOUT_NOW => Message::TimeoutNow { term },
         _ => return None,
     };
     offsets.clear();
