@@ -117,10 +117,33 @@ pub(crate) fn idle(how: Idle, empty_polls: &mut u32) {
             if *empty_polls < 1000 {
                 std::hint::spin_loop();
             } else {
+                low_timer_slack();
                 std::thread::sleep(Duration::from_micros(sleep_us));
             }
         }
     }
+}
+
+/// Timer slack for stage threads that sleep when idle, ns.
+const TIMER_SLACK_NS: libc::c_ulong = 1_000;
+
+/// Lowers this thread's timer slack (once). Linux lets a normal thread's
+/// sleep overrun by its slack, 50 µs by default, whatever it asked for: a
+/// stage sleeping 1–50 µs when idle woke up to 50 µs late, and a message
+/// crossing several sleeping stages (a follower's replication and core
+/// stages, then the leader's) paid that on each. Real-time threads have
+/// no slack anyway.
+fn low_timer_slack() {
+    thread_local!(static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    DONE.with(|d| {
+        if !d.get() {
+            d.set(true);
+            // SAFETY: PR_SET_TIMERSLACK takes a plain integer argument.
+            unsafe {
+                libc::prctl(libc::PR_SET_TIMERSLACK, TIMER_SLACK_NS);
+            }
+        }
+    });
 }
 
 pub(crate) fn now_ns() -> u64 {

@@ -9,11 +9,14 @@
 //!               [--pin-senders a,b] [--pin-receiver c] [--node-cores i,c,e,r] [--spin]
 //!               [--combined] [--storage DIR] [--durability a|b]
 //!               [--cluster N] [--cluster-cores c1,c2,..] [--sleep-us U]
-//!               [--leader-cores i,c,e,repl]
+//!               [--leader-cores i,c,e,repl] [--follower-cores c,repl,o/c,repl,o]
 //!
 //! `--leader-cores`: node 1 gets shorter election timeouts (so it leads),
 //! spins, and pins ingress, core, egress and replication there; the other
 //! nodes sleep when idle, on `--cluster-cores` (indexed from node 2).
+//! `--follower-cores` instead makes the other nodes spin too, with the core
+//! stage on c, replication on repl, and ingress, egress and recovery
+//! (idle on a follower) sharing o; one triple per follower.
 //!
 //! `--cluster N` runs N replicated nodes in this process (storage under
 //! `--storage`, default a temporary directory) and sends to the leader;
@@ -69,6 +72,7 @@ struct Args {
     cluster_cores: Vec<usize>,
     sleep_us: Option<u64>,
     leader_cores: Vec<usize>,
+    follower_cores: Vec<Vec<usize>>,
 }
 
 fn parse() -> Args {
@@ -89,6 +93,7 @@ fn parse() -> Args {
         cluster_cores: Vec::new(),
         sleep_us: None,
         leader_cores: Vec::new(),
+        follower_cores: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -113,6 +118,16 @@ fn parse() -> Args {
             "--sleep-us" => a.sleep_us = Some(v().parse().unwrap()),
             "--leader-cores" => {
                 a.leader_cores = v().split(',').map(|c| c.parse().unwrap()).collect()
+            }
+            "--follower-cores" => {
+                a.follower_cores = v()
+                    .split('/')
+                    .map(|f| {
+                        let c: Vec<usize> = f.split(',').map(|c| c.parse().unwrap()).collect();
+                        assert_eq!(c.len(), 3, "--follower-cores c,repl,o per follower");
+                        c
+                    })
+                    .collect()
             }
             "--cluster-cores" => {
                 a.cluster_cores = v().split(',').map(|c| c.parse().unwrap()).collect()
@@ -333,6 +348,10 @@ fn main() {
                         c.idle = Idle::Spin;
                         cl.election_min_us = 20_000;
                         cl.election_max_us = 30_000;
+                    } else if let Some(fc) = a.follower_cores.get(id as usize - 2) {
+                        c.idle = Idle::Spin;
+                        c.cores = [Some(fc[2]), Some(fc[0]), Some(fc[2]), Some(fc[2])];
+                        cl.core = Some(fc[1]);
                     } else {
                         c.idle = Idle::Sleep {
                             sleep_us: a.sleep_us.unwrap_or(50),

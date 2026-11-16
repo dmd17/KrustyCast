@@ -288,6 +288,67 @@ with all its stages on one core gives p50 310 µs (against 15 µs on
 dedicated cores, M1): sharing a core dominates. The cluster mode of
 `krusty-load` is there for the servers.
 
+**Cluster latency on the second machine, 2026-11-16** (i9-9980HK, 8 cores
+with HT, no isolated cores, the same neighbouring workload as in M2;
+loopback, 64-byte payloads, 5 s runs, µs from the scheduled send).
+
+*Sleeping stages woke up to 50 µs late (fixed).* Nodes sleep when idle by
+default (`sleep_us` 50), and Linux lets a normal thread's sleep overrun by
+its timer slack, 50 µs by default, whatever it asked for. Stage threads
+now set a 1 µs slack before they first sleep. One default node at
+10 000 msg/s (stages on cores 2–4, three runs each):
+
+| | p50 | p99 | p99.9 |
+|---|---|---|---|
+| default slack | 61–81 | 140–209 | 235–2 220 |
+| 1 µs slack | 35–41 | 85–101 | 121–709 |
+
+In a cluster where the followers sleep and share one core each
+(`--cluster-cores 7,15`, leader spinning on 2–5), p50 at 10 000 msg/s fell
+from 219 to 130 µs and p99 from 363 to 264 µs. Shorter follower sleeps (1–10 µs)
+make it worse, with five threads on one core waking constantly.
+
+*Followers on cores of their own.* `--follower-cores c,repl,o/...`: each
+follower spins, with its core stage on c, replication on repl, and its
+idle ingress, egress and recovery stages sharing o. Leader on 2–5,
+generator on 6, followers `7,15,1/0,8,9`:
+
+```
+krusty-load --rate 10000 --duration 5 --warmup 1 --spin --combined --pin-senders 6 \
+    --cluster 3 --leader-cores 2,3,4,5 --follower-cores 7,15,1/0,8,9 \
+    --storage DIR --durability a
+```
+
+| Mode | Offered msg/s | p50 | p90 | p99 | p99.9 | max |
+|---|---|---|---|---|---|---|
+| (a) | 10 000 | 36–43 | 45–48 | 56–82 | 428–660 | 1.3–3.9 ms |
+| (a) | 50 000 | 29–37 | 34–49 | 41–88 | 66 – 2 486 | 2.1–2.5 ms |
+| (a) | 100 000 | 126–148 | 211–218 | 262–264 | 862–2 208 | 2.0–3.3 ms |
+| (b) | 1 000 | 280–309 | 340–816 | 426–2 380 | 1 026–7 479 | 4.1–7.5 ms |
+| (b) | 10 000 | 587–591 | 813–817 | 1 155–1 182 | 2 090–2 972 | 3.3–4.7 ms |
+
+- Replication adds about 15–25 µs at p50 over one node with spinning
+  stages on the same machine (p50 9–16 µs, p99 27–36 µs at 10 000–50 000
+  msg/s): two loopback hops and the follower's Raft step.
+- 100 000 msg/s is past what this machine can drive. The leader, the
+  generator, two followers and three unpinned storage stages make about
+  fourteen spinning threads on sixteen hardware threads, plus the
+  neighbour. The generator itself was late thousands of times, and one
+  50 000 msg/s run (not in the table) stalled for 140 ms with the
+  generator 60 000 submits behind. Six reruns of that case were clean.
+- Mode (b) is about twice the single-node figure (M2) because the three
+  nodes share one consumer NVMe, which serializes cache flushes, and a
+  commit needs the leader's fsync and a follower's. On separate servers
+  they flush in parallel.
+- **The storage stage cannot be pinned**, and it uses the node's idle
+  policy, so on a spinning node it spins on whatever core the scheduler
+  picks. On the servers it should get a core slot (or sleep when the rest
+  spin).
+- The M3 exit criterion (NFR-1–5 on a 3-node cluster) needs the servers.
+  Here, p50 meets NFR-1 (≤ 40 µs) at 10 000–50 000 msg/s and p99 is near
+  NFR-2 (≤ 80 µs); the tails do not meet NFR-3 or NFR-4, and NFR-5
+  (1 M msg/s) is far out of reach on this machine.
+
 ## Next
 
 - Run the same tool on the reference servers (real NICs, multicast, isolated
