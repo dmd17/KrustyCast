@@ -73,9 +73,9 @@ for one throughput target. The current state:
 | `krusty-ring` | Lock-free SPSC rings and the published history between stages. |
 | `krusty-sim` | Deterministic simulator: clients, core, Raft cluster and consumers over a faulty network, with invariant checkers. |
 
-The root crate (`src/`: `sequencer`, `client1`, `loadgen`) is the original
-single-process MoldUDP64 prototype. It is kept for its interop tests and
-as the M0 baseline.
+The original single-process MoldUDP64 prototype (`sequencer`, `client1`,
+`loadgen`) was removed on 2026-11-16. It is in the git history up to
+131dc5e.
 
 ## Running
 

@@ -1,6 +1,8 @@
 # M0 baseline: today's single node on a laptop
 
-Date: 2026-11-14. Tool: `src/bin/loadgen.rs` (GAP-ANALYSIS E1).
+Date: 2026-11-14. Tool: `src/bin/loadgen.rs` (GAP-ANALYSIS E1), against the
+original prototype. Both were removed on 2026-11-16 (in the git history up to
+131dc5e); `krusty-load` replaces `loadgen` for everything after M0.
 These are **laptop loopback numbers, for regression tracking and for finding
 bottlenecks**. They are not comparable to the PRD §7 targets, which assume
 the reference servers and real NICs (see E2).

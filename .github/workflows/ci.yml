@@ -28,8 +28,8 @@ jobs:
         run: cargo test --workspace
       - name: Perf smoke test (no loss at 10k msg/s; latency not judged on shared runners)
         run: |
-          cargo build --release --bin loadgen
-          ./target/release/loadgen --feed 127.0.0.1:17201 --rate 10000 --duration 2 --warmup 1
+          cargo build --release -p krusty-node --bin krusty-load
+          ./target/release/krusty-load --rate 10000 --duration 2 --warmup 1
       - name: Aeneas spike crate (unit + differential tests)
         working-directory: spikes/aeneas-stream/subset
         run: cargo test --workspace

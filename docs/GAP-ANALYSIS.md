@@ -2,7 +2,10 @@
 
 Status: **draft v0.2** (2026-11-14). Measures the code on branch
 `moldudp64-downstream` against the [PRD](PRD.md) and the
-[architecture](ARCHITECTURE.md).
+[architecture](ARCHITECTURE.md). §1–§4 describe that starting point, the
+single-crate prototype. It was replaced crate by crate and removed on
+2026-11-16 (in the git history up to 131dc5e). The rows in §3 and the
+roadmap in §5 track progress since.
 
 ## 1. Summary
 
@@ -56,7 +59,7 @@ Columns:
 
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
-| A1 | Logic mixed with I/O. The client sends on the socket while holding its state locks (`client.rs:267`, `:284`). The sequencer core writes the journal inside `process_batch` (`sequencer.rs:279`). | Pure sans-I/O cores plus thin I/O shells (architecture §5) | C, P | L | M1 |
+| A1 | **Done 2026-11-16:** every core is sans-I/O behind thin shells; the prototype is removed. Was: logic mixed with I/O. The client sends on the socket while holding its state locks (`client.rs:267`, `:284`). The sequencer core writes the journal inside `process_batch` (`sequencer.rs:279`). | Pure sans-I/O cores plus thin I/O shells (architecture §5) | C, P | L | M1 |
 | A2 | **Started 2026-11-14:** workspace with `krusty-wire`, `-core`, `-session`, `-stream`, `-sim`, `-ring`, `-net`, `-node`; the old crate remains until the node replaces it. One crate with mixed concerns | Crate layout in architecture §4; `forbid(unsafe_code)` in pure crates | O, C | M | M1 |
 | A3 | **Done in `krusty-node` 2026-11-14:** explicit stage lifecycle (stop → END_OF_SESSION → egress drains). Ad-hoc shutdown: `AtomicBool` flags plus 20–100 ms read timeouts | Staged runtime with explicit stage lifecycle (`krusty-rt`) | P, O | M | M1 |
 
@@ -132,7 +135,7 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 
 | ID | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|
-| E1 | **Started 2026-11-14:** open-loop `loadgen` with HDR histograms and CO-correct latency; laptop baseline in `docs/BASELINE.md` | Open-loop load generator; coordinated-omission-correct histograms; submit-to-feed round trip (PRD §7) | P | M | M0 |
+| E1 | **Done:** `krusty-load` (open loop, HDR histograms, CO-correct latency, single node and in-process cluster) replaced the prototype's `loadgen` (2026-11-14); results in `docs/BASELINE.md` | Open-loop load generator; coordinated-omission-correct histograms; submit-to-feed round trip (PRD §7) | P | M | M0 |
 | E2 | No reference hardware. Found on the laptop: multicast via the default route went over Wi-Fi and capped the node near 5–10 k msg/s | Defined reference setup; tuning guide (isolated cores, IRQ affinity, busy-poll) | P | S | M0 |
 | E3 | No comparison | Aeron Cluster baseline on the same hardware and workload | P | M | M0 / M4 |
 
@@ -144,6 +147,7 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 | O2 | **Started 2026-11-14:** shared-memory counters and per-stage latency histograms (`/dev/shm/krusty-<stream>.stats`), read live by `krusty-stat`; the binary event ring is still to do. `println!`/`eprintln!` logging | Shared-memory counters, per-stage histograms, binary event ring, `krusty-stat` | O, P | M | M1 |
 | O3 | No cluster tooling | Status, snapshot, session roll, leader handoff from the CLI | O | M | M4 |
 | O4 | No authentication | Pre-shared-key MAC on ingress and replication (FR-14) | C | M | P1 |
+| D1 | No user documentation beyond README and design docs | User guide: concepts and guarantees, deploying a node and a cluster, configuration reference, tuning (isolated cores, IRQ affinity), SDK usage (publisher, consumer, gap policy), operations (metrics, restarts, retention) | O | M | M4 |
 
 ## 4. Replace rather than evolve
 
@@ -213,8 +217,10 @@ the M0 spikes.
     `Core::apply`, G4 and G5; spec/README.md.)
 
 **M4: Hardening and release.**
-- Gaps P6 (Tier B), K5, O3, Q8, E3 (final comparison), O4 (if pulled
-  forward).
+- Gaps P6 (Tier B), K5, O3, Q8, E3 (final comparison), D1 (user guide),
+  O4 (if pulled forward).
+- Carried from M3: NFR-5 (1 M msg/s needs several ingress threads or
+  Tier B); a proof that snapshot restore yields the core invariant.
 - *Exit:* the PRD §10 release criteria.
 
 The verification track runs alongside from M0. It blocks a release only at

@@ -10,4 +10,4 @@ workspace = true
 
 [dev-dependencies]
 # The old crate's MoldUDP64 codec, interop-tested against the `moldudp` crate.
-krustycast = { path = "../.." }
+moldudp = "0.1.1"

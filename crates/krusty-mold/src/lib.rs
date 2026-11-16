@@ -128,11 +128,16 @@ impl Request {
 mod tests {
     extern crate std;
     use super::*;
-    use krustycast::protocol::{MoldKind, MoldPacket, RequestPacket};
     use std::vec::Vec;
 
+    /// Messages of a packet, as the `moldudp` crate (an independent
+    /// implementation) reads them.
+    fn their_messages(p: &moldudp::Packet<'_>) -> Vec<Vec<u8>> {
+        p.iter().map(|m| m.data().to_vec()).collect()
+    }
+
     #[test]
-    fn packets_decode_with_the_interop_tested_codec() {
+    fn packets_decode_with_an_independent_codec() {
         let session = Session::new("TEST1").unwrap();
         let mut buf = [0u8; 1400];
         let mut w = PacketWriter::new(&mut buf, session, 42).unwrap();
@@ -141,31 +146,29 @@ mod tests {
             assert!(w.push(m));
         }
         let n = w.finish();
-        let p = MoldPacket::decode(&buf[..n]).unwrap();
-        assert_eq!(p.session.0, session.0);
-        assert_eq!(p.seqno, 42);
-        let MoldKind::Messages(got) = p.kind else {
-            panic!("not messages")
-        };
-        assert_eq!(got, msgs.iter().map(|m| m.to_vec()).collect::<Vec<_>>());
+        let p = moldudp::Packet::new(&buf[..n]);
+        assert_eq!(p.session_ident_raw(), &session.0);
+        assert_eq!(p.seq_num(), 42);
+        assert!(matches!(p.packet_kind(), moldudp::PacketKind::Standard));
+        assert_eq!(
+            their_messages(&p),
+            msgs.iter().map(|m| m.to_vec()).collect::<Vec<_>>()
+        );
 
         let n = encode_heartbeat(&mut buf, session, 45);
-        assert!(matches!(
-            MoldPacket::decode(&buf[..n]).unwrap().kind,
-            MoldKind::Heartbeat
-        ));
+        let p = moldudp::Packet::new(&buf[..n]);
+        assert!(matches!(p.packet_kind(), moldudp::PacketKind::Heartbeat));
+        assert_eq!(p.seq_num(), 45);
         let n = encode_end_of_session(&mut buf, session, 45);
-        assert!(matches!(
-            MoldPacket::decode(&buf[..n]).unwrap().kind,
-            MoldKind::EndOfSession
-        ));
+        let p = moldudp::Packet::new(&buf[..n]);
+        assert!(matches!(p.packet_kind(), moldudp::PacketKind::EndOfSession));
 
-        let r = RequestPacket {
-            session: krustycast::protocol::Session(session.0),
-            seqno: 7,
-            count: 3,
-        };
-        let d = Request::decode(&r.encode()).unwrap();
+        // A re-request as the MoldUDP64 spec lays it out: session, seqno, count.
+        let mut r = [0u8; 20];
+        r[..10].copy_from_slice(&session.0);
+        r[10..18].copy_from_slice(&7u64.to_be_bytes());
+        r[18..20].copy_from_slice(&3u16.to_be_bytes());
+        let d = Request::decode(&r).unwrap();
         assert_eq!((d.session, d.seqno, d.count), (session, 7, 3));
     }
 

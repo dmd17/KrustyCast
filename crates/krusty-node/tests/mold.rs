@@ -3,7 +3,6 @@
 use krusty_node::{MoldConfig, NodeConfig};
 use krusty_wire::feedback::{Feedback, Outcome};
 use krusty_wire::ingress::{Append, Submit};
-use krustycast::protocol::{MoldKind, MoldPacket, RequestPacket, Session as OldSession};
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 use std::time::{Duration, Instant};
 
@@ -70,11 +69,12 @@ fn mold_feed_carries_the_same_sequence_and_serves_rerequests() {
     let deadline = Instant::now() + Duration::from_secs(5);
     while got.len() < 300 && Instant::now() < deadline {
         let Ok(n) = mold.recv(&mut buf) else { continue };
-        let p = MoldPacket::decode(&buf[..n]).expect("valid MoldUDP64");
-        assert_eq!(p.session.0, session.0);
-        if let MoldKind::Messages(ms) = p.kind {
-            for (i, m) in ms.into_iter().enumerate() {
-                got.push((p.seqno + i as u64, m));
+        assert!(n >= 20, "short MoldUDP64 packet");
+        let p = moldudp::Packet::new(&buf[..n]);
+        assert_eq!(p.session_ident_raw(), &session.0);
+        if matches!(p.packet_kind(), moldudp::PacketKind::Standard) {
+            for (i, m) in p.iter().enumerate() {
+                got.push((p.seq_num() + i as u64, m.data().to_vec()));
             }
         }
     }
@@ -85,24 +85,22 @@ fn mold_feed_carries_the_same_sequence_and_serves_rerequests() {
     }
 
     // A standard re-request for 10..15 from another socket.
-    let req = RequestPacket {
-        session: OldSession(session.0),
-        seqno: 10,
-        count: 5,
-    };
+    // Laid out as the MoldUDP64 spec says: session, seqno, count.
+    let mut req = [0u8; 20];
+    req[..10].copy_from_slice(&session.0);
+    req[10..18].copy_from_slice(&10u64.to_be_bytes());
+    req[18..20].copy_from_slice(&5u16.to_be_bytes());
     let asker = UdpSocket::bind("127.0.0.1:0").unwrap();
     asker
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     asker
-        .send_to(&req.encode(), node.mold_rerequest_addr().unwrap())
+        .send_to(&req, node.mold_rerequest_addr().unwrap())
         .unwrap();
     let n = asker.recv(&mut buf).unwrap();
-    let p = MoldPacket::decode(&buf[..n]).unwrap();
-    assert_eq!(p.seqno, 10);
-    let MoldKind::Messages(ms) = p.kind else {
-        panic!("not messages")
-    };
+    let p = moldudp::Packet::new(&buf[..n]);
+    assert_eq!(p.seq_num(), 10);
+    let ms: Vec<&[u8]> = p.iter().map(|m| m.data()).collect();
     assert_eq!(ms.len(), 5);
     assert_eq!(ms[0], b"msg-10");
 
@@ -112,10 +110,13 @@ fn mold_feed_carries_the_same_sequence_and_serves_rerequests() {
     let deadline = Instant::now() + Duration::from_secs(2);
     while !ended && Instant::now() < deadline {
         if let Ok(n) = mold.recv(&mut buf)
-            && let Some(p) = MoldPacket::decode(&buf[..n])
-            && matches!(p.kind, MoldKind::EndOfSession)
+            && n >= 20
+            && matches!(
+                moldudp::Packet::new(&buf[..n]).packet_kind(),
+                moldudp::PacketKind::EndOfSession
+            )
         {
-            assert_eq!(p.seqno, 301);
+            assert_eq!(moldudp::Packet::new(&buf[..n]).seq_num(), 301);
             ended = true;
         }
     }
