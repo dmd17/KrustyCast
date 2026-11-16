@@ -42,6 +42,7 @@ impl Cluster {
             let _ = std::fs::remove_dir_all(&dir);
             let mut cfg = NodeConfig::new(ports.take(), feed, ports.take());
             cfg.heartbeat_us = 5_000;
+            cfg.admin = Some("127.0.0.1:0".parse().unwrap());
             cfg.storage = Some(StorageConfig {
                 log: krusty_log::LogConfig::new(&dir),
                 durability,
@@ -297,4 +298,58 @@ fn followers_redirect_clients_and_apply_the_same_log() {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
+}
+
+/// `krusty-admin`'s endpoint: every node reports the same leader and,
+/// once idle, the same commit and apply progress; a snapshot on request.
+#[test]
+fn admin_reports_status_and_takes_snapshots() {
+    use krusty_node::admin::request;
+    let c = Cluster::new(3, "admin", Durability::Async);
+    let leader = c.wait_leader(Duration::from_secs(5));
+    let mut pcfg = PublisherConfig::new(1, c.ingress());
+    pcfg.max_attempts = 1000;
+    let mut p = Publisher::new(pcfg).unwrap();
+    publish(&mut p, 0, 200, || {});
+    let admins: Vec<SocketAddrV4> = c
+        .nodes
+        .iter()
+        .map(|n| n.as_ref().unwrap().admin_addr().unwrap())
+        .collect();
+    let get = |kv: &[(String, String)], k: &str| -> String {
+        kv.iter().find(|(a, _)| a == k).unwrap().1.clone()
+    };
+    // Followers apply the last entries a moment after the leader.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let statuses = loop {
+        let st: Vec<Vec<(String, String)>> = admins
+            .iter()
+            .map(|a| request(*a, "status", Duration::from_secs(1)).unwrap())
+            .collect();
+        let applied: HashSet<String> = st.iter().map(|kv| get(kv, "applied")).collect();
+        if applied.len() == 1 || Instant::now() > deadline {
+            break st;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    for (k, kv) in statuses.iter().enumerate() {
+        assert_eq!(get(kv, "node"), (k + 1).to_string());
+        assert_eq!(get(kv, "leader"), (leader + 1).to_string());
+        let role = if k == leader { "leader" } else { "follower" };
+        assert_eq!(get(kv, "role"), role);
+        assert_eq!(get(kv, "next_seqno"), "201");
+        assert_eq!(get(kv, "clients"), "1");
+        assert_eq!(get(kv, "durability"), "a");
+        assert_eq!(get(kv, "applied"), get(&statuses[0], "applied"));
+    }
+    // A snapshot now, at the applied index (no new entries since).
+    for a in &admins {
+        let kv = request(*a, "snapshot", Duration::from_secs(10)).unwrap();
+        let st = request(*a, "status", Duration::from_secs(1)).unwrap();
+        assert_eq!(get(&kv, "snapshot_index"), get(&st, "applied"));
+    }
+    // Asking again with nothing new applied is answered at once.
+    let kv = request(admins[0], "snapshot", Duration::from_secs(10)).unwrap();
+    assert_eq!(get(&kv, "snapshot_index"), get(&statuses[0], "applied"));
+    assert!(request(admins[0], "bogus", Duration::from_secs(1)).is_err());
 }

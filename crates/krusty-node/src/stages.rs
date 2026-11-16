@@ -34,7 +34,9 @@ pub struct Node {
     ingress_addr: SocketAddrV4,
     recovery_addr: SocketAddrV4,
     mold_rerequest_addr: Option<SocketAddrV4>,
+    admin_addr: Option<SocketAddrV4>,
     pub stats: Arc<Metrics>,
+    pub control: Arc<crate::Control>,
 }
 
 impl Node {
@@ -44,6 +46,11 @@ impl Node {
 
     pub fn recovery_addr(&self) -> SocketAddrV4 {
         self.recovery_addr
+    }
+
+    /// The admin endpoint's bound address, if configured.
+    pub fn admin_addr(&self) -> Option<SocketAddrV4> {
+        self.admin_addr
     }
 
     /// The MoldUDP64 re-request server's bound address, if the adapter runs.
@@ -206,6 +213,11 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
     let core_done = Arc::new(AtomicBool::new(false));
     let store_done = Arc::new(AtomicBool::new(false));
     let stats = Arc::new(Metrics::create(cfg.metrics_path.as_deref(), cfg.stream_id)?);
+    let control = Arc::new(crate::Control::default());
+    stats.node_id.store(
+        cfg.cluster.as_ref().map_or(0, |c| c.id as u64),
+        Ordering::Relaxed,
+    );
     let mut threads = Vec::new();
 
     // Who feeds ring B, and when egress may finish.
@@ -376,29 +388,31 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
                 crate::cluster::repl_stage(cfg, cl, repl_sock, r_tx, o_rx, stop, stats)
             }));
         }
-        let (cfg, stop, done, h, stats, lf) = (
+        let (cfg, stop, done, h, stats, lf, ctl) = (
             cfg.clone(),
             stop.clone(),
             core_done.clone(),
             history.clone(),
             stats.clone(),
             leader_flag.clone(),
+            control.clone(),
         );
         threads.push(spawn("krusty-core", cfg.stage_init, move || {
             crate::cluster::cluster_core_stage(
-                cfg, a_rx, r_rx, o_tx, out, h, start, lf, stop, done, stats,
+                cfg, a_rx, r_rx, o_tx, out, h, start, lf, stop, done, stats, ctl,
             )
         }));
     } else {
-        let (cfg, stop, done, h, stats) = (
+        let (cfg, stop, done, h, stats, ctl) = (
             cfg.clone(),
             stop.clone(),
             core_done.clone(),
             history.clone(),
             stats.clone(),
+            control.clone(),
         );
         threads.push(spawn("krusty-core", cfg.stage_init, move || {
-            core_stage(cfg, a_rx, out, h, core_start, stop, done, stats)
+            core_stage(cfg, a_rx, out, h, core_start, stop, done, stats, ctl)
         }));
     }
     {
@@ -445,13 +459,25 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             mold(cfg, m, out, rereq, h, durable, lf, done, stats)
         }));
     }
+    let mut admin_addr = None;
+    if let Some(a) = cfg.admin {
+        let sock = UdpSocket::bind(a)?;
+        admin_addr = Some(v4(sock.local_addr()?));
+        let (cfg, stop, stats, ctl) = (cfg.clone(), stop.clone(), stats.clone(), control.clone());
+        // Cold path: not pinned, sleeps between requests.
+        threads.push(spawn("krusty-admin", None, move || {
+            crate::admin::admin_stage(cfg, sock, stats, ctl, stop)
+        }));
+    }
     Ok(Node {
         stop,
         threads,
         ingress_addr,
         recovery_addr,
         mold_rerequest_addr,
+        admin_addr,
         stats,
+        control,
     })
 }
 
@@ -691,8 +717,10 @@ fn core_stage(
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
     stats: Arc<Metrics>,
+    control: Arc<crate::Control>,
 ) {
     pin(cfg.cores[1]);
+    let mut snap_seen = control.snapshot.load(Ordering::Relaxed);
     let CoreStart {
         mut core,
         mut log_index,
@@ -766,8 +794,13 @@ fn core_stage(
             stats.frames.fetch_add(frames, Ordering::Relaxed);
             last_sent = Instant::now();
         }
+        stats
+            .clients
+            .store(core.clients() as u64, Ordering::Relaxed);
+        let asked = control.snapshot.load(Ordering::Relaxed);
         if let Some((tx, back, every)) = &snapshots
-            && log_index >= last_snapshot + every
+            && (log_index >= last_snapshot + every
+                || (asked != snap_seen && log_index > last_snapshot))
         {
             // Hand a snapshot to the storage stage (skipped while it is
             // still writing the previous one).
@@ -782,7 +815,15 @@ fn core_stage(
                 });
                 let _ = tx.send(buf);
                 last_snapshot = log_index;
+                snap_seen = asked;
+                control.snapshot_done.store(asked, Ordering::Release);
+                stats.snapshot_index.store(log_index, Ordering::Relaxed);
             }
+        }
+        if asked != snap_seen && snapshots.is_some() && log_index == last_snapshot {
+            // Nothing applied since the last snapshot: it is current.
+            snap_seen = asked;
+            control.snapshot_done.store(asked, Ordering::Release);
         }
         if n > 0 {
             stats.core_batch.record(mono_ns() - batch_start);

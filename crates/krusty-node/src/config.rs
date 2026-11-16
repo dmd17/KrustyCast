@@ -9,6 +9,7 @@
 //! stream_id = 1
 //! spin = true
 //! cores = [2, 3, 4, 5]          # ingress, core, egress, recovery
+//! admin = "127.0.0.1:7010"      # krusty-admin endpoint (no auth: keep it off shared networks)
 //!
 //! [limits]
 //! mtu = 1472
@@ -56,6 +57,8 @@ pub struct FileConfig {
     pub cores: Option<Vec<usize>>,
     /// Shared-memory metrics file (default /dev/shm/krusty-<stream_id>.stats).
     pub metrics: Option<std::path::PathBuf>,
+    /// Admin endpoint for `krusty-admin` (default: off).
+    pub admin: Option<SocketAddrV4>,
     pub limits: Option<Limits>,
     pub storage: Option<Storage>,
     pub mold: Option<Mold>,
@@ -131,6 +134,9 @@ impl FileConfig {
         }
         if let Some(p) = &self.metrics {
             cfg.metrics_path = Some(p.clone());
+        }
+        if let Some(a) = self.admin {
+            cfg.admin = Some(a);
         }
         if self.spin == Some(true) {
             cfg.idle = Idle::Spin;

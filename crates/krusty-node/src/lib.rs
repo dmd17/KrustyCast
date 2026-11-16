@@ -22,6 +22,7 @@
 //! messages, every node applies committed entries, and only the leader
 //! publishes the feed and answers clients.
 
+pub mod admin;
 mod cluster;
 pub mod config;
 pub mod metrics;
@@ -143,6 +144,9 @@ pub struct NodeConfig {
     pub recover_suppress_us: u64,
     /// Shared-memory metrics file for `krusty-stat` (None: private memory).
     pub metrics_path: Option<std::path::PathBuf>,
+    /// Admin endpoint for `krusty-admin` (None: off). It has no
+    /// authentication: bind it to loopback or a management network.
+    pub admin: Option<SocketAddrV4>,
     /// Called at the start of every stage thread (tests use it to mark the
     /// threads whose allocations they count).
     pub stage_init: Option<fn()>,
@@ -170,9 +174,21 @@ impl NodeConfig {
             cluster: None,
             recover_suppress_us: 1_000,
             metrics_path: None,
+            admin: None,
             stage_init: None,
         }
     }
 }
 
 pub use stages::{Node, start};
+
+/// Operator requests to a running node, set by the admin endpoint and read
+/// by the stages.
+#[derive(Debug, Default)]
+pub struct Control {
+    /// Bumped to ask for a core snapshot now (with storage only).
+    pub snapshot: std::sync::atomic::AtomicU64,
+    /// The last `snapshot` request the core stage has answered: a snapshot
+    /// was taken, or the last one is already current.
+    pub snapshot_done: std::sync::atomic::AtomicU64,
+}

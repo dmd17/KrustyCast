@@ -587,8 +587,10 @@ pub(crate) fn cluster_core_stage(
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
     stats: Arc<Metrics>,
+    control: Arc<crate::Control>,
 ) {
     pin(cfg.cores[1]);
+    let mut snap_seen = control.snapshot.load(Ordering::Relaxed);
     let cl = cfg.cluster.clone().expect("cluster config");
     let ClusterStart {
         core,
@@ -690,8 +692,16 @@ pub(crate) fn cluster_core_stage(
         stats
             .raft_commit
             .store(sh.raft.commit_index(), Ordering::Relaxed);
+        stats
+            .raft_leader
+            .store(sh.raft.leader().map_or(0, |l| l as u64), Ordering::Relaxed);
+        stats
+            .clients
+            .store(sh.core.clients() as u64, Ordering::Relaxed);
+        let asked = control.snapshot.load(Ordering::Relaxed);
         if let Some((tx, back, every)) = &snapshots
-            && sh.applied >= last_snapshot + every
+            && (sh.applied >= last_snapshot + every
+                || (asked != snap_seen && sh.applied > last_snapshot))
         {
             if snap_buf.is_none() {
                 snap_buf = back.try_recv().ok();
@@ -709,7 +719,15 @@ pub(crate) fn cluster_core_stage(
                     .store(S_SNAPSHOT, 8, |b| b.copy_from_slice(&at.to_le_bytes()));
                 let _ = tx.send(buf);
                 last_snapshot = sh.applied;
+                snap_seen = asked;
+                control.snapshot_done.store(asked, Ordering::Release);
+                stats.snapshot_index.store(at, Ordering::Relaxed);
             }
+        }
+        if asked != snap_seen && snapshots.is_some() && sh.applied == last_snapshot {
+            // Nothing applied since the last snapshot: it is current.
+            snap_seen = asked;
+            control.snapshot_done.store(asked, Ordering::Release);
         }
         if leader && last_sent.elapsed() >= heartbeat {
             let k = stream::encode_heartbeat(&mut sh.frame, cfg.stream_id, sh.core.next_seqno())

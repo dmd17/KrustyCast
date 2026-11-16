@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAGIC: u64 = 0x5354_4154_534B_434B; // "KCKSTATS"
-pub const LAYOUT_VERSION: u64 = 5;
+pub const LAYOUT_VERSION: u64 = 6;
 pub const BUCKETS: usize = 64;
 
 /// log2 histogram: bucket `b` counts values in `[2^(b-1), 2^b)` ns (bucket 0: 0).
@@ -119,10 +119,23 @@ counters! {
     repl_dropped: "Raft messages dropped (ring full or undecodable).",
     repl_unservable: "Appends not sent: entries no longer retained (needs InstallSnapshot).",
     repl_held: "Mode (b): AppendReplies held until the entries they acknowledge were fsynced.",
+    node_id: "Gauge: this node's cluster id (0 for a single node).",
+    raft_leader: "Gauge: the leader this node knows of (0: none).",
+    snapshot_index: "Gauge: log index of the last snapshot handed to storage.",
+    clients: "Gauge: client sessions in the core.",
 }
 
 /// Counters that are levels, not totals (no rate is computed for them).
-pub const GAUGES: &[&str] = &["stream_next", "raft_role", "raft_term", "raft_commit"];
+pub const GAUGES: &[&str] = &[
+    "stream_next",
+    "raft_role",
+    "raft_term",
+    "raft_commit",
+    "node_id",
+    "raft_leader",
+    "snapshot_index",
+    "clients",
+];
 
 /// The node's metrics: a shared mapping (or private memory when no path is
 /// given). Dereferences to [`Shared`].

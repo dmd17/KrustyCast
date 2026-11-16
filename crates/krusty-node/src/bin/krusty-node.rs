@@ -3,6 +3,7 @@
 //!   krusty-node [--config node.toml]
 //!               [--ingress 0.0.0.0:7000] [--feed 239.1.1.1:7001] [--interface 10.0.0.5]
 //!               [--recovery 0.0.0.0:7002] [--stream-id N] [--spin] [--cores 2,3,4,5]
+//!               [--admin 127.0.0.1:7010]
 //!               [--mold-session NAME --mold-feed 239.1.1.2:7004 [--mold-rerequest 0.0.0.0:7003]]
 //!
 //! Flags override the file. See `config/node.example.toml` for every key.
@@ -81,6 +82,9 @@ fn main() {
                         .parse()
                         .unwrap_or_else(|_| fail("--mold-feed ip:port")),
                 )
+            }
+            "--admin" => {
+                cfg.admin = Some(val().parse().unwrap_or_else(|_| fail("--admin ip:port")))
             }
             "--mold-rerequest" => {
                 mold_rerequest = val()

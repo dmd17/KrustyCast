@@ -5,6 +5,7 @@ recovery = "0.0.0.0:7002"
 stream_id = 1
 spin = true
 cores = [2, 3, 4, 5]          # ingress, core, egress, recovery
+admin = "127.0.0.1:7010"      # krusty-admin endpoint (no auth: keep it off shared networks)
 
 [limits]
 mtu = 1472
