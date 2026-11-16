@@ -62,7 +62,7 @@ for one throughput target. The current state:
 |---|---|
 | `krusty-core` | The sequencer state machine: sessions, dedup, conditional appends, bounded tables. Sans-I/O and deterministic; proved in Lean. |
 | `krusty-raft` | Sans-I/O Raft core: pre-vote, check-quorum, pipelined batched replication. |
-| `krusty-node` | The node: pinned ingress, core, egress, recovery, storage and replication stages around the pure cores. Binaries `krusty-node`, `krusty-load` and `krusty-stat`. |
+| `krusty-node` | The node: pinned ingress, core, egress, recovery, storage and replication stages around the pure cores. Binaries `krusty-node`, `krusty-admin` (status, snapshot, leader handoff, session roll), `krusty-load` and `krusty-stat`. |
 | `krusty-log` | Segmented log of committed entries, seqno index, snapshots, retention. |
 | `krusty-wire` | Native wire formats: ingress, feedback and stream. Fixed little-endian, zero-copy. |
 | `krusty-session` | Client session core: seqnos, window, resends, outcomes (sans-I/O). |
@@ -149,6 +149,8 @@ checkout (see `spec/lean/lakefile.lean` and `.github/workflows/proofs.yml`).
 
 ## Design documents
 
+- **[User guide](docs/USER-GUIDE.md): deploying, configuring, publishing,
+  consuming, operating (krusty-admin), tuning**
 - [Product requirements](docs/PRD.md): scope, guarantees, performance targets
 - [Architecture](docs/ARCHITECTURE.md): design, protocols, storage, verification
 - [Gap analysis](docs/GAP-ANALYSIS.md): status against the target, with roadmap

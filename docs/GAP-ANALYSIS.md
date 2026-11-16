@@ -129,7 +129,7 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 | Q5 | V6 | **2026-11-15:** cluster mode (3 and 5 nodes, partitions, crash-restarts, failover), nightly. **Started 2026-11-14:** `krusty-sim` drives clients, core and consumers through the real codecs over a faulty network; G1, G2, G4–G6, exactly-once and liveness checkers; 5 scenarios; nightly sweep of 100 k runs. No simulation | `krusty-sim`: seeded network, disk and clock faults; G1–G9 checkers; nightly runs | C | L | M1→ |
 | Q6 | V7 | **Started 2026-11-14:** `cargo-fuzz` target for every `krusty-wire` decoder (canonical re-encoding asserted), 60 s per CI run. No fuzzing | `cargo-fuzz` on all decoders and on ingress | C | S | M1 |
 | Q7 | — | **Started 2026-11-14:** fmt, clippy, tests, TLC model checking and Lean proof re-check in GitHub Actions | CI: build, tests, Kani/Miri, model checking, proof re-check, alloc guard, perf smoke test | O | M | M0 |
-| Q8 | V8 | — | Jepsen-style real-network fault testing | C | M | M4 |
+| Q8 | V8 | Planned: fault tests over an emulated network (e.g. containernet) before the reference servers | Jepsen-style real-network fault testing | C | M | M4 |
 
 ### 3.8 Performance evidence
 
@@ -145,9 +145,9 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 |---|---|---|---|---|---|
 | O1 | **Config file done 2026-11-14** (`krusty-node --config`, `config/node.example.toml`; unknown keys rejected, values validated); static membership comes with Raft. CLI flags only | TOML config; static membership | O | S | M1 |
 | O2 | **Started 2026-11-14:** shared-memory counters and per-stage latency histograms (`/dev/shm/krusty-<stream>.stats`), read live by `krusty-stat`; the binary event ring is still to do. `println!`/`eprintln!` logging | Shared-memory counters, per-stage histograms, binary event ring, `krusty-stat` | O, P | M | M1 |
-| O3 | No cluster tooling | Status, snapshot, session roll, leader handoff from the CLI | O | M | M4 |
+| O3 | **Done 2026-11-16:** per-node admin endpoint and `krusty-admin`: status, snapshot on demand, leadership transfer (Raft TimeoutNow; validated against RaftKC traces), session roll (new stream, fresh core, replicated; USER-GUIDE §7). Was: no cluster tooling | Status, snapshot, session roll, leader handoff from the CLI | O | M | M4 |
 | O4 | No authentication | Pre-shared-key MAC on ingress and replication (FR-14) | C | M | P1 |
-| D1 | No user documentation beyond README and design docs | User guide: concepts and guarantees, deploying a node and a cluster, configuration reference, tuning (isolated cores, IRQ affinity), SDK usage (publisher, consumer, gap policy), operations (metrics, restarts, retention) | O | M | M4 |
+| D1 | **Done 2026-11-16:** [USER-GUIDE.md](USER-GUIDE.md). Was: no user documentation beyond README and design docs | User guide: concepts and guarantees, deploying a node and a cluster, configuration reference, tuning (isolated cores, IRQ affinity), SDK usage (publisher, consumer, gap policy), operations (metrics, restarts, retention) | O | M | M4 |
 
 ## 4. Replace rather than evolve
 
