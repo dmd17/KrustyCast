@@ -2,9 +2,9 @@
   First theorems about `krusty-core` (crates/krusty-core), stated against
   the Lean code Aeneas generates from the Rust source (`regen.sh`).
 
-  ARCHITECTURE §11.2 plans a refinement proof of `Core::apply` against an
-  abstract sequencer spec. These are the first steps: total, exact
-  specifications of small pieces of the decision logic.
+  Small, exact specifications of pieces of the decision logic. The
+  refinement proof of `Core::apply` (ARCHITECTURE §11.2) is in
+  `Spec.lean` and `Refine.lean`.
 -/
 import KrustyCore.Funs
 

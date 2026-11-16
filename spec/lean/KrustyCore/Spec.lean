@@ -28,6 +28,8 @@ inductive Out where
   | nak
   | busy
   | expired (min : Nat)
+  /-- Anything the core never produces (`NotLeader`, `Busy` with a delay). -/
+  | other
   deriving DecidableEq
 
 def Dec.out : Dec → Out

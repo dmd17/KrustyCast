@@ -120,7 +120,7 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 | ID | PRD | Current | Target | Why | Size | M |
 |---|---|---|---|---|---|---|
 | Q1 | V1 | **Started 2026-11-14:** `spec/tla/Sequencer.tla` covers sessions and the sequencer state machine over an atomic log (G4–G6, outcome consistency), checked in CI; **2026-11-15:** `RaftKC.tla` adds Raft (as implemented), bounded-depth exhaustive in CI, with the composition argument in spec/README.md; egress and consumers are covered by krusty-stream's tests and krusty-sim, not TLA+ | TLA+/Quint spec of sessions, sequencer, Raft and egress, with G1–G7 | C | L | M0–M3 |
-| Q2 | V2 | **Started 2026-11-14:** `krusty-core` translates to Lean (`spec/lean`, `regen.sh`); first three theorems proved; CI re-checks them and fails if the Lean is stale. No proofs | Aeneas→Lean proof of `krusty-core::step` (refinement plus invariants) | C | XL | M1–M3 |
+| Q2 | V2 | **Done 2026-11-16:** `krusty-core` translates to Lean (`spec/lean`, `regen.sh`); `Core::apply` is proved to refine an abstract sequencer spec under an invariant that `Core::new` establishes, with G4 and G5 proved on the spec and G4 carried to the code (spec/README.md). The table (`IdMap`) is proved a finite map. CI re-checks everything and fails if the Lean is stale. Snapshot restore is not covered | Aeneas→Lean proof of `krusty-core::step` (refinement plus invariants) | C | XL | M1–M3 |
 | Q3 | V3 | **Done 2026-11-15:** `spec/tla/TraceRaftKC.tla` replays traces of the real code (randomized harness with faults) with RaftKC's actions; all traces accepted, and five seeded Raft bugs are each rejected (spec/README.md). CI checks 3 traces, nightly 20 | Trace validation of `krusty-raft` against the spec | C | L | M3 |
 | Q4 | V4 | **Done 2026-11-14:** Verus-verified batched SPSC ring of `Copy` values (memory safety, data-race freedom; FIFO tested, not proved), 1.3× the cost of an Acquire/Release twin; not yet used by the node (its rings carry variable-length records). — | Verus-verified SPSC ring (or loom + Kani) | C | L | M2 |
 | Q5 | V6 | **2026-11-15:** cluster mode (3 and 5 nodes, partitions, crash-restarts, failover), nightly. **Started 2026-11-14:** `krusty-sim` drives clients, core and consumers through the real codecs over a faulty network; G1, G2, G4–G6, exactly-once and liveness checkers; 5 scenarios; nightly sweep of 100 k runs. No simulation | `krusty-sim`: seeded network, disk and clock faults; G1–G9 checkers; nightly runs | C | L | M1→ |
@@ -207,8 +207,10 @@ the M0 spikes.
     failover max 164 ms of 100. NFR-5 is not: 150 000 msg/s maximum,
     one ingress thread; BASELINE M3.)
   - Model checking and trace validation are green.
-  - Nightly simulation with faults runs clean.
-  - The core proof is checked in CI.
+  - Nightly simulation with faults runs clean. (Run 43841393191 on
+    2026-11-16, at 1442d7d.)
+  - The core proof is checked in CI. (Met 2026-11-16: refinement of
+    `Core::apply`, G4 and G5; spec/README.md.)
 
 **M4: Hardening and release.**
 - Gaps P6 (Tier B), K5, O3, Q8, E3 (final comparison), O4 (if pulled

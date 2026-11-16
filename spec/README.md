@@ -171,11 +171,29 @@ The bounded model check misses three of these within its CI depth, and the
 randomized harness needs a long sweep for Figure 8; trace validation
 catches all five in a minute. Unchanged code: every trace accepted.
 
-## `lean/`
+## `lean/`: the core proof (ARCHITECTURE §11.2, gap Q2)
 
 Lean proofs about `krusty-core`, against its Aeneas translation
 (`lean/regen.sh`). CI fails if the translation is stale (`source-hash.sh`)
-or if any theorem uses `sorry` or an unexpected axiom.
+or if any theorem uses `sorry` or an axiom beyond Lean's standard three.
+
+| File | What it proves |
+|---|---|
+| `IdMap.lean` | The client and key tables (`table.rs`: linear probing, backward-shift deletion) are finite maps. A well-formedness invariant (power-of-two size, at most half full, distinct keys, no empty bucket inside a probe run) holds after `new` and is kept by `insert` and `remove`; `get`, `insert` and `remove` are lookup, update and erase on the map the buckets hold. Probing terminates because a half-empty table always has an empty bucket. `remove`'s shift loop is proved with Knuth's invariant, plus a ghost empty bucket that bounds the scan. |
+| `Spec.lean` | The abstract sequencer: sessions, outcome rings, key versions, a bounded client table from which any idle session may be evicted, and a bounded key table, all over maps and naturals. Proved on it: **G4** (`step_hinv`), every step keeps a history invariant, so a message is decided at most once and remembered outcomes are the decisions taken; **G5** (`step_pub`), a publication takes the next seqno, and a conditional append publishes its key's next version and changes no other version. |
+| `Refine.lean` | **Refinement** (`apply_refines`): under an invariant on `Core` (table invariants, slots and sessions in one-to-one correspondence, ring and version bounds), `Core::apply` never panics, keeps the invariant, and its effects and new state are one `spec.Step` of the abstraction (the eviction choice it makes is one the spec allows). `new_inv`: `Core::new` establishes the invariant. `apply_at_most_once`: G4 for the code itself. |
+
+G7 (determinism) holds by construction: `Core.apply` is a function of the
+state and the entry.
+
+Not covered: `snapshot.rs` (left out of the translation; its property test
+covers it), so a core restored from a snapshot is not yet proved to satisfy
+the invariant. `Option::clone` is modelled with its standard semantics
+instead of being left an axiom (`regen.sh` reapplies the model).
+
+```
+PATH=$HOME/.elan/bin:$PATH scripts/check-axioms.sh spec/lean
+```
 
 ## `../spikes/aeneas-stream/proofs`
 
