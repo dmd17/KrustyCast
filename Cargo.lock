@@ -521,10 +521,12 @@ name = "krusty-client"
 version = "0.1.0"
 dependencies = [
  "krusty-log",
+ "krusty-mold",
  "krusty-node",
  "krusty-session",
  "krusty-stream",
  "krusty-wire",
+ "moldudp",
  "socket2 0.5.10",
 ]
 

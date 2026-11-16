@@ -165,6 +165,20 @@ impl Tracker {
         }
     }
 
+    /// Whether [`Tracker::on_frame`] would follow a frame of `stream_id`:
+    /// the followed stream, the first one seen (unless pinned to another),
+    /// or a new one after END_OF_STREAM (unless pinned). Callers that buffer
+    /// payloads ahead of the tracker must not keep those of other streams.
+    pub fn follows(&self, stream_id: u64) -> bool {
+        match self.stream {
+            None => match self.cfg.pinned {
+                Some(p) => p == stream_id,
+                None => true,
+            },
+            Some(s) => s == stream_id || (self.cfg.pinned.is_none() && self.ended_at.is_some()),
+        }
+    }
+
     /// Messages reported lost so far.
     pub fn lost(&self) -> u64 {
         self.lost

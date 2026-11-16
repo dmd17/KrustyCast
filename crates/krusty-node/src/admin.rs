@@ -10,6 +10,9 @@
 //!   log index once the storage stage has it.
 //! - `transfer <id>`: hand leadership to member `id` (leader only); replies
 //!   once `id` leads, or with the reason it did not.
+//! - `roll [<stream id>]`: session roll (leader only): end the current
+//!   stream and start a new one (default: the current id + 1) with a
+//!   fresh core; replies once this node has applied it.
 //!
 //! The endpoint has no authentication (gap O4): bind it to loopback or to
 //! a management network.
@@ -29,6 +32,7 @@ pub(crate) fn admin_stage(
     sock: UdpSocket,
     stats: Arc<Metrics>,
     control: Arc<Control>,
+    streams: Arc<crate::epochs::Streams>,
     stop: Arc<AtomicBool>,
 ) {
     let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
@@ -39,7 +43,15 @@ pub(crate) fn admin_stage(
             continue;
         };
         let req = String::from_utf8_lossy(&buf[..n]);
-        let reply = answer(&cfg, &stats, &control, &stop, &mut seq, req.trim());
+        let reply = answer(
+            &cfg,
+            &stats,
+            &control,
+            &streams,
+            &stop,
+            &mut seq,
+            req.trim(),
+        );
         let _ = sock.send_to(reply.as_bytes(), from);
     }
 }
@@ -48,6 +60,7 @@ fn answer(
     cfg: &NodeConfig,
     stats: &Metrics,
     control: &Control,
+    streams: &crate::epochs::Streams,
     stop: &AtomicBool,
     seq: &mut u64,
     req: &str,
@@ -62,6 +75,24 @@ fn answer(
                 transfer(cfg, stats, control, stop, *seq, id)
             }
             Err(_) => format!("error transfer: {id:?} is not a node id\n"),
+        },
+        ["roll"] => {
+            *seq += 1;
+            roll(
+                cfg,
+                stats,
+                control,
+                stop,
+                *seq,
+                streams.current().stream_id + 1,
+            )
+        }
+        ["roll", id] => match id.parse::<u64>() {
+            Ok(id) => {
+                *seq += 1;
+                roll(cfg, stats, control, stop, *seq, id)
+            }
+            Err(_) => format!("error roll: {id:?} is not a stream id\n"),
         },
         [cmd, ..] => format!("error unknown command {cmd:?}\n"),
         [] => "error empty request\n".into(),
@@ -203,6 +234,52 @@ fn transfer(
                 "error {to} did not take over in time (leader is {})\n",
                 leader()
             )
+        }
+    }
+}
+
+fn roll(
+    cfg: &NodeConfig,
+    s: &Metrics,
+    control: &Control,
+    stop: &AtomicBool,
+    seq: u64,
+    to: u64,
+) -> String {
+    if cfg.cluster.is_none() || cfg.storage.is_none() {
+        return "error session roll needs [cluster] and [storage] (a single node can be a one-member cluster)\n"
+            .into();
+    }
+    control.roll_stream.store(to, Ordering::Release);
+    control.roll_seq.store(seq, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let code = loop {
+        let d = control.roll_done.load(Ordering::Acquire);
+        if d >> 8 == seq {
+            break d & 0xFF;
+        }
+        if Instant::now() > deadline || stop.load(Ordering::Acquire) {
+            return "error the core stage did not answer\n".into();
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    match code {
+        crate::ROLL_NOT_LEADER => format!(
+            "error not the leader (leader is {})\n",
+            s.raft_leader.load(Ordering::Relaxed)
+        ),
+        crate::ROLL_BUSY => "error a leadership transfer is under way\n".into(),
+        crate::ROLL_REUSED => format!("error stream {to} is 0 or was used before\n"),
+        _ => {
+            // Committed and applied here: the stream id has changed.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if s.stream_id.load(Ordering::Relaxed) == to {
+                    return format!("ok\nstream {to}\n");
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            "error the roll did not commit in time (is a quorum up?)\n".into()
         }
     }
 }

@@ -223,6 +223,11 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
     // Who feeds ring B, and when egress may finish.
     let mut disk: Option<krusty_log::LogReader> = None;
     let mut cluster_start: Option<crate::cluster::ClusterStart> = None;
+    let mut streams = Arc::new(crate::epochs::Streams::new(crate::epochs::Epoch {
+        stream_id: cfg.stream_id,
+        g0: 1,
+        floor: 0,
+    }));
     let leader_flag = Arc::new(AtomicBool::new(cfg.cluster.is_none()));
     let (history, core_start, out, egress_done) = match &cfg.storage {
         Some(st) if cfg.cluster.is_some() => {
@@ -267,6 +272,7 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
                     synced,
                 )
             }));
+            streams = r.start.streams.clone();
             cluster_start = Some(r.start);
             (
                 r.history,
@@ -423,15 +429,16 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
     }
     {
         let feed_sock = sender(cfg.feed, cfg.interface)?;
-        let (cfg, stop, h, stats, d) = (
+        let (cfg, stop, h, stats, d, st) = (
             cfg.clone(),
             stop.clone(),
             history.clone(),
             stats.clone(),
             disk.clone(),
+            streams.clone(),
         );
         threads.push(spawn("krusty-recovery", cfg.stage_init, move || {
-            recovery(cfg, recovery_sock, feed_sock, h, d, stop, stats)
+            recovery(cfg, recovery_sock, feed_sock, h, d, st, stop, stats)
         }));
     }
     let mut mold_rerequest_addr = None;
@@ -440,12 +447,13 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
         mold_rerequest_addr = Some(v4(rereq.local_addr()?));
         let out = sender(m.feed, cfg.interface)?;
         // Ends after whatever feeds egress has finished (the storage stage in mode b).
-        let (cfg, done, h, stats, lf) = (
+        let (cfg, done, h, stats, lf, st) = (
             cfg.clone(),
             egress_done.clone(),
             history.clone(),
             stats.clone(),
             leader_flag.clone(),
+            streams.clone(),
         );
         // Mode (b): Mold may publish only what is durable (in a cluster,
         // everything applied is: a quorum fsynced it before it committed).
@@ -456,17 +464,23 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             _ => None,
         };
         threads.push(spawn("krusty-mold", cfg.stage_init, move || {
-            mold(cfg, m, out, rereq, h, durable, lf, done, stats)
+            mold(cfg, m, out, rereq, h, durable, st, lf, done, stats)
         }));
     }
     let mut admin_addr = None;
     if let Some(a) = cfg.admin {
         let sock = UdpSocket::bind(a)?;
         admin_addr = Some(v4(sock.local_addr()?));
-        let (cfg, stop, stats, ctl) = (cfg.clone(), stop.clone(), stats.clone(), control.clone());
+        let (cfg, stop, stats, ctl, st) = (
+            cfg.clone(),
+            stop.clone(),
+            stats.clone(),
+            control.clone(),
+            streams.clone(),
+        );
         // Cold path: not pinned, sleeps between requests.
         threads.push(spawn("krusty-admin", None, move || {
-            crate::admin::admin_stage(cfg, sock, stats, ctl, stop)
+            crate::admin::admin_stage(cfg, sock, stats, ctl, st, stop)
         }));
     }
     Ok(Node {
@@ -656,11 +670,14 @@ pub(crate) fn write_ring(
     }
 }
 
-/// Packs messages `from..to` (from the history) into DATA frames on ring B.
+/// Packs the messages at global positions `from..to` (from the history)
+/// into DATA frames of stream `stream_id`, whose seqno 1 is at `g0`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_frames(
     cfg: &NodeConfig,
     h: &History,
+    stream_id: u64,
+    g0: u64,
     from: u64,
     to: u64,
     retransmit: bool,
@@ -672,7 +689,7 @@ pub(crate) fn emit_frames(
     let mut frames = 0;
     while s < to {
         let mut w =
-            DataFrameWriter::new(&mut frame[..cfg.mtu], cfg.stream_id, s, retransmit).unwrap();
+            DataFrameWriter::new(&mut frame[..cfg.mtu], stream_id, s - g0 + 1, retransmit).unwrap();
         while s < to {
             let n = match h.read(s, entry) {
                 Ok(n) => n,
@@ -780,9 +797,12 @@ fn core_stage(
         stats.stream_next.store(last, Ordering::Relaxed);
         if last > first {
             // Publish after the batch is decided (P5: nothing goes out early).
+            // A single node never rolls: global position = seqno.
             let frames = emit_frames(
                 &cfg,
                 &history,
+                cfg.stream_id,
+                1,
                 first,
                 last,
                 false,
@@ -931,12 +951,14 @@ fn fetch(
     Some((meta, HIST_HEADER, HIST_HEADER + len))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn recovery(
     cfg: NodeConfig,
     sock: UdpSocket,
     feed_sock: UdpSocket,
     history: Arc<History>,
     disk: Option<krusty_log::LogReader>,
+    streams: Arc<crate::epochs::Streams>,
     stop: Arc<AtomicBool>,
     stats: Arc<Metrics>,
 ) {
@@ -966,9 +988,24 @@ fn recovery(
         empty = 0;
         for i in 0..n {
             let (bytes, src) = rb.get(i);
-            let Ok(Frame::Recover { from, count, .. }) = Frame::decode(bytes) else {
+            let Ok(Frame::Recover {
+                stream_id,
+                from: from_s,
+                count,
+            }) = Frame::decode(bytes)
+            else {
                 continue;
             };
+            // Any stream this node has served (after a roll, the old one's
+            // tail stays recoverable); history and disk are keyed by
+            // global position.
+            let Some((ep, end_g)) = streams.find(stream_id) else {
+                continue;
+            };
+            if from_s == 0 {
+                continue;
+            }
+            let from = ep.global(from_s);
             stats.recover_requests.fetch_add(1, Ordering::Relaxed);
             let t0 = mono_ns();
             // Suppression: just retransmitted on the feed? Then this
@@ -1000,9 +1037,14 @@ fn recovery(
                 Some(d) => (d.earliest_seqno(), history.committed().max(d.last_seqno())),
                 None => (history.earliest(), history.committed()),
             };
+            // An ended stream stops where the next one starts.
+            let last = match end_g {
+                Some(e) => last.min(e - 1),
+                None => last,
+            };
             if from < earliest {
-                let k =
-                    stream::encode_unavailable(&mut frame, cfg.stream_id, from, earliest).unwrap();
+                let e = ep.seqno(earliest.clamp(ep.g0, last + 1));
+                let k = stream::encode_unavailable(&mut frame, stream_id, from_s, e).unwrap();
                 let f = &frame[..k];
                 sb.push(dest, |b| {
                     b[..f.len()].copy_from_slice(f);
@@ -1016,7 +1058,8 @@ fn recovery(
             let history_from = history.earliest();
             while s < end {
                 let mut w =
-                    DataFrameWriter::new(&mut frame[..cfg.mtu], cfg.stream_id, s, true).unwrap();
+                    DataFrameWriter::new(&mut frame[..cfg.mtu], stream_id, ep.seqno(s), true)
+                        .unwrap();
                 while s < end {
                     let Some((meta, a, b)) =
                         fetch(s, &history, disk.as_ref(), &mut entry, &mut raw)
@@ -1056,7 +1099,8 @@ fn recovery(
 /// Returns how many seqnos were no longer in the history.
 #[allow(clippy::too_many_arguments)]
 fn mold_range(
-    m: &crate::MoldConfig,
+    session: krusty_mold::Session,
+    g0: u64,
     history: &History,
     from: u64,
     to: u64,
@@ -1069,7 +1113,7 @@ fn mold_range(
     let mut lost = 0;
     let mut s = from;
     while s < to {
-        let mut w = krusty_mold::PacketWriter::new(pkt, m.session, s).expect("mtu ≥ header");
+        let mut w = krusty_mold::PacketWriter::new(pkt, session, s - g0 + 1).expect("mtu ≥ header");
         while s < to {
             match history.read(s, entry) {
                 Ok(n) => {
@@ -1102,8 +1146,9 @@ fn mold_range(
 }
 
 /// The MoldUDP64 adapter: follows the history and republishes it as
-/// MoldUDP64 with the same seqnos, serves re-requests, and ends the session
-/// after the core has.
+/// MoldUDP64 with the stream's seqnos, serves re-requests, and ends the
+/// session after the core has. Each stream (session roll) is its own Mold
+/// session (`epochs::mold_session`); a roll ends the current one.
 #[allow(clippy::too_many_arguments)]
 fn mold(
     cfg: NodeConfig,
@@ -1112,11 +1157,18 @@ fn mold(
     rereq: UdpSocket,
     history: Arc<History>,
     durable: Option<krusty_log::LogReader>,
+    streams: Arc<crate::epochs::Streams>,
     leader: Arc<AtomicBool>,
     core_done: Arc<AtomicBool>,
     stats: Arc<Metrics>,
 ) {
+    let first_stream = streams.all()[0].stream_id;
+    let session = |e: &crate::epochs::Epoch| {
+        crate::epochs::mold_session(m.session, first_stream, e.stream_id)
+    };
     let mut next = history.earliest();
+    // The stream (Mold session) `next` is in.
+    let mut cur = streams.at(next).0;
     let mut pkt = vec![0u8; cfg.mtu];
     let mut entry = vec![0u8; HIST_HEADER + cfg.max_payload];
     let mut sb = SendBatch::new(64, cfg.mtu);
@@ -1133,14 +1185,31 @@ fn mold(
         let mut busy = false;
         // In a cluster only the leader publishes (re-requests: any node).
         let leading = leader.load(Ordering::Acquire);
+        // A roll: end the session `next` was in, then follow the new stream.
+        let (here, _) = streams.at(next);
+        if here != cur {
+            if leading {
+                let n =
+                    krusty_mold::encode_end_of_session(&mut pkt, session(&cur), cur.seqno(next));
+                let _ = sock.send_to(&pkt[..n], m.feed);
+            }
+            cur = here;
+            busy = true;
+        }
         if next <= committed && !leading {
             next = committed + 1;
         } else if next <= committed {
+            // Up to the end of `cur`'s stream; the rest on the next pass.
+            let stop_at = match streams.at(next).1 {
+                Some(e) => e.min(committed + 1),
+                None => committed + 1,
+            };
             let lost = mold_range(
-                &m,
+                session(&cur),
+                cur.g0,
                 &history,
                 next,
-                committed + 1,
+                stop_at,
                 m.feed,
                 &mut pkt,
                 &mut entry,
@@ -1149,19 +1218,20 @@ fn mold(
             );
             stats
                 .mold_published
-                .fetch_add(committed + 1 - next - lost, Ordering::Relaxed);
+                .fetch_add(stop_at - next - lost, Ordering::Relaxed);
             stats.mold_lost.fetch_add(lost, Ordering::Relaxed);
-            next = committed + 1;
+            next = stop_at;
             last_sent = Instant::now();
             busy = true;
         } else if done {
             if cfg.cluster.is_none() {
-                let n = krusty_mold::encode_end_of_session(&mut pkt, m.session, next);
+                let n =
+                    krusty_mold::encode_end_of_session(&mut pkt, session(&cur), cur.seqno(next));
                 let _ = sock.send_to(&pkt[..n], m.feed);
             }
             return;
         } else if leading && last_sent.elapsed() >= heartbeat {
-            let n = krusty_mold::encode_heartbeat(&mut pkt, m.session, next);
+            let n = krusty_mold::encode_heartbeat(&mut pkt, session(&cur), cur.seqno(next));
             let _ = sock.send_to(&pkt[..n], m.feed);
             last_sent = Instant::now();
         }
@@ -1171,17 +1241,37 @@ fn mold(
             let Some(r) = krusty_mold::Request::decode(b) else {
                 continue;
             };
-            if r.session != m.session || r.seqno == 0 || r.count == 0 {
+            if r.seqno == 0 || r.count == 0 {
                 continue;
             }
+            let Some((ep, end_g)) = streams
+                .all()
+                .into_iter()
+                .find(|e| session(e) == r.session)
+                .and_then(|e| streams.find(e.stream_id))
+            else {
+                continue;
+            };
             stats.mold_rerequests.fetch_add(1, Ordering::Relaxed);
-            let end = r
-                .seqno
+            let mut end = ep
+                .global(r.seqno)
                 .saturating_add(r.count.min(1024) as u64)
                 .min(history.committed() + 1);
-            let start = r.seqno.max(history.earliest());
+            if let Some(e) = end_g {
+                end = end.min(e);
+            }
+            let start = ep.global(r.seqno).max(history.earliest());
             mold_range(
-                &m, &history, start, end, src, &mut pkt, &mut entry, &mut sb, &rereq,
+                session(&ep),
+                ep.g0,
+                &history,
+                start,
+                end,
+                src,
+                &mut pkt,
+                &mut entry,
+                &mut sb,
+                &rereq,
             );
             busy = true;
         }

@@ -17,3 +17,6 @@ socket2 = { version = "0.5", features = ["all"] }
 [dev-dependencies]
 krusty-node = { path = "../krusty-node" }
 krusty-log = { path = "../krusty-log" }
+krusty-mold = { path = "../krusty-mold" }
+# An independent MoldUDP64 implementation, to read the adapter's feed.
+moldudp = "0.1.1"

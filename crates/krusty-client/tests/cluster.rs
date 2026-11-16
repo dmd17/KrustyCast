@@ -30,6 +30,16 @@ struct Cluster {
 
 impl Cluster {
     fn new(n: u32, tag: &str, durability: Durability) -> Cluster {
+        Cluster::with(n, tag, durability, |_| {})
+    }
+
+    /// As `new`, with `adjust` applied to every node's config.
+    fn with(
+        n: u32,
+        tag: &str,
+        durability: Durability,
+        adjust: impl Fn(&mut NodeConfig),
+    ) -> Cluster {
         let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let mut ports = Ports::new(1 + 3 * n as usize);
         let feed = ports.take();
@@ -50,6 +60,7 @@ impl Cluster {
                 core: None,
             });
             cfg.cluster = Some(ClusterConfig::new(id, repl.clone()));
+            adjust(&mut cfg);
             cfgs.push(cfg);
             dirs.push(dir);
         }
@@ -395,4 +406,202 @@ fn admin_hands_over_leadership() {
     seqnos.sort_unstable();
     assert_eq!(seqnos, (1..=200).collect::<Vec<_>>());
     assert!(request(admins[to], "transfer 9", Duration::from_secs(5)).is_err());
+}
+
+/// Session roll (`krusty-admin roll`): END_OF_SESSION on the old stream,
+/// then the new stream from seqno 1 with a fresh core. A client from before
+/// the roll is told to start a new incarnation (nothing is sequenced
+/// twice); the old stream stays recoverable; a restarted node comes back
+/// on the new stream.
+#[test]
+fn session_roll_starts_a_new_stream() {
+    use krusty_node::admin::request;
+    let mut c = Cluster::new(3, "roll", Durability::Async);
+    let leader = c.wait_leader(Duration::from_secs(5));
+    let admins: Vec<SocketAddrV4> = c
+        .nodes
+        .iter()
+        .map(|n| n.as_ref().unwrap().admin_addr().unwrap())
+        .collect();
+    let get = |kv: &[(String, String)], k: &str| -> String {
+        kv.iter().find(|(a, _)| a == k).unwrap().1.clone()
+    };
+    // A consumer following whatever stream the cluster is on.
+    let mut consumer = Consumer::new(ConsumerConfig {
+        start_seqno: Some(1),
+        ..ConsumerConfig::new(c.feed, c.recovery())
+    })
+    .unwrap();
+    let mut got: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut ends = 0;
+    let drain = |consumer: &mut Consumer, got: &mut Vec<(u64, Vec<u8>)>, ends: &mut u32| {
+        consumer
+            .poll(|e| match e {
+                ConsumerEvent::Message(d) => got.push((d.seqno, d.payload.to_vec())),
+                ConsumerEvent::Lost { count } => panic!("lost {count}"),
+                ConsumerEvent::EndOfStream => *ends += 1,
+            })
+            .unwrap();
+    };
+    let mut pcfg = PublisherConfig::new(1, c.ingress());
+    pcfg.max_attempts = 1000;
+    let mut p = Publisher::new(pcfg).unwrap();
+    publish(&mut p, 0, 50, || {});
+    let kv = request(admins[leader], "roll 9", Duration::from_secs(10)).unwrap();
+    assert_eq!(get(&kv, "stream"), "9");
+    assert!(
+        request(admins[leader], "roll 9", Duration::from_secs(10)).is_err(),
+        "ids are not reused"
+    );
+    // The publisher's incarnation predates the roll: its next message fails
+    // and it restarts; after that, the new stream from seqno 1.
+    let mut restarted = false;
+    p.submit(Append::Unconditional, b"probe").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !restarted {
+        assert!(Instant::now() < deadline, "no restart");
+        p.poll(|e| match e {
+            PublisherEvent::Failed { .. } => {}
+            PublisherEvent::Restarted { .. } => restarted = true,
+            other => panic!("unexpected {other:?}"),
+        })
+        .unwrap();
+    }
+    let (after, _) = publish(&mut p, 50, 80, || {});
+    let mut seqnos: Vec<u64> = after.values().copied().collect();
+    seqnos.sort_unstable();
+    assert_eq!(seqnos, (1..=30).collect::<Vec<_>>());
+    // The consumer: the old stream, its end, then the new one.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while got.len() < 80 {
+        assert!(Instant::now() < deadline, "consumer stuck at {}", got.len());
+        drain(&mut consumer, &mut got, &mut ends);
+    }
+    let expect: Vec<(u64, Vec<u8>)> = (0..50)
+        .map(|i| (i + 1, payload(i)))
+        .chain((50..80).map(|i| (i - 49, payload(i))))
+        .collect();
+    assert_eq!(got, expect);
+    assert_eq!(ends, 1);
+    // Every node is on stream 9; the old stream is still recoverable.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let st: Vec<_> = admins
+            .iter()
+            .map(|a| request(*a, "status", Duration::from_secs(1)).unwrap())
+            .collect();
+        if st
+            .iter()
+            .all(|kv| get(kv, "stream") == "9" && get(kv, "next_seqno") == "31")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "nodes did not converge: {st:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The old stream's messages, asked for by stream id after the roll.
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let mut buf = [0u8; 2048];
+    let k = krusty_wire::stream::encode_recover(&mut buf, 1, 1, 50).unwrap();
+    sock.send_to(&buf[..k], c.recovery()[leader]).unwrap();
+    let mut old: Vec<(u64, Vec<u8>)> = Vec::new();
+    while let Ok(n) = sock.recv(&mut buf) {
+        if let Ok(krusty_wire::stream::Frame::Data(d)) =
+            krusty_wire::stream::Frame::decode(&buf[..n])
+        {
+            assert_eq!(d.stream_id, 1);
+            old.extend(d.messages().map(|m| (m.seqno, m.payload.to_vec())));
+        }
+        if old.len() >= 50 {
+            break;
+        }
+    }
+    assert_eq!(old, expect[..50]);
+    // A follower restarted from its log is back on stream 9.
+    // (After a snapshot, so the streams table comes back from it.)
+    let f = (leader + 1) % 3;
+    request(admins[f], "snapshot", Duration::from_secs(10)).unwrap();
+    c.stop(f);
+    c.restart(f);
+    let a = c.nodes[f].as_ref().unwrap().admin_addr().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(kv) = request(a, "status", Duration::from_secs(1))
+            && get(&kv, "stream") == "9"
+            && get(&kv, "next_seqno") == "31"
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "restarted node not on stream 9");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The MoldUDP64 adapter across a roll, on a one-member cluster (how a
+/// single node rolls): the configured session ends, and the next one is
+/// named after the new stream id, from seqno 1.
+#[test]
+fn mold_session_follows_a_roll() {
+    use krusty_node::admin::request;
+    let mold = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    mold.set_read_timeout(Some(Duration::from_millis(50)))
+        .unwrap();
+    let feed = match mold.local_addr().unwrap() {
+        std::net::SocketAddr::V4(a) => a,
+        _ => unreachable!(),
+    };
+    let session = krusty_mold::Session::new("KC1").unwrap();
+    let c = Cluster::with(1, "mold-roll", Durability::Async, |cfg| {
+        cfg.mold = Some(krusty_node::MoldConfig {
+            session,
+            feed,
+            rerequest: "127.0.0.1:0".parse().unwrap(),
+        });
+    });
+    c.wait_leader(Duration::from_secs(5));
+    let admin = c.nodes[0].as_ref().unwrap().admin_addr().unwrap();
+    let mut pcfg = PublisherConfig::new(1, c.ingress());
+    pcfg.max_attempts = 1000;
+    let mut p = Publisher::new(pcfg).unwrap();
+    publish(&mut p, 0, 5, || {});
+    request(admin, "roll 9", Duration::from_secs(10)).unwrap();
+    let mut restarted = false;
+    p.submit(Append::Unconditional, b"probe").unwrap();
+    while !restarted {
+        p.poll(|e| {
+            if let PublisherEvent::Restarted { .. } = e {
+                restarted = true
+            }
+        })
+        .unwrap();
+    }
+    publish(&mut p, 5, 8, || {});
+    // (session, seqno, payload) of every message, and where sessions ended.
+    let mut got: Vec<([u8; 10], u64, Vec<u8>)> = Vec::new();
+    let mut ended: Vec<([u8; 10], u64)> = Vec::new();
+    let mut buf = [0u8; 2048];
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while got.len() < 8 && Instant::now() < deadline {
+        let Ok(n) = mold.recv(&mut buf) else { continue };
+        let pk = moldudp::Packet::new(&buf[..n]);
+        let sess = *pk.session_ident_raw();
+        match pk.packet_kind() {
+            moldudp::PacketKind::EndOfSession => ended.push((sess, pk.seq_num())),
+            moldudp::PacketKind::Standard => {
+                for (i, m) in pk.iter().enumerate() {
+                    got.push((sess, pk.seq_num() + i as u64, m.data().to_vec()));
+                }
+            }
+            moldudp::PacketKind::Heartbeat => {}
+        }
+    }
+    let new = *b"0000000009";
+    let expect: Vec<([u8; 10], u64, Vec<u8>)> = (0..5)
+        .map(|i| (session.0, i + 1, payload(i)))
+        .chain((5..8).map(|i| (new, i - 4, payload(i))))
+        .collect();
+    assert_eq!(got, expect);
+    assert!(ended.contains(&(session.0, 6)), "{ended:?}");
 }

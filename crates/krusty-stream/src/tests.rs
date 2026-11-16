@@ -292,3 +292,26 @@ fn lossy_channel_with_recovery() {
         );
     }
 }
+
+#[test]
+fn follows_the_current_stream_and_a_new_one_after_its_end() {
+    let mut t = Tracker::new(cfg());
+    let mut out = Vec::new();
+    assert!(t.follows(7) && t.follows(8));
+    t.on_frame(&data(1, 1), &mut out); // stream 7
+    assert!(t.follows(7) && !t.follows(8));
+    t.on_frame(
+        &Frame {
+            stream_id: 7,
+            seqno: 2,
+            kind: Kind::EndOfStream,
+        },
+        &mut out,
+    );
+    assert!(t.follows(8));
+    let pinned = Tracker::new(Config {
+        pinned: Some(7),
+        ..cfg()
+    });
+    assert!(pinned.follows(7) && !pinned.follows(8));
+}

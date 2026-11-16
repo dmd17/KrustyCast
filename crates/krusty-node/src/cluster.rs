@@ -39,6 +39,7 @@
 //! Not yet: InstallSnapshot (a follower that lags past the log's retention
 //! cannot catch up; `repl_unservable` counts it), membership changes.
 
+use crate::epochs::{Epoch, Streams, parse_roll, roll_payload};
 use crate::metrics::{Metrics, mono_ns};
 use crate::stages::{
     HIST_HEADER, Out, REC_HDR, REC_TO, emit_frames, feed_record, get_addr, get_ts, idle, now_ns,
@@ -98,6 +99,8 @@ pub(crate) struct ClusterStart {
     pub snapshots: Option<crate::stages::SnapshotLink>,
     /// Mode (b): how many entries the storage stage has fsynced.
     pub synced: Option<Arc<AtomicU64>>,
+    /// The streams so far (session rolls); the last is current.
+    pub streams: Arc<crate::epochs::Streams>,
 }
 
 pub(crate) struct Restored {
@@ -121,23 +124,29 @@ pub(crate) fn restore(
     let bad = |m: String| io::Error::new(io::ErrorKind::InvalidData, m);
     let opened = Log::open(st.log.clone())?;
     let mut log = opened.log;
-    // Cluster snapshots are `term of the entry u64 | core snapshot`.
-    let (core, snap, snap_term) = match opened.snapshot {
+    // Cluster snapshots are `term of the entry u64 | streams table | core
+    // snapshot` (snapshots from before session rolls have no table).
+    let first = Epoch {
+        stream_id: cfg.stream_id,
+        g0: 1,
+        floor: 0,
+    };
+    let (core, snap, snap_term, epochs) = match opened.snapshot {
         Some((i, bytes)) if bytes.len() >= 8 => {
             let term = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-            let core = Core::restore(cfg.core, &bytes[8..])
-                .map_err(|e| bad(format!("snapshot {i}: {e:?}")))?;
-            (core, i, term)
+            let (epochs, rest) = Streams::load(&bytes[8..]).unwrap_or((vec![first], &bytes[8..]));
+            let core =
+                Core::restore(cfg.core, rest).map_err(|e| bad(format!("snapshot {i}: {e:?}")))?;
+            (core, i, term, epochs)
         }
         Some((i, _)) => return Err(bad(format!("snapshot {i}: too short"))),
-        None => (Core::new(cfg.core), 0, 0),
+        None => (Core::new(cfg.core), 0, 0, vec![first]),
     };
-    let history = History::starting_at(
-        cfg.history,
-        HIST_HEADER + cfg.max_payload,
-        core.next_seqno(),
-    );
-    log.reset_index_to(core.next_seqno());
+    let streams = Arc::new(Streams::from_epochs(epochs));
+    // History and egress index are keyed by global position.
+    let next_g = streams.current().global(core.next_seqno());
+    let history = History::starting_at(cfg.history, HIST_HEADER + cfg.max_payload, next_g);
+    log.reset_index_to(next_g);
     let mut rl = RaftLog::new(snap, snap_term);
     // The window holds `retain_entries` plus those not yet compacted.
     rl.reserve(2 * cl.retain_entries.min(1 << 24) as usize);
@@ -178,6 +187,7 @@ pub(crate) fn restore(
             disk,
             snapshots: None,
             synced: None,
+            streams,
         },
         log,
         positions,
@@ -245,8 +255,11 @@ struct Shell {
     raft: Raft,
     ob: Outbox,
     core: Core,
-    /// The core's own index (SUBMITs only; no-ops are skipped).
+    /// The core's own index (SUBMITs of the current stream; no-ops skipped).
     core_index: u64,
+    /// The current stream (its core starts fresh at each roll).
+    epoch: Epoch,
+    streams: Arc<Streams>,
     /// Raft index applied.
     applied: u64,
     out: Out,
@@ -508,7 +521,9 @@ impl Shell {
             return 0;
         }
         let leader = self.raft.role() == Role::Leader;
-        let first = self.core.next_seqno();
+        // Global position of the first message not yet put in frames.
+        let mut first = self.epoch.global(self.core.next_seqno());
+        let mut published = 0;
         let mut replies = 0;
         while self.applied < commit {
             let i = self.applied + 1;
@@ -527,51 +542,120 @@ impl Shell {
             };
             if !self.data.is_empty() {
                 let ts = u64::from_le_bytes(self.data[..8].try_into().unwrap());
-                let s = Submit::decode(&self.data[8..])
-                    .unwrap_or_else(|e| fatal("apply", format!("entry {i}: {e:?}")));
-                self.core_index += 1;
-                let e = self
-                    .core
-                    .apply(self.core_index, ts, &s)
-                    .unwrap_or_else(|e| fatal("apply", format!("{e:?}")));
-                if let Some(p) = e.publish {
-                    put_history(
-                        &self.history,
-                        p.seqno,
-                        &p.meta,
-                        s.payload,
-                        &mut self.scratch,
-                    );
-                    self.out.store_published(p.seqno, i);
-                }
-                if let (Some(f), Some(addr)) = (e.reply, mine) {
-                    send_feedback(&mut self.out, &mut self.fb, addr, &f);
-                    replies += 1;
+                if let Some(stream_id) = parse_roll(&self.data[8..]) {
+                    published += self.flush_frames(leader, first);
+                    self.roll(leader, stream_id, ts);
+                    first = self.epoch.g0;
+                } else {
+                    let s = Submit::decode(&self.data[8..])
+                        .unwrap_or_else(|e| fatal("apply", format!("entry {i}: {e:?}")));
+                    let e = if s.incarnation <= self.epoch.floor && self.epoch.floor > 0 {
+                        // A client from before the roll: what a fresh core whose
+                        // floor starts at the roll's timestamp would answer.
+                        let min = self
+                            .epoch
+                            .floor
+                            .max(self.core.incarnation_floor())
+                            .saturating_add(1);
+                        krusty_core::Effects {
+                            publish: None,
+                            reply: Some(Feedback {
+                                client_id: s.client_id,
+                                incarnation: s.incarnation,
+                                client_seqno: s.client_seqno,
+                                outcome: Outcome::SessionExpired {
+                                    min_incarnation: min,
+                                },
+                            }),
+                        }
+                    } else {
+                        self.core_index += 1;
+                        self.core
+                            .apply(self.core_index, ts, &s)
+                            .unwrap_or_else(|e| fatal("apply", format!("{e:?}")))
+                    };
+                    if let Some(p) = e.publish {
+                        let g = self.epoch.global(p.seqno);
+                        put_history(&self.history, g, &p.meta, s.payload, &mut self.scratch);
+                        self.out.store_published(g, i);
+                    }
+                    if let (Some(f), Some(addr)) = (e.reply, mine) {
+                        send_feedback(&mut self.out, &mut self.fb, addr, &f);
+                        replies += 1;
+                    }
                 }
             }
             self.applied = i;
         }
         self.raft.applied(self.applied);
         self.stats.feedback.fetch_add(replies, Ordering::Relaxed);
-        let last = self.core.next_seqno();
-        if leader && last > first {
+        published + self.flush_frames(leader, first)
+    }
+
+    /// The leader puts the current stream's messages from global position
+    /// `from` on in DATA frames. Returns how many there were.
+    fn flush_frames(&mut self, leader: bool, from: u64) -> u64 {
+        let to = self.epoch.global(self.core.next_seqno());
+        if to <= from {
+            return 0;
+        }
+        if leader {
             let (cfg, history, out) = (&self.cfg, &self.history, &mut self.out);
             let frames = emit_frames(
                 cfg,
                 history,
-                first,
-                last,
+                self.epoch.stream_id,
+                self.epoch.g0,
+                from,
+                to,
                 false,
                 &mut self.frame,
                 &mut self.entry,
                 |f| feed_record(out, f),
             );
-            self.stats
-                .published
-                .fetch_add(last - first, Ordering::Relaxed);
+            self.stats.published.fetch_add(to - from, Ordering::Relaxed);
             self.stats.frames.fetch_add(frames, Ordering::Relaxed);
         }
-        last - first
+        to - from
+    }
+
+    /// A committed ROLL: end the stream, start `stream_id` with a fresh
+    /// core. Every node does the same at the same entry.
+    fn roll(&mut self, leader: bool, stream_id: u64, ts: u64) {
+        if stream_id == 0 || self.streams.contains(stream_id) {
+            return; // a stream id is never reused (proposals check; this is the rule)
+        }
+        if leader {
+            let k = stream::encode_end_of_session(
+                &mut self.frame,
+                self.epoch.stream_id,
+                self.core.next_seqno(),
+            )
+            .unwrap();
+            let (frame, out) = (&self.frame, &mut self.out);
+            feed_record(out, &frame[..k]);
+        }
+        self.epoch = Epoch {
+            stream_id,
+            g0: self.epoch.global(self.core.next_seqno()),
+            floor: ts,
+        };
+        self.streams.push(self.epoch);
+        self.core = Core::new(self.cfg.core);
+        self.core_index = 0;
+        self.stats.stream_id.store(stream_id, Ordering::Relaxed);
+    }
+
+    /// Leader: proposes a ROLL to `stream_id`.
+    fn propose_roll(&mut self, stream_id: u64) {
+        let ts = now_ns().max(self.last_ts);
+        self.last_ts = ts;
+        self.data.clear();
+        self.data.extend_from_slice(&ts.to_le_bytes());
+        self.data.extend_from_slice(&roll_payload(stream_id));
+        if self.raft.propose(&self.data, &mut self.ob).is_some() {
+            self.proposals += 1;
+        }
     }
 }
 
@@ -602,11 +686,18 @@ pub(crate) fn cluster_core_stage(
         disk,
         snapshots,
         synced,
+        streams,
     } = start;
+    stats
+        .stream_id
+        .store(streams.current().stream_id, Ordering::Relaxed);
+    let mut roll_seen = control.roll_seq.load(Ordering::Relaxed);
     let mut sh = Shell {
         id: cl.id,
         max_bytes: cl.max_append_bytes,
         core_index: core.applied(),
+        epoch: streams.current(),
+        streams: streams.clone(),
         core,
         applied,
         raft,
@@ -714,6 +805,22 @@ pub(crate) fn cluster_core_stage(
                 .transfer_done
                 .store(seq << 32 | code, Ordering::Release);
         }
+        let rs = control.roll_seq.load(Ordering::Acquire);
+        if rs != roll_seen {
+            roll_seen = rs;
+            let id = control.roll_stream.load(Ordering::Acquire);
+            let code = if sh.raft.role() != Role::Leader {
+                crate::ROLL_NOT_LEADER
+            } else if sh.raft.transferring().is_some() {
+                crate::ROLL_BUSY
+            } else if id == 0 || sh.streams.contains(id) {
+                crate::ROLL_REUSED
+            } else {
+                sh.propose_roll(id);
+                crate::ROLL_STARTED
+            };
+            control.roll_done.store(rs << 8 | code, Ordering::Release);
+        }
         let asked = control.snapshot.load(Ordering::Relaxed);
         if let Some((tx, back, every)) = &snapshots
             && (sh.applied >= last_snapshot + every
@@ -729,6 +836,7 @@ pub(crate) fn cluster_core_stage(
                     .term_at(sh.applied)
                     .expect("applied entries are in memory");
                 buf.extend_from_slice(&term.to_le_bytes());
+                sh.streams.save(&mut buf);
                 sh.core.snapshot(&mut buf);
                 let at = sh.applied;
                 sh.out
@@ -746,8 +854,9 @@ pub(crate) fn cluster_core_stage(
             control.snapshot_done.store(asked, Ordering::Release);
         }
         if leader && last_sent.elapsed() >= heartbeat {
-            let k = stream::encode_heartbeat(&mut sh.frame, cfg.stream_id, sh.core.next_seqno())
-                .unwrap();
+            let k =
+                stream::encode_heartbeat(&mut sh.frame, sh.epoch.stream_id, sh.core.next_seqno())
+                    .unwrap();
             let f = &sh.frame[..k];
             feed_record(&mut sh.out, f);
             last_sent = Instant::now();

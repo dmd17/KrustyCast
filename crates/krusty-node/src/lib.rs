@@ -25,6 +25,7 @@
 pub mod admin;
 mod cluster;
 pub mod config;
+pub mod epochs;
 pub mod metrics;
 pub mod stages;
 pub mod storage;
@@ -189,6 +190,15 @@ pub const TRANSFER_NOT_LEADER: u64 = 2;
 /// [`Control::transfer_done`]: the target is not a peer.
 pub const TRANSFER_BAD_TARGET: u64 = 3;
 
+/// [`Control::roll_done`]: the ROLL entry was proposed.
+pub const ROLL_STARTED: u64 = 1;
+/// [`Control::roll_done`]: this node is not the leader.
+pub const ROLL_NOT_LEADER: u64 = 2;
+/// [`Control::roll_done`]: a leadership transfer is under way.
+pub const ROLL_BUSY: u64 = 3;
+/// [`Control::roll_done`]: the stream id is 0 or was used before.
+pub const ROLL_REUSED: u64 = 4;
+
 /// Operator requests to a running node, set by the admin endpoint and read
 /// by the stages.
 #[derive(Debug, Default)]
@@ -202,4 +212,9 @@ pub struct Control {
     pub transfer: std::sync::atomic::AtomicU64,
     /// The core stage's answer: `seq << 32 | TRANSFER_*`.
     pub transfer_done: std::sync::atomic::AtomicU64,
+    /// A session roll to ask for: the new stream id, then `roll_seq` bumped.
+    pub roll_stream: std::sync::atomic::AtomicU64,
+    pub roll_seq: std::sync::atomic::AtomicU64,
+    /// The core stage's answer: `seq << 8 | ROLL_*`.
+    pub roll_done: std::sync::atomic::AtomicU64,
 }

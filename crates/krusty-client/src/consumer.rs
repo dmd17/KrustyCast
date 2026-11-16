@@ -207,10 +207,22 @@ impl Consumer {
         };
         let tframe = match frame {
             Frame::Data(d) => {
-                // Buffer what the tracker will hold back (ahead of `next`).
-                let next = self.tracker.next_seqno().unwrap_or(0);
+                // Buffer what the tracker will hold back (ahead of `next`),
+                // and only for a stream it follows: after a session roll a
+                // late frame of the old stream must not fill a slot of the new.
+                let follows = self.tracker.follows(d.stream_id);
+                let switching = follows && self.tracker.stream().is_some_and(|s| s != d.stream_id);
+                if switching {
+                    self.slots.iter_mut().for_each(|s| *s = None);
+                }
+                let next = if switching {
+                    1
+                } else {
+                    self.tracker.next_seqno().unwrap_or(0)
+                };
                 for m in d.messages() {
-                    if m.seqno > next
+                    if follows
+                        && m.seqno > next
                         && m.seqno - next < WINDOW as u64
                         && m.payload.len() <= self.cfg.max_payload
                     {
@@ -269,19 +281,29 @@ impl Consumer {
             Frame::Recover { .. } => return,
         };
         self.out.clear();
+        let before = self.tracker.stream();
         self.tracker.on_frame(&tframe, &mut self.out);
-        self.emit(Some(frame), f);
+        // A new stream after END_OF_SESSION (a session roll): the old one
+        // ended, even if this poll never saw it complete.
+        let switched = before.is_some() && self.tracker.stream() != before;
+        self.emit(Some(frame), switched, f);
     }
 
     /// Reports new losses, then the deliveries in `out` (from `frame` when
     /// they were in it, else from the out-of-order store).
-    fn emit(&mut self, frame: Option<Frame<'_>>, f: &mut impl FnMut(Event<'_>)) {
+    fn emit(&mut self, frame: Option<Frame<'_>>, switched: bool, f: &mut impl FnMut(Event<'_>)) {
         let lost = self.tracker.lost();
         if lost > self.lost_reported {
             f(Event::Lost {
                 count: lost - self.lost_reported,
             });
             self.lost_reported = lost;
+        }
+        if switched {
+            if !self.ended {
+                f(Event::EndOfStream);
+            }
+            self.ended = false;
         }
         let mut in_frame = match frame {
             Some(Frame::Data(d)) => Some(d.messages().peekable()),
@@ -335,7 +357,7 @@ impl Consumer {
         self.out.clear();
         let req = self.tracker.poll_recover(now, &mut self.out);
         if !self.out.is_empty() {
-            self.emit(None, f); // gave up on a gap: what followed is delivered
+            self.emit(None, false, f); // gave up on a gap: what followed is delivered
         }
         match (req, self.delayed) {
             // A new gap: wait a random delay first (suppression, §8.5).
