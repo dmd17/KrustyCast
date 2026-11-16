@@ -22,11 +22,13 @@ CONSTANTS
     MaxLog,         \* bound on log length (and so on seqnos)
     W,              \* the tracker's reorder window
     MaxFrame,       \* most messages in one DATA frame
+    \* The consumer's gap policy: TRUE for GapPolicy::GiveUpAfter (report a
+    \* gap lost after unanswered RECOVERs), FALSE for GapPolicy::Wait.
+    GiveUp,
     \* Deliberate bugs, for mutation checks (all FALSE in the real model):
     PubUncommitted, \* nodes publish entries they have not committed
     SilentSkip,     \* skipping a gap does not report it lost
-    UnavailToHw,    \* UNAVAILABLE skips to the high-water mark, not to earliest
-    GiveUp          \* the tracker gives up on unanswered gaps (max_retries)
+    UnavailToHw     \* UNAVAILABLE skips to the high-water mark, not to earliest
 
 LOST == "lost"
 
@@ -228,7 +230,7 @@ Recover(c) ==
     /\ reqs' = reqs \cup {[c |-> c, from |-> next[c], count |-> GapEnd(St(c)) - next[c]]}
     /\ UNCHANGED <<C, log, commit, ret, net, next, hw, buf, delivered, lost>>
 
-\* `poll_recover` after max_retries unanswered requests.
+\* `poll_recover` under GapPolicy::GiveUpAfter, after unanswered requests.
 Abandon(c) ==
     /\ GiveUp
     /\ next[c] < hw[c]
@@ -264,7 +266,8 @@ PrefixDelivery ==
            /\ ds \cup lost[c] = Range(1, next[c] - 1)
            /\ ds \cap lost[c] = {}
 
-\* G2: loss is reported only for data a node no longer retains.
+\* G2: loss is reported only for data a node no longer retains (under
+\* GapPolicy::Wait; GiveUpAfter trades this for progress).
 LossOnlyAgedOut ==
     \A c \in Consumers : \A s \in lost[c] : \E n \in Nodes : s < ret[n]
 

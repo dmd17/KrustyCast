@@ -3,8 +3,8 @@
 //! Turns frames that arrive lost, duplicated and reordered into in-order
 //! delivery (G2): message *n* is delivered only after 1..*n*−1, unless the
 //! tracker reports the gap as lost. Loss is reported when the cluster says a
-//! range is UNAVAILABLE (aged out), when recovery is off, or after
-//! `max_retries` unanswered RECOVER requests.
+//! range is UNAVAILABLE (aged out), when recovery is off, or, if the
+//! [`GapPolicy`] says so, after a number of unanswered RECOVER requests.
 //!
 //! Sans-I/O: the caller passes frames (already decoded by `krusty-wire`) and
 //! the current time in, and gets deliveries and RECOVER requests out.
@@ -75,6 +75,20 @@ pub enum Outcome {
     Invalid,
 }
 
+/// What to do about a gap that RECOVER requests do not fill. This is a
+/// policy choice (PRD G2): stall, or report loss and keep going.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GapPolicy {
+    /// Keep asking until the data arrives or the cluster says it aged out
+    /// (UNAVAILABLE). Loss is then only ever for data outside retention, but
+    /// delivery stalls while no node answers.
+    Wait,
+    /// After this many unanswered RECOVERs for a gap, report it lost and
+    /// deliver what follows. Delivery keeps moving, but the loss may cover
+    /// data the cluster still holds.
+    GiveUpAfter(u32),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
     /// Follow only this stream (None: the first one seen).
@@ -84,7 +98,7 @@ pub struct Config {
     /// Send RECOVER for gaps; if false, gaps are skipped and counted as lost.
     pub recover: bool,
     pub retry_interval_ns: u64,
-    pub max_retries: u32,
+    pub gap_policy: GapPolicy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -355,8 +369,9 @@ impl Tracker {
         self.has_req = false;
     }
 
-    /// The RECOVER to send at time `now_ns`, if any. Gives up on a gap after
-    /// `max_retries` attempts, delivering what follows it.
+    /// The RECOVER to send at time `now_ns`, if any. Under
+    /// [`GapPolicy::GiveUpAfter`], gives up on a gap after that many
+    /// attempts, delivering what follows it.
     pub fn poll_recover(&mut self, now_ns: u64, out: &mut Vec<Delivered>) -> Option<Recover> {
         if !self.cfg.recover || !self.has_gap() {
             self.has_req = false;
@@ -366,7 +381,11 @@ impl Tracker {
             if now_ns.saturating_sub(self.req_at) < self.cfg.retry_interval_ns {
                 return None;
             }
-            if self.req_attempts >= self.cfg.max_retries {
+            let give_up = match self.cfg.gap_policy {
+                GapPolicy::Wait => false,
+                GapPolicy::GiveUpAfter(n) => self.req_attempts >= n,
+            };
+            if give_up {
                 let hw = self.high_water;
                 self.skip_gap(hw, out);
                 self.has_req = false;
@@ -375,7 +394,7 @@ impl Tracker {
                 }
                 self.req_attempts = 0;
             }
-            self.req_attempts += 1;
+            self.req_attempts = self.req_attempts.saturating_add(1);
         } else {
             self.req_attempts = 1;
         }

@@ -16,6 +16,7 @@ mod consumer;
 mod publisher;
 
 pub use consumer::{Consumer, ConsumerConfig, Delivery, Event as ConsumerEvent};
+pub use krusty_stream::GapPolicy;
 pub use publisher::{Event as PublisherEvent, Publisher, PublisherConfig};
 
 /// SplitMix64, for recovery jitter.

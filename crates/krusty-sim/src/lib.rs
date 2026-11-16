@@ -267,7 +267,7 @@ pub fn run(seed: u64, p: &Params) -> Report {
                 start_seqno: Some(1),
                 recover: true,
                 retry_interval_ns: 2 * p.max_delay_ns + p.tick_ns,
-                max_retries: 1_000_000,
+                gap_policy: krusty_stream::GapPolicy::Wait,
             }),
             stash: HashMap::new(),
             delivered: Vec::new(),

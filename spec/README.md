@@ -197,12 +197,13 @@ handover.
 |---|---|
 | `Agreement` | G1 (with G7): a delivered message is the committed one at its seqno |
 | `PrefixDelivery` | G2: deliveries in seqno order; every seqno below `next` delivered or reported lost, never both |
-| `LossOnlyAgedOut` | G2: loss is reported only for data some node no longer retains |
+| `LossOnlyAgedOut` | G2: loss is reported only for data some node no longer retains (gap policy `Wait`) |
 | `CommittedAgree` | the Raft abstraction holds |
 
 | Config | Bounds | States | Time |
 |---|---|---|---|
-| `Egress.cfg` (CI) | 2 nodes, 1 consumer, 2 values, logs of 2, single-message frames, window 2 | 2.26 M, exhaustive | 1 min (4 workers) |
+| `Egress.cfg` (CI) | gap policy `Wait`; 2 nodes, 1 consumer, 2 values, logs of 2, single-message frames, window 2 | 2.26 M, exhaustive | 1 min (4 workers) |
+| `EgressGiveUp.cfg` (CI) | gap policy `GiveUpAfter`, same bounds, without `LossOnlyAgedOut` | 2.48 M, exhaustive | 1 min (4 workers) |
 | `EgressLarge.cfg` | 2 consumers, logs of 3, frames of up to 2 | > 123 M explored to depth 17 without a violation in 20 min, not exhausted | hours (6 workers) |
 
 Mutation checks (each flag in the spec turns on one bug):
@@ -212,15 +213,16 @@ Mutation checks (each flag in the spec turns on one bug):
 | Nodes publish or serve entries they have not committed | `Agreement` (6 steps) |
 | UNAVAILABLE skips to the high-water mark, not to the earliest retained seqno | `LossOnlyAgedOut` (11 steps) |
 | Skipping a gap does not report it lost | `PrefixDelivery` (10 steps) |
-| The tracker gives up after unanswered RECOVERs (`max_retries`) | `LossOnlyAgedOut` (8 steps) |
 
-**The last row is today's code.** After `max_retries` unanswered requests
-(50 by default in the SDK), the tracker reports the gap lost and moves
-on, even if nodes still hold the data and were only unreachable. That
-loss is explicit, as G2 requires, but it breaks the PRD's "loss is
-possible only for data outside retention". So the CI model runs with
-`GiveUp = FALSE`. Either the PRD names this as a third kind of reported
-loss (recovery failed), or the SDK keeps retrying and never gives up.
+**The gap policy is the consumer's choice** (`krusty_stream::GapPolicy`,
+`ConsumerConfig::gap_policy`), and both are checked:
+- `Wait` keeps asking until the data arrives or a node answers
+  UNAVAILABLE. Loss is then only ever for aged-out data
+  (`LossOnlyAgedOut`), but delivery stalls while no node answers.
+- `GiveUpAfter(n)`, the SDK default with n = 50, reports a gap lost after
+  n unanswered requests and keeps going. Loss stays explicit and ordered
+  (`PrefixDelivery`), but it may cover data the cluster still holds.
+  `LossOnlyAgedOut` fails for it within 8 steps, as it should.
 
 One check is redundant. `take` checks a window slot's seqno, but the
 model shows it can't matter: the buffer only holds seqnos in

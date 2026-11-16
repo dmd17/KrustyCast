@@ -3,7 +3,9 @@
 //! §8.5), and replay from any position.
 
 use crate::Rng;
-use krusty_stream::{Config as TrackerConfig, Delivered, Frame as TFrame, Kind, Tracker, WINDOW};
+use krusty_stream::{
+    Config as TrackerConfig, Delivered, Frame as TFrame, GapPolicy, Kind, Tracker, WINDOW,
+};
 use krusty_wire::stream::{self, Frame, MessageMeta};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
@@ -25,7 +27,9 @@ pub struct ConsumerConfig {
     /// so many consumers missing the same data do not all ask at once.
     pub max_recover_delay_ns: u64,
     pub retry_interval_ns: u64,
-    pub max_retries: u32,
+    /// Stall on a gap no node fills, or report it lost after some number of
+    /// requests (a policy choice: [`GapPolicy`]).
+    pub gap_policy: GapPolicy,
     /// Largest payload to buffer out of order.
     pub max_payload: usize,
     /// Seed for the recovery jitter.
@@ -42,7 +46,7 @@ impl ConsumerConfig {
             start_seqno: None,
             max_recover_delay_ns: 200_000,
             retry_interval_ns: 20_000_000,
-            max_retries: 50,
+            gap_policy: GapPolicy::GiveUpAfter(50),
             max_payload: 1408,
             seed: 0x5EED,
         }
@@ -129,7 +133,7 @@ impl Consumer {
             start_seqno: cfg.start_seqno,
             recover: true,
             retry_interval_ns: cfg.retry_interval_ns,
-            max_retries: cfg.max_retries,
+            gap_policy: cfg.gap_policy,
         });
         Ok(Consumer {
             slots: (0..WINDOW).map(|_| None).collect(),

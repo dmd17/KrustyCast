@@ -140,7 +140,7 @@ Priority: **P0** = required for v1, **P1** = soon after v1, **P2** = later.
 | ID | Guarantee |
 |---|---|
 | G1 | **Agreement.** Any two consumers that deliver global seqno *n* deliver the same message. |
-| G2 | **Gap-free prefix delivery.** A consumer delivers *n* only after 1..*n*−1, unless it explicitly reports loss. Loss is possible only for data outside retention. |
+| G2 | **Gap-free prefix delivery.** A consumer delivers *n* only after 1..*n*−1, unless it explicitly reports loss. Loss is possible only for data outside retention, or, if the consumer chose to give up on gaps no node fills (gap policy `GiveUpAfter(n)`, the SDK default), after n unanswered recovery requests. With the `Wait` policy the consumer stalls instead. |
 | G3 | **Durability.** No outcome reported to a client, and no message published on egress, is ever lost or changed while at most f nodes fail. In mode (a) this also assumes that not every node loses power at once. |
 | G4 | **At-most-once sequencing** per (client, incarnation, seqno). With client resends this gives exactly-once for any client that stays alive until it gets its outcome. |
 | G5 | **Conditional append.** At most one message is accepted per (key, version), and accepted versions are contiguous. |

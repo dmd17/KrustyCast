@@ -6,7 +6,7 @@ fn cfg() -> Config {
         start_seqno: None,
         recover: true,
         retry_interval_ns: 100,
-        max_retries: 3,
+        gap_policy: GapPolicy::GiveUpAfter(3),
     }
 }
 
@@ -60,6 +60,25 @@ fn gives_up_after_max_retries() {
     assert_eq!(t.poll_recover(600, &mut out), None);
     assert_eq!(seqnos(&out), [1, 3]);
     assert_eq!(t.lost(), 1);
+}
+
+#[test]
+fn waits_forever_under_the_wait_policy() {
+    let mut t = Tracker::new(Config {
+        gap_policy: GapPolicy::Wait,
+        ..cfg()
+    });
+    let mut out = Vec::new();
+    t.on_frame(&data(1, 1), &mut out);
+    t.on_frame(&data(3, 1), &mut out);
+    for k in 0..1000 {
+        let r = t.poll_recover(k * 200, &mut out).expect("keeps asking");
+        assert_eq!(r.from, 2);
+    }
+    assert_eq!(seqnos(&out), [1]);
+    assert_eq!(t.lost(), 0);
+    t.on_frame(&data(2, 1), &mut out);
+    assert_eq!(seqnos(&out), [1, 2, 3]);
 }
 
 #[test]

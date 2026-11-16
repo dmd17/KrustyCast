@@ -484,7 +484,7 @@ pub fn run_cluster(seed: u64, p: &ClusterParams) -> Report {
                 start_seqno: Some(1),
                 recover: true,
                 retry_interval_ns: 20 * MS,
-                max_retries: u32::MAX,
+                gap_policy: krusty_stream::GapPolicy::Wait,
             }),
             stash: HashMap::new(),
             delivered: Vec::new(),

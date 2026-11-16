@@ -226,7 +226,7 @@ fn run(storage: Option<krusty_node::StorageConfig>) {
             start_seqno: Some(1),
             recover: true,
             retry_interval_ns: 20_000_000,
-            max_retries: 100,
+            gap_policy: krusty_stream::GapPolicy::GiveUpAfter(100),
         }),
         ingress: node.ingress_addr(),
         recovery: node.recovery_addr(),
