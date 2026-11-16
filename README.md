@@ -127,6 +127,8 @@ PATH=$HOME/.elan/bin:$PATH scripts/check-axioms.sh spec/lean   # Lean proofs
   - `RaftKC.tla` models Raft as `krusty-raft` implements it.
   - Trace validation replays randomized runs of the real `krusty-raft`
     against `RaftKC`.
+  - `Egress.tla` models the native stream, recovery and the consumer
+    tracker (G1, G2).
 - **Lean** (`spec/lean`, against the Aeneas translation of `krusty-core`):
   - `Core::apply` refines an abstract sequencer spec, under an invariant
     that `Core::new` establishes.

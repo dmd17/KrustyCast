@@ -88,9 +88,10 @@ the sequencer's guarantees hold over *any* single growing log of inputs
 (duplicated, reordered, from restarting clients). `RaftKC.tla` shows the
 committed entries form exactly that: one log, agreed by every node, that
 never changes once committed. Every node applies that log to the same
-deterministic core, so G1 (agreement) and G7 (determinism) hold for the
-egress stream. Not modelled: power loss in durability mode (a), which is
-outside G3's assumptions.
+deterministic core, so every node's egress stream is a prefix of one
+stream (G7). `Egress.tla` takes it from there to the consumers (G1, G2).
+Not modelled: power loss in durability mode (a), which is outside G3's
+assumptions.
 
 | Config | Bounds | States | Time (laptop) |
 |---|---|---|---|
@@ -170,6 +171,63 @@ Mutations of `krusty-raft`, 6 traces each:
 The bounded model check misses three of these within its CI depth, and the
 randomized harness needs a long sweep for Figure 8; trace validation
 catches all five in a minute. Unchanged code: every trace accepted.
+
+## `tla/Egress.tla`: the native stream and its consumers (gap Q1)
+
+Nodes publish (live or retransmitted) and answer RECOVER requests, and
+consumers run `krusty-stream`'s tracker. The network loses, duplicates
+and reorders frames. Several nodes may publish at once, as during a leader
+handover.
+
+- **Raft is abstracted** to what `RaftKC` proves: every node's log agrees
+  with one committed log up to its commit index. Beyond that a node may
+  hold anything, and may lose or replace it.
+- **Nodes** append, truncate and commit entries, and age out retained
+  data. They publish DATA and heartbeats up to their commit index. They
+  answer RECOVER as the recovery stage does: UNAVAILABLE if the start has
+  aged out, then DATA from the earliest retained seqno. The answer goes to
+  the requester, or onto the feed when several consumers asked
+  (suppression).
+- **The tracker** follows `krusty-stream`: a reorder window of W slots,
+  delivery and draining in seqno order, high-water marks from DATA and
+  heartbeats, `skip_until` on UNAVAILABLE, and RECOVER for the gap at
+  `next`.
+
+| Invariant | Guarantee |
+|---|---|
+| `Agreement` | G1 (with G7): a delivered message is the committed one at its seqno |
+| `PrefixDelivery` | G2: deliveries in seqno order; every seqno below `next` delivered or reported lost, never both |
+| `LossOnlyAgedOut` | G2: loss is reported only for data some node no longer retains |
+| `CommittedAgree` | the Raft abstraction holds |
+
+| Config | Bounds | States | Time |
+|---|---|---|---|
+| `Egress.cfg` (CI) | 2 nodes, 1 consumer, 2 values, logs of 2, single-message frames, window 2 | 2.26 M, exhaustive | 1 min (4 workers) |
+| `EgressLarge.cfg` | 2 consumers, logs of 3, frames of up to 2 | > 123 M explored to depth 17 without a violation in 20 min, not exhausted | hours (6 workers) |
+
+Mutation checks (each flag in the spec turns on one bug):
+
+| Bug | Caught by |
+|---|---|
+| Nodes publish or serve entries they have not committed | `Agreement` (6 steps) |
+| UNAVAILABLE skips to the high-water mark, not to the earliest retained seqno | `LossOnlyAgedOut` (11 steps) |
+| Skipping a gap does not report it lost | `PrefixDelivery` (10 steps) |
+| The tracker gives up after unanswered RECOVERs (`max_retries`) | `LossOnlyAgedOut` (8 steps) |
+
+**The last row is today's code.** After `max_retries` unanswered requests
+(50 by default in the SDK), the tracker reports the gap lost and moves
+on, even if nodes still hold the data and were only unreachable. That
+loss is explicit, as G2 requires, but it breaks the PRD's "loss is
+possible only for data outside retention". So the CI model runs with
+`GiveUp = FALSE`. Either the PRD names this as a third kind of reported
+loss (recovery failed), or the SDK keeps retrying and never gives up.
+
+One check is redundant. `take` checks a window slot's seqno, but the
+model shows it can't matter: the buffer only holds seqnos in
+`(next, next + W)`, so `next`'s slot never holds another seqno.
+
+Not modelled: stream switches after END_OF_STREAM, foreign streams,
+unicast fan-out, the MoldUDP64 adapter, timers and rate limits.
 
 ## `lean/`: the core proof (ARCHITECTURE §11.2, gap Q2)
 

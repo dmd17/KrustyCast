@@ -14,10 +14,11 @@ trap 'rm -rf -- "${meta:?}"' EXIT
 # module:config pairs.
 configs="Sequencer:SequencerRace Sequencer:SequencerRestart
 SequencerBounded:SequencerBoundedEvict SequencerBounded:SequencerBoundedRing
-MCRaftKC:MCRaftKC"
+MCRaftKC:MCRaftKC Egress:Egress"
 [ "${1:-}" = "--large" ] && configs="$configs
 Sequencer:SequencerLarge SequencerBounded:SequencerBoundedEvictLarge
-RaftKC:RaftKC RaftKC:RaftKCLarge RaftKC:RaftKCTerms3 RaftKC:RaftKCTerms4"
+RaftKC:RaftKC RaftKC:RaftKCLarge RaftKC:RaftKCTerms3 RaftKC:RaftKCTerms4
+Egress:EgressLarge"
 
 status=0
 for pair in $configs; do
