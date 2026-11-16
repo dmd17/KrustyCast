@@ -37,9 +37,11 @@ axiom core.option.Option.Insts.CoreFmtDebug.fmt
     Visibility: public -/
 @[rust_fun
   "core::option::{core::clone::Clone<core::option::Option<@T>>}::clone"]
-axiom core.option.Option.Insts.CoreCloneClone.clone
+def core.option.Option.Insts.CoreCloneClone.clone
   {T : Type _} (cloneCloneInst : core.clone.Clone T) :
   Option T → Result (Option T)
+  | none => ok none
+  | some x => do let y ← cloneCloneInst.clone x; ok (some y)
 
 /-- [core::option::{impl core::cmp::PartialEq<core::option::Option<T>> for core::option::Option<T>}::eq]:
     Source: '/rustc/library/core/src/option.rs', lines 2441:4-2441:38
