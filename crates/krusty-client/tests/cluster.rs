@@ -46,6 +46,7 @@ impl Cluster {
                 log: krusty_log::LogConfig::new(&dir),
                 durability,
                 snapshot_every: 500,
+                core: None,
             });
             cfg.cluster = Some(ClusterConfig::new(id, repl.clone()));
             cfgs.push(cfg);

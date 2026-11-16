@@ -102,6 +102,8 @@ pub struct StorageConfig {
     pub durability: Durability,
     /// Take a core snapshot every this many log entries.
     pub snapshot_every: u64,
+    /// Core for the storage stage (None: not pinned).
+    pub core: Option<usize>,
 }
 
 #[derive(Clone, Debug)]

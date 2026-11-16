@@ -9,14 +9,16 @@
 //!               [--pin-senders a,b] [--pin-receiver c] [--node-cores i,c,e,r] [--spin]
 //!               [--combined] [--storage DIR] [--durability a|b]
 //!               [--cluster N] [--cluster-cores c1,c2,..] [--sleep-us U]
-//!               [--leader-cores i,c,e,repl] [--follower-cores c,repl,o/c,repl,o]
+//!               [--leader-cores i,c,e,repl[,store]] [--follower-cores c,repl,o[,store]/...]
 //!
 //! `--leader-cores`: node 1 gets shorter election timeouts (so it leads),
-//! spins, and pins ingress, core, egress and replication there; the other
+//! spins, and pins ingress, core, egress, replication (and optionally the
+//! storage stage) there; the other
 //! nodes sleep when idle, on `--cluster-cores` (indexed from node 2).
 //! `--follower-cores` instead makes the other nodes spin too, with the core
 //! stage on c, replication on repl, and ingress, egress and recovery
-//! (idle on a follower) sharing o; one triple per follower.
+//! (idle on a follower) sharing o, and optionally storage on its own core;
+//! one list per follower.
 //!
 //! `--cluster N` runs N replicated nodes in this process (storage under
 //! `--storage`, default a temporary directory) and sends to the leader;
@@ -124,7 +126,10 @@ fn parse() -> Args {
                     .split('/')
                     .map(|f| {
                         let c: Vec<usize> = f.split(',').map(|c| c.parse().unwrap()).collect();
-                        assert_eq!(c.len(), 3, "--follower-cores c,repl,o per follower");
+                        assert!(
+                            matches!(c.len(), 3 | 4),
+                            "--follower-cores c,repl,o[,store] per follower"
+                        );
                         c
                     })
                     .collect()
@@ -202,7 +207,19 @@ fn sender(
     let mut payload = vec![0u8; payload_len];
     let mut submitted = 0u64;
     let feed_target = if feed_sock.is_some() { count } else { 0 };
+    // Feed datagrams lost on the way (the generator does not recover them)
+    // would otherwise keep it waiting forever; the run is then INVALID.
+    let mut drain_until: Option<Instant> = None;
     while out.events < count || out.feed_got < feed_target {
+        if submitted == count && out.events == count {
+            let d = *drain_until.get_or_insert_with(|| {
+                out.elapsed = start.elapsed();
+                Instant::now() + Duration::from_secs(2)
+            });
+            if Instant::now() > d {
+                break;
+            }
+        }
         if let Some(fs) = &feed_sock {
             read_feed(fs, &mut rb, epoch, warmup, &mut out.feed, &mut out.feed_got);
         }
@@ -260,7 +277,9 @@ fn sender(
         }
         std::hint::spin_loop();
     }
-    out.elapsed = start.elapsed();
+    if drain_until.is_none() {
+        out.elapsed = start.elapsed();
+    }
     out
 }
 
@@ -312,6 +331,7 @@ fn main() {
             log: krusty_log::LogConfig::new(dir),
             durability: a.durability,
             snapshot_every: 1_000_000,
+            core: None,
         });
     }
     let mut followers = Vec::new();
@@ -338,6 +358,7 @@ fn main() {
                     log: krusty_log::LogConfig::new(base.join(id.to_string())),
                     durability: a.durability,
                     snapshot_every: 1_000_000,
+                    core: None,
                 });
                 let mut cl = krusty_node::ClusterConfig::new(id, members.clone());
                 if !a.leader_cores.is_empty() {
@@ -345,6 +366,9 @@ fn main() {
                         let lc = &a.leader_cores;
                         c.cores = [Some(lc[0]), Some(lc[1]), Some(lc[2]), None];
                         cl.core = lc.get(3).copied();
+                        if let Some(st) = &mut c.storage {
+                            st.core = lc.get(4).copied();
+                        }
                         c.idle = Idle::Spin;
                         cl.election_min_us = 20_000;
                         cl.election_max_us = 30_000;
@@ -352,6 +376,9 @@ fn main() {
                         c.idle = Idle::Spin;
                         c.cores = [Some(fc[2]), Some(fc[0]), Some(fc[2]), Some(fc[2])];
                         cl.core = Some(fc[1]);
+                        if let Some(st) = &mut c.storage {
+                            st.core = fc.get(3).copied();
+                        }
                     } else {
                         c.idle = Idle::Sleep {
                             sleep_us: a.sleep_us.unwrap_or(50),

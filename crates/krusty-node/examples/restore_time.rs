@@ -26,6 +26,7 @@ fn main() {
         log: LogConfig::new(&dir),
         durability: Durability::Async,
         snapshot_every: u64::MAX,
+        core: None,
     };
     cfg.storage = Some(st.clone());
 

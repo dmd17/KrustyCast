@@ -33,6 +33,7 @@ fn node_cfg(dir: &Path, feed: SocketAddrV4, durability: Durability) -> NodeConfi
         },
         durability,
         snapshot_every: 700, // last snapshot at 1400: a restart replays 600 entries
+        core: None,
     });
     cfg
 }

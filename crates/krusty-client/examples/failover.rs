@@ -61,6 +61,7 @@ fn main() {
                 log: krusty_log::LogConfig::new(base.join(id.to_string())),
                 durability,
                 snapshot_every: 100_000,
+                core: None,
             });
             let mut cl = ClusterConfig::new(id, repl.clone());
             // FAILOVER_CORES=2,3,4: all of node k's stages share core k.

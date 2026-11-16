@@ -119,6 +119,7 @@ fn a_late_consumer_replays_the_session_from_disk() {
         log: krusty_log::LogConfig::new(&dir),
         durability: Durability::Async,
         snapshot_every: 1_000_000,
+        core: None,
     });
     let node = krusty_node::start(cfg).unwrap();
     publish(&node, 1, 2000);

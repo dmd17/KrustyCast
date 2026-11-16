@@ -340,14 +340,66 @@ krusty-load --rate 10000 --duration 5 --warmup 1 --spin --combined --pin-senders
   nodes share one consumer NVMe, which serializes cache flushes, and a
   commit needs the leader's fsync and a follower's. On separate servers
   they flush in parallel.
-- **The storage stage cannot be pinned**, and it uses the node's idle
-  policy, so on a spinning node it spins on whatever core the scheduler
-  picks. On the servers it should get a core slot (or sleep when the rest
-  spin).
-- The M3 exit criterion (NFR-1–5 on a 3-node cluster) needs the servers.
-  Here, p50 meets NFR-1 (≤ 40 µs) at 10 000–50 000 msg/s and p99 is near
-  NFR-2 (≤ 80 µs); the tails do not meet NFR-3 or NFR-4, and NFR-5
-  (1 M msg/s) is far out of reach on this machine.
+- The storage stage could not be pinned then; it now takes a core
+  (`[storage] core`, see below).
+
+### nuc2 with isolated cores, 2026-11-16
+
+The same machine with nothing else running and its cores isolated at
+run time, without a reboot: every systemd slice, every movable IRQ and
+the unbound workqueues on CPUs 0 and 8 (one physical core), and the
+benchmark in a slice of its own on 1–7 and 9–15 (`systemd-run --scope
+--slice=bench.slice -p AllowedCPUs=1-7,9-15`), with the `performance`
+governor. The NVMe queue interrupts stay per CPU, so each storage stage
+takes its own completions. The kernel tick still runs everywhere (no
+`nohz_full`). osnoise on an idle isolated CPU: at most 38 µs of noise
+at once, about 0.9% of the CPU, nothing at millisecond scale.
+
+Layout (CPU n and n+8 are one physical core): leader ingress 1, core 2,
+egress 3, replication 4, storage 12; follower A core 5, replication 13,
+idle stages and storage 10; follower B 6, 14, 11; generator 7.
+
+```
+krusty-load --rate 75000 --duration 600 --warmup 5 --spin --combined --pin-senders 7 \
+    --cluster 3 --leader-cores 1,2,3,4,12 --follower-cores 5,13,10,10/6,14,11,11 \
+    --storage DIR --durability a
+```
+
+Maximum sustained rate: 150 000 msg/s (p99 94 µs to ACCEPTED); at
+160 000 the generator falls behind and latency climbs to milliseconds;
+200 000 achieves 167 000. The PRD measures at half the maximum, so
+75 000 msg/s, 64 B payloads, mode (a), for 10 minutes (45.4 M messages,
+none lost, one leader term):
+
+| Run | p50 | p90 | p99 | p99.9 | p99.99 | max |
+|---|---|---|---|---|---|---|
+| 1, to feed | 24.6 | 28.1 | 37.5 | 49.9 | 64.0 | 370 |
+| 2, to feed | 24.6 | 28.0 | 38.0 | 50.3 | 66.4 | 450 |
+| Target (NFR-1–4) | ≤ 40 | | ≤ 80 | | ≤ 200 | ≤ 1 000 |
+
+Shorter runs (10 s): 10 000 msg/s p50 25, p99 35, max 123; 50 000 msg/s
+p50 19–20, p99 47–49, max 115–166; 100 000 msg/s p50 26, p99 40–41, max
+118–130 (to ACCEPTED, µs).
+
+- **NFR-1–4 are met on a 3-node cluster**, over loopback on one machine.
+  Loopback has no NIC, switch or interrupt coalescing, so this
+  understates the servers' hops; it does put every node's stages, the
+  three storage stages and the generator on one 8-core machine.
+- **A 2 ms stall at entry 65 536.** Before the fix every run had exactly
+  one stall of about 2 ms (p99.99 1.0–1.4 ms, max 1.9–2.2 ms), at the
+  same message count at every rate (1–2 s in at 50 000 msg/s, 2–3 s at
+  25 000, inside the warm-up at 100 000). Raft keeps the last
+  `retain_entries` (65 536) committed entries in memory in a `VecDeque`,
+  which doubled and copied itself there on every node. The cluster shell
+  now reserves room for twice `retain_entries` at start
+  (`RaftLog::reserve`).
+- **NFR-5 (1 M msg/s) is not met.** 150 000 msg/s is one generator
+  thread and one ingress thread on this machine; 1 M needs several
+  ingress threads or Tier B, and several generator cores (M4).
+- **NFR-6 is met here too.** The failover example above, 100 trials,
+  each node's stages on one core (`FAILOVER_CORES=2,3,4`, without the
+  isolation): new messages on the feed p50 69.7 ms, p90 97.9 ms, max
+  164.1 ms; new leader p50 68.5 ms; no failed messages.
 
 ## Next
 

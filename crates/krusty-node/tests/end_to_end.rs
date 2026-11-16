@@ -185,6 +185,7 @@ fn with_storage_in_mode_b_still_no_allocation() {
         // Snapshots are rare, write files and may allocate: keep them out of
         // the measured window.
         snapshot_every: 1_000_000,
+        core: None,
     }));
     std::fs::remove_dir_all(&dir).unwrap();
 }

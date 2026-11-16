@@ -165,6 +165,7 @@ pub(crate) fn store_stage(
     stats: Arc<Metrics>,
     synced: Option<Arc<AtomicU64>>,
 ) {
+    crate::stages::pin(cfg.storage.as_ref().and_then(|s| s.core));
     // Entries (S_ENTRY records) received; after each fsync, `synced` (when
     // given: replication in mode b) says how many of them are durable.
     let mut entries = 0u64;

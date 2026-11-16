@@ -25,6 +25,7 @@
 //! snapshot_every = 1000000      # log entries between core snapshots
 //! segment_mib = 256
 //! retain_gib = 64               # whole segments beyond this are deleted (below a snapshot)
+//! core = 7                      # storage stage
 //!
 //! [mold]                        # optional MoldUDP64 adapter
 //! session = "KC20261114"
@@ -83,6 +84,7 @@ pub struct Storage {
     pub snapshot_every: Option<u64>,
     pub segment_mib: Option<u64>,
     pub retain_gib: Option<u64>,
+    pub core: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -184,6 +186,7 @@ impl FileConfig {
                 log,
                 durability,
                 snapshot_every: st.snapshot_every.unwrap_or(1_000_000),
+                core: st.core,
             });
         }
         if let Some(c) = &self.cluster {

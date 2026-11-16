@@ -139,6 +139,8 @@ pub(crate) fn restore(
     );
     log.reset_index_to(core.next_seqno());
     let mut rl = RaftLog::new(snap, snap_term);
+    // The window holds `retain_entries` plus those not yet compacted.
+    rl.reserve(2 * cl.retain_entries.min(1 << 24) as usize);
     let mut last_ts = 0;
     let mut data = Vec::new();
     let mut positions = VecDeque::new();

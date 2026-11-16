@@ -201,7 +201,11 @@ the M0 spikes.
 **M3: Replication and failover.**
 - Gaps R1–R3, Q3; Q1 complete, Q2 complete.
 - *Exit:*
-  - 3-node cluster meets NFR-1–6.
+  - 3-node cluster meets NFR-1–6. (NFR-1–4 and 6 met 2026-11-16 on one
+    8-core machine over loopback with isolated cores: 10-minute runs at
+    75 000 msg/s, p50 25 µs, p99 38 µs, p99.99 66 µs, max 450 µs;
+    failover max 164 ms of 100. NFR-5 is not: 150 000 msg/s maximum,
+    one ingress thread; BASELINE M3.)
   - Model checking and trace validation are green.
   - Nightly simulation with faults runs clean.
   - The core proof is checked in CI.
