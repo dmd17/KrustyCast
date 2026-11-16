@@ -1,0 +1,5 @@
+traces/
+mbt/target/
+mbt/Cargo.lock
+_apalache-out/
+tmp/

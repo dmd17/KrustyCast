@@ -1,0 +1,15 @@
+[package]
+name = "quint-mbt"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone (spikes are excluded from the workspace).
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
+krusty-core = { path = "../../../crates/krusty-core" }
+krusty-wire = { path = "../../../crates/krusty-wire" }
+serde_json = "1"
