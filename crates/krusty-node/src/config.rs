@@ -32,7 +32,7 @@
 //! feed = "239.1.1.2:7004"
 //! rerequest = "0.0.0.0:7003"
 //!
-//! [cluster]                     # optional replication (M3); needs [storage], mode "a"
+//! [cluster]                     # optional replication (M3); needs [storage]
 //! id = 1
 //! members = ["1@10.0.0.5:7100", "2@10.0.0.6:7100", "3@10.0.0.7:7100"]
 //! election_min_ms = 50

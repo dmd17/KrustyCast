@@ -1,4 +1,4 @@
-//! KrustyCast node (single node, in-memory).
+//! KrustyCast node: a single node or one cluster member, as configured.
 //!
 //!   krusty-node [--config node.toml]
 //!               [--ingress 0.0.0.0:7000] [--feed 239.1.1.1:7001] [--interface 10.0.0.5]
