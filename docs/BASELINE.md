@@ -603,7 +603,11 @@ the PRD's 1 M msg/s (NFR-5), not the cluster.
    control; ingress answers BUSY).
 5. *Resends were logged again while their original was being committed*:
    when commits are slower than the retry interval, 40 log entries per
-   message and goodput about 9 k msg/s. The leader now drops them.
+   message and goodput about 9 k msg/s. The leader now drops them. The
+   nightly simulation hit the same bug that morning from the other side
+   (`cluster3-harsh`: network delays near the retry interval, 5 of 1000
+   seeds livelocked); `krusty-sim`'s cluster shell has the same filter
+   now, and 4 x 8000 cluster seeds are clean.
 6. Metrics to see these: `cluster_loop_max_ns` (how long Raft went
    without a tick), `raft_pre_votes`, `raft_quorum_lost`,
    `submits_deferred`, `resends_filtered`.

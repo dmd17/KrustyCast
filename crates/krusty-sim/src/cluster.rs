@@ -115,6 +115,10 @@ struct Node {
     synced: u64,
     /// Mode (b): successful AppendReplies waiting for a sync.
     held: Vec<(NodeId, Message)>,
+    /// Leader: per (client, incarnation), the highest seqno proposed in
+    /// its term and that entry's (index, term); resends at or below it are
+    /// dropped while the entry is not applied (as krusty-node's leader).
+    proposed: HashMap<(u32, u64), (u64, u64, u64)>,
 }
 
 struct ClientState {
@@ -394,12 +398,26 @@ impl Sim<'_> {
                 return;
             }
             let node = &mut self.nodes[k];
+            let key = (s.client_id, s.incarnation);
+            let term = node.raft.as_ref().unwrap().term();
+            if let Some(&(seq, index, t)) = node.proposed.get(&key)
+                && t == term
+                && index > node.applied
+                && s.client_seqno <= seq
+            {
+                return; // already in the log; its outcome follows
+            }
             node.last_ts = node.last_ts.max(self.now);
             let mut entry = node.last_ts.to_le_bytes().to_vec();
             entry.extend_from_slice(bytes);
             let mut out = Outbox::default();
             let raft = node.raft.as_mut().unwrap();
-            raft.propose(&entry, &mut out);
+            let i = raft.propose(&entry, &mut out).expect("the leader proposes");
+            let e = node.proposed.entry(key).or_insert((0, 0, 0));
+            if e.2 != term || s.client_seqno >= e.0 {
+                *e = (s.client_seqno, i, term);
+            }
+            let raft = node.raft.as_mut().unwrap();
             raft.replicate(&mut out, false);
             self.after_step(k, out);
             return;
@@ -455,6 +473,7 @@ pub fn run_cluster(seed: u64, p: &ClusterParams) -> Report {
                 last_heartbeat: 0,
                 synced: 0,
                 held: Vec::new(),
+                proposed: HashMap::new(),
             })
             .collect(),
         report: Report::default(),
@@ -550,6 +569,7 @@ pub fn run_cluster(seed: u64, p: &ClusterParams) -> Report {
                 // commit index becomes known again.
                 node.core = Core::new(p.core);
                 node.applied = 0;
+                node.proposed.clear();
                 node.core_index = 0;
                 node.history.clear();
             }
@@ -891,6 +911,23 @@ mod tests {
     fn harsh_cluster_scenario_is_clean() {
         let p = cluster_scenario("cluster3-harsh").unwrap();
         for seed in 0..4 {
+            let r = simulate(seed, &p);
+            assert!(
+                r.violations.is_empty(),
+                "seed {seed}: {:?}",
+                &r.violations[..r.violations.len().min(8)]
+            );
+        }
+    }
+
+    /// The 2026-11-17 nightly's failing seeds: with delays near the retry
+    /// interval, the leader logged every resend again and the cluster
+    /// livelocked (over 20 000 datagrams in flight). It now drops resends
+    /// of entries it has not yet applied.
+    #[test]
+    fn resends_do_not_livelock_the_harsh_scenario() {
+        let p = cluster_scenario("cluster3-harsh").unwrap();
+        for seed in [20774051, 20774272, 20774516, 20774592, 20774996] {
             let r = simulate(seed, &p);
             assert!(
                 r.violations.is_empty(),
