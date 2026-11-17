@@ -218,6 +218,20 @@ pub struct Raft {
     transfer: Option<Transfer>,
     rng: u64,
     scratch: Vec<u64>,
+    events: Events,
+}
+
+/// Counts of this node's elections and step-downs since it started, for
+/// metrics: an election under steady load means some node went quiet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Events {
+    /// Election timeouts: pre-votes this node started.
+    pub pre_votes: u64,
+    /// Elections (pre-vote won, or a leadership transfer's TimeoutNow).
+    pub elections: u64,
+    /// Times this node, as leader, stepped down because a majority of its
+    /// peers had gone quiet for an election timeout (check-quorum).
+    pub quorum_lost: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -275,6 +289,7 @@ impl Raft {
             transfer: None,
             rng,
             scratch: Vec::with_capacity(16),
+            events: Events::default(),
         };
         r.reset_election_timer();
         r
@@ -286,6 +301,10 @@ impl Raft {
 
     pub fn role(&self) -> Role {
         self.role
+    }
+
+    pub fn events(&self) -> Events {
+        self.events
     }
 
     pub fn term(&self) -> u64 {
@@ -354,6 +373,16 @@ impl Raft {
         last_term > my_term || (last_term == my_term && last_index >= self.log.last_index())
     }
 
+    /// Moves the clock to `now` without acting on it (no elections, no
+    /// heartbeats). Call it before handing over messages that may have
+    /// waited, so they count as heard now: messages stamped with the time
+    /// of the last tick make a peer look silent for as long as this node
+    /// was not running, and the next tick then starts an election (or a
+    /// leader steps down) although the peers were answering all along.
+    pub fn advance_clock(&mut self, now: u64) {
+        self.now = now.max(self.now);
+    }
+
     /// Advances time: elections, heartbeats, check-quorum.
     pub fn tick(&mut self, now: u64, out: &mut Outbox) {
         self.now = now.max(self.now);
@@ -370,6 +399,7 @@ impl Raft {
                     .filter(|p| self.now - p.heard_at < self.cfg.election_min_ns)
                     .count();
                 if heard < self.cfg.quorum() {
+                    self.events.quorum_lost += 1;
                     let term = self.hs.term;
                     self.become_follower(term, None, out);
                     self.reset_election_timer();
@@ -387,6 +417,7 @@ impl Raft {
     }
 
     fn start_pre_vote(&mut self, out: &mut Outbox) {
+        self.events.pre_votes += 1;
         self.role = Role::PreCandidate;
         self.leader = None;
         for p in &mut self.peers {
@@ -408,6 +439,7 @@ impl Raft {
     }
 
     fn start_election(&mut self, out: &mut Outbox) {
+        self.events.elections += 1;
         self.role = Role::Candidate;
         self.hs = HardState {
             term: self.hs.term + 1,
