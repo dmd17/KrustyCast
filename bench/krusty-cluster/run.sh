@@ -61,8 +61,9 @@ echo "udp drops before:$(drops)"
 # LOAD (default: one sender on 7 that also reads the feed); e.g. two
 # sessions on one physical core: LOAD="--senders 2 --combined --pin-senders 7,15".
 taskset -c "$HOUSE" "$BIN/krusty-load" --connect 127.0.0.1:27001 --feed-bind 127.0.0.1:27900 \
-  --rate "$RATE" --duration "$SECS" --warmup "$WARM" --spin ${LOAD:---combined --pin-senders 7} \
-  && rc=0 || rc=$?
+  --rate "$RATE" --duration "$SECS" --warmup "$WARM" --spin ${LOAD:---combined --pin-senders 7} &
+pids+=($!)   # stopped with the nodes if this script is
+wait $! && rc=0 || rc=$?
 echo "udp drops after:$(drops)"
 for n in 1 2 3; do "$BIN/krusty-stat" --file /dev/shm/kb-krusty-node$n.stats; done
 exit $rc

@@ -422,6 +422,7 @@ On the leader's instruction every node, at the same log entry:
 | `recovered_from_disk` | `krusty-stat` | Consumers recovering old data. |
 | `mold_lost` | `krusty-stat` | The Mold adapter fell behind the history. |
 | `raft_pre_votes`, `raft_elections`, `raft_quorum_lost` | `krusty-stat` | Elections this node started, and step-downs as leader because a majority went quiet. Rising under steady load: some node stopped answering (look at its `cluster_loop_max_ns`). |
+| `submits_deferred` | `krusty-stat` | Passes in which the leader left new submits waiting because storage or egress was behind (admission control: publishers then get BUSY). Rising: the node is at capacity. |
 | `cluster_loop_max_ns`, `cluster_loop` | `krusty-stat` | The longest pass of the Raft thread, and their distribution. Passes near the election timeout (50 ms by default) cost leadership; long ones mean the thread waited on a full ring, usually storage behind a slow disk. |
 
 ## 8. Tuning for latency
@@ -454,7 +455,7 @@ microseconds; it is fine for most non-trading uses.
 `krusty-load` is an open-loop load generator: each message is due at a
 scheduled time and latency is measured from then, so stalls count (no
 coordinated omission). A run is INVALID (exit 1) if the generator fell
-behind, anything was lost, or nothing came back for 5 s (STALLED, e.g. a
+behind, anything was lost, or there was no progress for 5 s (STALLED, e.g. a
 leader change: the generator does not follow the leader). It reports each
 sender's busy fraction; near 100% means the generator, not the node, set
 the pace.

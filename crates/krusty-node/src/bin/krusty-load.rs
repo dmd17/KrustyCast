@@ -4,7 +4,7 @@
 //! latency is measured from each message's *scheduled* time (no coordinated
 //! omission) to (a) its arrival on the feed and (b) its ACCEPTED. A run is
 //! INVALID (exit 1) if the generator could not keep up, anything was lost,
-//! or nothing came back for 5 s with messages outstanding (STALLED: say,
+//! or there was no progress for 5 s with messages outstanding (STALLED: say,
 //! the leader changed; the generator does not follow it).
 //!
 //!   krusty-load [--rate N] [--duration S] [--warmup S] [--senders K] [--payload B]
@@ -12,7 +12,7 @@
 //!               [--combined] [--storage DIR] [--durability a|b]
 //!               [--cluster N] [--cluster-cores c1,c2,..] [--sleep-us U]
 //!               [--leader-cores i,c,e,repl[,store]] [--follower-cores c,repl,o[,store]/...]
-//!               [--connect INGRESS --feed-bind ADDR]
+//!               [--connect INGRESS --feed-bind ADDR] [--window W]
 //!
 //! `--leader-cores`: node 1 gets shorter election timeouts (so it leads),
 //! spins, and pins ingress, core, egress, replication (and optionally the
@@ -31,6 +31,11 @@
 //! process instead of starting one, and reads its feed on `--feed-bind`
 //! (the address in that node's `feed` setting); the node options are then
 //! ignored.
+//!
+//! `--window`: messages each session may have unanswered (default 64; a
+//! node's `outcome_ring` must be at least this). In-flight messages are at
+//! most senders x window, so throughput is at most that over the latency:
+//! with mode (b)'s millisecond fsyncs, 2 x 64 caps it near 70 k msg/s.
 //!
 //! `--combined`: sender 0 also reads the feed (all of it) in its own loop,
 //! instead of a separate receiver thread. Each sender reports its busy
@@ -76,6 +81,7 @@ struct Args {
     warmup: u64,
     senders: u64,
     payload: usize,
+    window: usize,
     pin_senders: Vec<usize>,
     pin_receiver: Option<usize>,
     node_cores: [Option<usize>; 4],
@@ -99,6 +105,7 @@ fn parse() -> Args {
         warmup: 1,
         senders: 1,
         payload: 64,
+        window: 64,
         pin_senders: Vec::new(),
         pin_receiver: None,
         node_cores: [None; 4],
@@ -123,6 +130,7 @@ fn parse() -> Args {
             "--warmup" => a.warmup = v().parse().unwrap(),
             "--senders" => a.senders = v().parse().unwrap(),
             "--payload" => a.payload = v().parse().unwrap(),
+            "--window" => a.window = v().parse().unwrap(),
             "--pin-senders" => a.pin_senders = v().split(',').map(|c| c.parse().unwrap()).collect(),
             "--pin-receiver" => a.pin_receiver = Some(v().parse().unwrap()),
             "--node-cores" => {
@@ -182,12 +190,13 @@ struct SenderOut {
     /// feedback or feed), against `elapsed`: the thread's headroom, which
     /// a spinning thread's CPU time does not show.
     busy: Duration,
-    /// Nothing came back for `STALL_AFTER` with messages outstanding (the
+    /// No progress (no outcome, nothing new on the feed) for `STALL_AFTER`
+    /// with messages outstanding (the
     /// leader changed, or the cluster stopped): the sender gave up.
     stalled: bool,
 }
 
-/// How long a sender waits without any feedback or feed before it gives up.
+/// How long a sender waits without progress (outcomes, feed) before it gives up.
 const STALL_AFTER: Duration = Duration::from_secs(5);
 
 #[allow(clippy::too_many_arguments)]
@@ -203,6 +212,7 @@ fn sender(
     core: Option<usize>,
     feed_sock: Option<UdpSocket>,
     feed_target: u64,
+    window: usize,
 ) -> SenderOut {
     pin(core);
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -211,7 +221,7 @@ fn sender(
     let mut session = Session::new(
         SessionConfig {
             client_id: k as u32 + 1,
-            window: 64,
+            window,
             retry_interval_ns: 5_000_000,
             max_attempts: 1000,
         },
@@ -237,6 +247,7 @@ fn sender(
     let mut payload = vec![0u8; payload_len];
     let mut submitted = 0u64;
     let mut feed_seen = 0u64;
+    let mut events_seen = 0u64;
     let feed_target = if feed_sock.is_some() { feed_target } else { 0 };
     // Feed datagrams lost on the way (the generator does not recover them)
     // would otherwise keep it waiting forever; the run is then INVALID.
@@ -314,9 +325,12 @@ fn sender(
         if work > 0 && drain_until.is_none() {
             out.busy += iter_start.elapsed();
         }
-        if n > 0 || out.feed_got > feed_seen {
+        // Progress, not datagrams: NOT_LEADER and BUSY answers keep coming
+        // after a leader change.
+        if out.events > events_seen || out.feed_got > feed_seen {
             last_heard = Instant::now();
             feed_seen = out.feed_got;
+            events_seen = out.events;
         } else if drain_until.is_none()
             && session.in_flight() > 0
             && last_heard.elapsed() > STALL_AFTER
@@ -374,7 +388,7 @@ fn main() {
     } else if let Some(us) = a.sleep_us {
         cfg.idle = Idle::Sleep { sleep_us: us };
     }
-    cfg.core.outcome_ring = 64;
+    cfg.core.outcome_ring = a.window.max(64);
     if let Some(dir) = &a.storage {
         let _ = std::fs::remove_dir_all(dir); // a fresh log per run
         cfg.storage = Some(krusty_node::StorageConfig {
@@ -534,6 +548,7 @@ fn main() {
                     core,
                     fs,
                     total,
+                    a.window,
                 )
             })
         })
@@ -611,7 +626,7 @@ fn main() {
     );
     if stalled {
         println!(
-            "STALLED: nothing came back for {} s with messages outstanding (did the leader change?)",
+            "STALLED: no progress for {} s with messages outstanding (did the leader change?)",
             STALL_AFTER.as_secs()
         );
     }

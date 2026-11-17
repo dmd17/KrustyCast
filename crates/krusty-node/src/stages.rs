@@ -636,6 +636,14 @@ impl Out {
         });
     }
 
+    /// Whether rings B and S both have a quarter of their capacity free:
+    /// room for whatever one more batch of submits produces, so the core
+    /// never has to wait on a ring for new work (it would stop ticking).
+    pub(crate) fn has_headroom(&mut self) -> bool {
+        let ok = |p: &mut Producer| p.free() >= p.capacity() / 4;
+        ok(&mut self.b) && self.s.as_mut().is_none_or(ok)
+    }
+
     pub(crate) fn publish(&mut self) {
         self.b.publish();
         if let Some(s) = self.s.as_mut() {

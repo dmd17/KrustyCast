@@ -741,7 +741,16 @@ pub(crate) fn cluster_core_stage(
         // stamps would make answering peers look silent (BASELINE E3).
         sh.raft.advance_clock(batch_start);
         let mut work = peers_in.read(cfg.batch, |_, rec| sh.on_peer(rec));
-        work += input.read(cfg.batch, |_, rec| sh.on_submit(rec, batch_start));
+        // Admission control: take new submits only while the output rings
+        // have room for what they produce. Otherwise leave them in ring A
+        // (ingress answers BUSY when it fills) and keep ticking: waiting on
+        // a full ring here stopped Raft for 150 ms under overload in mode
+        // (b) and cost the leader its term (BASELINE E3).
+        if sh.out.has_headroom() && sh.peers.free() >= sh.peers.capacity() / 4 {
+            work += input.read(cfg.batch, |_, rec| sh.on_submit(rec, batch_start));
+        } else {
+            stats.submits_deferred.fetch_add(1, Ordering::Relaxed);
+        }
         if sh.proposals > 0 {
             sh.proposals = 0;
             sh.raft.replicate(&mut sh.ob, false);

@@ -144,6 +144,18 @@ impl Producer {
         true
     }
 
+    /// Bytes free now (written records count as used until consumed), and
+    /// the ring's capacity: for admission control, so a producer can stop
+    /// taking new work before it would have to wait.
+    pub fn free(&mut self) -> usize {
+        self.cached_head = self.shared.head.load(Ordering::Acquire);
+        (self.shared.cap() - (self.tail - self.cached_head)) as usize
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.shared.cap() as usize
+    }
+
     /// Makes everything written so far visible to the consumer.
     pub fn publish(&mut self) {
         self.shared.tail.store(self.tail, Ordering::Release);

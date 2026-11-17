@@ -39,11 +39,16 @@ HOUSE=${HOUSE:-0,8}
 JVM_BASE="-Xms1G -Xmx1G -XX:GuaranteedSafepointInterval=0 ${JVM_EXTRA:-}"
 X=${EXTRA_PROPS:-}
 LOGS=/var/tmp/krusty-aeron-bench/logs
-rm -rf /var/tmp/krusty-aeron-bench/node0 /var/tmp/krusty-aeron-bench/node1 /var/tmp/krusty-aeron-bench/node2
+# Cluster and archive data on disk, or with TMPFS=1 in /dev/shm (no disk on
+# the commit path, the counterpart of KrustyCast's logs on tmpfs).
+DATA=/var/tmp/krusty-aeron-bench
+[ -n "${TMPFS:-}" ] && DATA=/dev/shm/kb-aeron-data
+rm -rf /var/tmp/krusty-aeron-bench/node0 /var/tmp/krusty-aeron-bench/node1 /var/tmp/krusty-aeron-bench/node2 \
+  /dev/shm/kb-aeron-data
 mkdir -p $LOGS /var/tmp/krusty-aeron-bench/results
 pids=()
 cleanup() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done; wait 2>/dev/null || true; }
-trap cleanup EXIT
+trap 'cleanup; rm -rf /dev/shm/kb-aeron-data' EXIT
 
 start() { # name script props... (JVM options in OPTS)
   local name=$1 script=$2; shift 2
@@ -72,7 +77,7 @@ start md1 media-driver $C $HERE/node1.properties
 start md2 media-driver $C $HERE/node2.properties
 start mdc media-driver $C $HERE/client.properties
 for n in 0 1 2; do
-  D=/var/tmp/krusty-aeron-bench/node$n
+  D=$DATA/node$n
   OPTS="-Daeron.cluster.dir=$D/cluster -Daeron.archive.dir=$D/archive" \
     start node$n cluster-node $C $HERE/node$n.properties
 done
