@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAGIC: u64 = 0x5354_4154_534B_434B; // "KCKSTATS"
-pub const LAYOUT_VERSION: u64 = 8;
+pub const LAYOUT_VERSION: u64 = 9;
 pub const BUCKETS: usize = 64;
 
 /// log2 histogram: bucket `b` counts values in `[2^(b-1), 2^b)` ns (bucket 0: 0).
@@ -128,6 +128,7 @@ counters! {
     raft_pre_votes: "Election timeouts: pre-votes this node started.",
     raft_elections: "Elections this node started (pre-vote won, or a transfer).",
     raft_quorum_lost: "Times this node stepped down as leader: a majority went quiet (check-quorum).",
+    resends_filtered: "Resends the leader dropped: already in the log, not yet committed (their outcome follows).",
     submits_deferred: "Passes in which the cluster core left submits waiting: its output rings were too full (storage or egress behind).",
     cluster_loop_max_ns: "Gauge: the longest pass of the cluster core loop (ns): how long Raft went without ticks.",
 }

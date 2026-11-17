@@ -311,6 +311,37 @@ fn followers_redirect_clients_and_apply_the_same_log() {
     }
 }
 
+/// Mode (b) with a publisher that retries every 50 µs, far inside the
+/// commit latency (an fsync on two nodes): resends of messages still being
+/// committed are not logged again, so the log holds about one entry per
+/// message instead of dozens (BASELINE E3: the copies collapsed goodput).
+#[test]
+fn resends_of_messages_being_committed_are_not_logged_again() {
+    let c = Cluster::new(3, "resend", Durability::Sync);
+    let leader = c.wait_leader(Duration::from_secs(5));
+    let mut pcfg = PublisherConfig::new(9, c.ingress());
+    pcfg.retry_interval_ns = 50_000;
+    pcfg.max_attempts = 1_000_000;
+    let mut p = Publisher::new(pcfg).unwrap();
+    let n = 2000;
+    let (a, _) = publish(&mut p, 1, n + 1, || {});
+    assert_eq!(a.len() as u64, n);
+    let stat = |k: usize, f: fn(&krusty_node::metrics::Shared) -> u64| {
+        f(&c.nodes[k].as_ref().unwrap().stats)
+    };
+    let filtered: u64 = (0..3)
+        .map(|k| stat(k, |s| s.resends_filtered.load(Ordering::Relaxed)))
+        .sum();
+    assert!(filtered > 0, "no resend was filtered");
+    // Entries applied: the messages, a no-op per term, and the few resends
+    // that arrive after their original was applied (before its outcome).
+    let applied = stat(leader, |s| s.applied.load(Ordering::Relaxed));
+    assert!(
+        applied < n + n / 2,
+        "{applied} log entries for {n} messages ({filtered} resends filtered)"
+    );
+}
+
 /// `krusty-admin`'s endpoint: every node reports the same leader and,
 /// once idle, the same commit and apply progress; a snapshot on request.
 #[test]

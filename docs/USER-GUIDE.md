@@ -273,7 +273,9 @@ loop {
   cluster's `outcome_ring`.
 - **Retries** are automatic: a message is resent every `retry_interval_ns`
   (20 ms) until it has an outcome, up to `max_attempts` (50). A resend is
-  never sequenced twice.
+  never sequenced twice; while the original is still being committed, the
+  leader drops it (`resends_filtered`), so retries do not multiply the log
+  when commits are slower than the retry interval.
 - **Failover** is automatic: the publisher follows NOT_LEADER to the named
   leader, or moves to the next node after `failover_ns` (60 ms) of silence.
 - **`Failed`** means the fate is unknown: the message may or may not have
@@ -422,6 +424,7 @@ On the leader's instruction every node, at the same log entry:
 | `recovered_from_disk` | `krusty-stat` | Consumers recovering old data. |
 | `mold_lost` | `krusty-stat` | The Mold adapter fell behind the history. |
 | `raft_pre_votes`, `raft_elections`, `raft_quorum_lost` | `krusty-stat` | Elections this node started, and step-downs as leader because a majority went quiet. Rising under steady load: some node stopped answering (look at its `cluster_loop_max_ns`). |
+| `resends_filtered` | `krusty-stat` | Resends the leader dropped because the original is still being committed. High: commits are slower than clients' retry interval (mode b on slow disks, overload). |
 | `submits_deferred` | `krusty-stat` | Passes in which the leader left new submits waiting because storage or egress was behind (admission control: publishers then get BUSY). Rising: the node is at capacity. |
 | `cluster_loop_max_ns`, `cluster_loop` | `krusty-stat` | The longest pass of the Raft thread, and their distribution. Passes near the election timeout (50 ms by default) cost leadership; long ones mean the thread waited on a full ring, usually storage behind a slow disk. |
 
