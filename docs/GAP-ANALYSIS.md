@@ -137,7 +137,7 @@ IDs here are gap IDs; the PRD column names the assurance requirement each one cl
 |---|---|---|---|---|---|
 | E1 | **Done:** `krusty-load` (open loop, HDR histograms, CO-correct latency, single node and in-process cluster) replaced the prototype's `loadgen` (2026-11-14); results in `docs/BASELINE.md` | Open-loop load generator; coordinated-omission-correct histograms; submit-to-feed round trip (PRD §7) | P | M | M0 |
 | E2 | No reference hardware. Found on the laptop: multicast via the default route went over Wi-Fi and capped the node near 5–10 k msg/s | Defined reference setup; tuning guide (isolated cores, IRQ affinity, busy-poll) | P | S | M0 |
-| E3 | No comparison | Aeron Cluster baseline on the same hardware and workload | P | M | M0 / M4 |
+| E3 | **Done on nuc2 2026-11-17** (BASELINE.md E3; reference servers still to do): Aeron Cluster 1.54 and KrustyCast, three nodes each, same CPUs and client CPUs, matched durability. KrustyCast is faster at every percentile (10 min at 75 k without disk: p99 39 against 67 µs, p99.99 62 against 95) in 370 MB against 2-10 GB; Aeron carries about twice the throughput per client CPU (it batches; KrustyCast sends a datagram per message). The comparison found and fixed five cluster bugs (fsync per 128 entries, rollover stalls, stale Raft clock, Raft stopping under overload, resends logged again). Was: no comparison | Aeron Cluster baseline on the same hardware and workload | P | M | M0 / M4 |
 
 ### 3.9 Operations and security
 
@@ -219,8 +219,11 @@ the M0 spikes.
 **M4: Hardening and release.**
 - Gaps P6 (Tier B), K5, O3, Q8, E3 (final comparison), D1 (user guide),
   O4 (if pulled forward).
-- Carried from M3: NFR-5 (1 M msg/s needs several ingress threads or
-  Tier B); a proof that snapshot restore yields the core invariant.
+- Carried from M3: NFR-5 (1 M msg/s); a proof that snapshot restore
+  yields the core invariant. E3 showed the cluster sustains 250 k msg/s
+  in mode (a) with two client threads saturated: the next step to NFR-5
+  is batching submits and feedback (several per datagram), then more
+  ingress capacity or Tier B.
 - *Exit:* the PRD §10 release criteria.
 
 The verification track runs alongside from M0. It blocks a release only at

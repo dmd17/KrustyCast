@@ -369,7 +369,9 @@ krusty-load --rate 75000 --duration 600 --warmup 5 --spin --combined --pin-sende
 
 Maximum sustained rate: 150 000 msg/s (p99 94 µs to ACCEPTED); at
 160 000 the generator falls behind and latency climbs to milliseconds;
-200 000 achieves 167 000. The PRD measures at half the maximum, so
+200 000 achieves 167 000. *(Correction, E3: the cluster, not the
+generator, set this ceiling: the storage stage fsynced every 128 entries.
+Fixed; see E3 below.)* The PRD measures at half the maximum, so
 75 000 msg/s, 64 B payloads, mode (a), for 10 minutes (45.4 M messages,
 none lost, one leader term):
 
@@ -398,10 +400,229 @@ p50 19–20, p99 47–49, max 115–166; 100 000 msg/s p50 26, p99 40–41, max
 - **NFR-5 (1 M msg/s) is not met.** 150 000 msg/s is one generator
   thread and one ingress thread on this machine; 1 M needs several
   ingress threads or Tier B, and several generator cores (M4).
+  *(Correction, E3: the limit was the storage stage's fsync per 128
+  entries, not the generator or ingress. With group commit the same
+  cluster sustains 250 000 msg/s in mode (a), where two generator
+  threads saturate.)*
 - **NFR-6 is met here too.** The failover example above, 100 trials,
   each node's stages on one core (`FAILOVER_CORES=2,3,4`, without the
   isolation): new messages on the feed p50 69.7 ms, p90 97.9 ms, max
   164.1 ms; new leader p50 68.5 ms; no failed messages.
+
+## E3: Aeron Cluster on the same machine, 2026-11-17
+
+The gap analysis's E3: Aeron Cluster (1.54.0, the aeron-io/benchmarks
+suite's echo service and open-loop client) and KrustyCast, three nodes
+each, on this machine (nuc2: 8 cores, 16 threads, 64 GB, one consumer
+NVMe), isolated as in M3 (housekeeping on CPUs 0 and 8, the `performance`
+governor). Loopback only; 64-byte payloads; open loop, latency from each
+message's scheduled send time. Aeron's round trip (client, leader,
+replication to a majority, the service, egress, client) is KrustyCast's
+"to ACCEPTED". Harness: `bench/aeron-cluster/run.sh` and
+`bench/krusty-cluster/run.sh` (each node its own process; the client in a
+fourth); results and scripts under `/var/tmp/krusty-aeron-bench/` on nuc2.
+
+**Layout** (CPU n and n+8 are one physical core). Both clusters have the
+same CPUs, and **both clients get the same two, 7 and 15**:
+
+| | Aeron Cluster | KrustyCast |
+|---|---|---|
+| Leader | driver receiver 1, sender 2; consensus 3, archive 4, service 12 | ingress 1, core 2, egress 3, replication 4, storage 12, recovery 9 |
+| Follower | driver 5 or 6; consensus 13 or 14; archive 10 or 11; services share 9 | core 5 or 6, replication 13 or 14, the rest (and storage) 10 or 11 |
+| Client | media driver 7, load client 15 | two sessions, 7 and 15 (the first also reads the feed) |
+| Unpinned | each JVM's own threads (JIT, GC, conductors) on 0 and 8 | nothing |
+
+**Matched durability**, paired by what a commit waits on (the middle row
+is the closest pair, not an equal one):
+
+| | Aeron Cluster | KrustyCast |
+|---|---|---|
+| No disk on the commit path | cluster and archive data on tmpfs | logs on tmpfs |
+| Disk, no fsync before commit | archive on disk, `file.sync.level=0` (writes on the commit path) | mode (a) on disk (storage off the commit path) |
+| fsync before commit | archive `file.sync.level=1` (fsync per recorded block) | mode (b): publish after the group's fsync, on two nodes |
+
+### Results
+
+10 minutes at 75 000 msg/s (µs):
+
+| System, storage | p50 | p90 | p99 | p99.9 | p99.99 | max |
+|---|---|---|---|---|---|---|
+| Aeron, tmpfs | 41.0 | 59.2 | 66.7 | 78.8 | 94.5 | 4,202 |
+| Aeron, disk, sync 0 | 45.4 | 59.9 | 67.8 | 167 | 9,675 | 20 ms |
+| KrustyCast, tmpfs | 26.9 | 35.9 | 39.1 | 42.8 | 61.5 | 253 |
+| KrustyCast, mode (a), disk | 25.8 | 35.1 | 39.9 | 45.2 | 52.3 | 422 |
+
+60-second runs (10 s warm-up), µs; "Senders busy" is the share of each
+KrustyCast client thread's time spent working (near 100%: the client, not
+the cluster, sets the pace).
+
+**Aeron, data on tmpfs**
+
+| Offered | Achieved | p50 | p90 | p99 | p99.9 | p99.99 | max | Senders busy |
+|---|---|---|---|---|---|---|---|---|
+| 10k | as offered | 35.1 | 40.9 | 52.7 | 59.5 | 2,544 | 4,985 | |
+| 50k | as offered | 40.9 | 47.8 | 66.0 | 71.4 | 122 | 3,783 | |
+| 75k | as offered | 42.0 | 59.9 | 72.3 | 82.1 | 1,532 | 4,143 | |
+| 100k | as offered | 45.6 | 58.8 | 70.5 | 77.4 | 1,417 | 3,797 | |
+| 150k | as offered | 45.6 | 59.4 | 72.3 | 79.9 | 3,021 | 4,215 | |
+| 200k | as offered | 45.9 | 61.0 | 71.8 | 84.6 | 3,273 | 4,354 | |
+| 300k | as offered | 49.0 | 64.4 | 77.1 | 88.8 | 2,906 | 4,710 | |
+| 400k | as offered | 50.8 | 65.6 | 78.2 | 108 | 2,929 | 3,822 | |
+| 500k | as offered | 57.4 | 71.8 | 84.5 | 1,220 | 3,695 | 4,037 | |
+| 750k | 587,011 (fell behind) | seconds | | | | | | |
+
+**KrustyCast, logs on tmpfs**
+
+| Offered | Achieved | p50 | p90 | p99 | p99.9 | p99.99 | max | Senders busy |
+|---|---|---|---|---|---|---|---|---|
+| 10k | 10,000 | 26.4 | 28.9 | 33.3 | 70.3 | 124 | 140 | 9%, 5% |
+| 50k | 50,000 | 25.7 | 27.6 | 29.4 | 31.6 | 49.8 | 182 | 44%, 23% |
+| 75k | 75,000 | 26.6 | 35.6 | 38.6 | 42.6 | 62.5 | 126 | 60%, 35% |
+| 100k | 100,000 | 32.4 | 35.1 | 38.0 | 49.0 | 59.1 | 193 | 78%, 45% |
+| 150k | 150,000 | 130 | 147 | 160 | 170 | 175 | 209 | 79%, 64% |
+| 200k | 200,000 | 150 | 171 | 189 | 192 | 201 | 256 | 96%, 81% |
+| 250k | 250,000 | 173 | 190 | 205 | 217 | 232 | 450 | 99%, 98% |
+| 300k | 299,999 | 274 | 3,094 | 46 ms | 66 ms | 69 ms | 69 ms | 100%, 99% |
+
+**Aeron, archive on disk, sync level 0**
+
+| Offered | Achieved | p50 | p90 | p99 | p99.9 | p99.99 | max | Senders busy |
+|---|---|---|---|---|---|---|---|---|
+| 10k | as offered | 35.4 | 41.4 | 55.9 | 3,473 | 12 ms | 14 ms | |
+| 50k | as offered | 40.8 | 48.1 | 66.2 | 87.9 | 14 ms | 19 ms | |
+| 75k | as offered | 45.4 | 60.3 | 72.9 | 2,486 | 9,380 | 11 ms | |
+| 100k | as offered | 45.9 | 60.6 | 71.0 | 80.8 | 5,444 | 10 ms | |
+| 150k | as offered | 46.1 | 60.6 | 73.2 | 1,820 | 9,380 | 12 ms | |
+| 200k | as offered | 47.0 | 62.7 | 76.5 | 2,556 | 9,839 | 12 ms | |
+| 300k | as offered | 50.3 | 66.8 | 78.8 | 387 | 6,603 | 8,225 | |
+| 400k | as offered | 52.9 | 68.8 | 83.5 | 7,426 | 13 ms | 15 ms | |
+| 500k | as offered | 60.9 | 74.9 | 114 | 8,716 | 14 ms | 15 ms | |
+| 750k | 583,969 (fell behind) | seconds | | | | | | |
+
+**KrustyCast mode (a), on disk**
+
+| Offered | Achieved | p50 | p90 | p99 | p99.9 | p99.99 | max | Senders busy |
+|---|---|---|---|---|---|---|---|---|
+| 10k | 10,000 | 28.0 | 31.6 | 34.8 | 37.4 | 46.0 | 66.7 | 9%, 5% |
+| 50k | 50,000 | 25.4 | 28.1 | 32.0 | 35.1 | 50.4 | 106 | 44%, 24% |
+| 75k | 75,000 | 25.9 | 35.2 | 40.4 | 45.7 | 93.6 | 187 | 61%, 35% |
+| 100k | 100,000 | 30.5 | 36.2 | 49.2 | 54.3 | 101 | 492 | 77%, 44% |
+| 150k | 150,000 | 49.9 | 88.2 | 104 | 144 | 187 | 476 | 92%, 66% |
+| 200k | 200,000 | 75.2 | 111 | 140 | 179 | 213 | 283 | 98%, 85% |
+| 250k | 250,000 | 143 | 175 | 197 | 220 | 264 | 584 | 99%, 98% |
+| 300k | 286,850 (fell behind) | seconds | | | | | | |
+
+**Aeron, archive sync level 1**
+
+| Offered | Achieved | p50 | p90 | p99 | p99.9 | p99.99 | max | Senders busy |
+|---|---|---|---|---|---|---|---|---|
+| 10k | as offered | 659 | 1,043 | 1,622 | 4,817 | 7,078 | 9,839 | |
+| 50k | as offered | 1,397 | 1,607 | 2,562 | 19 ms | 23 ms | 24 ms | |
+| 75k | as offered | 1,370 | 1,594 | 1,837 | 3,570 | 4,415 | 7,434 | |
+| 100k | as offered | 1,357 | 1,578 | 1,832 | 3,654 | 5,652 | 7,369 | |
+| 150k | as offered | 1,388 | 1,586 | 1,826 | 3,688 | 4,764 | 5,931 | |
+| 200k | as offered | 1,417 | 1,597 | 1,836 | 3,664 | 4,780 | 7,647 | |
+| 300k | as offered | 1,427 | 1,607 | 1,985 | 3,721 | 4,119 | 6,877 | |
+| 400k | as offered | 1,488 | 1,644 | 2,302 | 3,901 | 5,030 | 7,582 | |
+| 500k | as offered | 1,521 | 1,686 | 2,421 | 3,955 | 5,530 | 7,873 | |
+
+**KrustyCast mode (b), window 1024**
+
+| Offered | Achieved | p50 | p90 | p99 | p99.9 | p99.99 | max | Senders busy |
+|---|---|---|---|---|---|---|---|---|
+| 10k | 10,000 | 635 | 1,020 | 1,428 | 3,551 | 5,636 | 6,898 | 12%, 8% |
+| 50k | 49,999 | 1,705 | 2,063 | 3,299 | 7,463 | 23 ms | 24 ms | 46%, 38% |
+| 75k | 74,998 | 1,790 | 2,148 | 4,231 | 27 ms | 35 ms | 37 ms | 64%, 56% |
+| 100k | 99,967 | 1,863 | 2,238 | 21 ms | 32 ms | 34 ms | 35 ms | 79%, 71% |
+| 150k (50 ms retries) | 149,995 | 1,974 | 2,370 | 5,952 | 23 ms | 31 ms | 33 ms | 99%, 97% |
+| 250k (50 ms retries) | 249,367 | 25 ms | 257 ms | 323 ms | 324 ms | 325 ms | 325 ms | 99%, 99% |
+
+Mode (b) above 100 k used `--retry-ms 50`: with a window of 1024 and
+5 ms resends the generator spent itself on resends. Window 1024 because
+2 sessions x 64 in flight over mode (b)'s ~1.8 ms commit caps throughput
+near 70 k msg/s (Little's law); that needs `outcome_ring = 1024`.
+
+### What limits throughput
+
+| | Ceiling here | Set by |
+|---|---|---|
+| Aeron, no fsync | about 585 k msg/s | the cluster: at saturation the client's publication is back-pressured, its sender sits at the leader's flow-control limit, and the leader's log sender at its 32 MiB window (the followers) |
+| Aeron, fsync per block | 500 k sustained (not pushed further) | |
+| KrustyCast, tmpfs or mode (a) | 250-300 k msg/s | the clients: both sessions 98-100% busy. The cluster's own ceiling is higher and not measured; the client's cost is one datagram per message each way (Aeron's batches into the term buffer) |
+| KrustyCast, mode (b) | at least 150 k at p50 2 ms | the clients again (97-99% busy) |
+
+### Memory and disk
+
+PSS (proportional set size: memory shared between processes counted
+once), sampled each second; flat across rates for both:
+
+| | Aeron Cluster | KrustyCast |
+|---|---|---|
+| Leader | driver 1.3 GB + node 1.4 GB | 129 MB |
+| Each follower | 1.2 GB + 1.3 GB | 119 MB |
+| Client | driver 1.2 GB + client 1.1 GB | 2 MB |
+| Total | about 10 GB | about 370 MB |
+| Of which | 8 x 1 GB pre-touched heap (our setting; the suite's is 4 GB); live heap a few MB; 1.3 GB of term buffers in /dev/shm | all allocated at start; `outcome_ring = 1024` (mode b runs) raises a node to about 240 MB |
+| Disk per message per node | about 122 B (archive) | about 155 B (log, egress index) |
+
+Aeron's floor with small heaps would be about 2 GB, mostly term buffers,
+which its term length sets.
+
+### Findings
+
+**KrustyCast at equal footing is faster at every percentile and uses
+370 MB against Aeron's 10 GB as configured (about 2 GB at Aeron's floor);
+Aeron carries about twice the throughput per client CPU.** Without disk, 10 minutes at 75 k: p50 27 against 41 µs, p99
+39 against 67, p99.99 62 against 95, max 0.25 against 4.2 ms. With disk,
+KrustyCast's mode (a) keeps the disk off the commit path and its tail at
+52 µs; Aeron's archive writes are on its path and its p99.99 is 9.7 ms.
+With an fsync before every commit, p50 is 1.4 ms (Aeron) and 1.8-2.0 ms
+(KrustyCast). Aeron's
+client and protocol batch (several messages per datagram, flow control in
+bytes); KrustyCast sends one datagram per message each way, so two client
+CPUs saturate at 250-300 k: batching submits and feedback is the way to
+the PRD's 1 M msg/s (NFR-5), not the cluster.
+
+**What the comparison found in KrustyCast** (each fixed, with tests):
+1. *The storage stage fsynced every 128 entries* (256 ring records, two
+   per message): about 160 k msg/s on this NVMe, the cluster's whole
+   throughput ceiling (M1 and M3 blamed the generator). Group commit now
+   drains what has queued up, so slower fsyncs make larger groups. Mode
+   (a) on disk: 250 k sustained, from 165 k.
+2. *Creating the next segment stalled storage 50-130 ms* (preallocation
+   on tmpfs; two device flushes on disk), the core waited on the full ring
+   behind it, both followers' Raft threads stopped at the same log index
+   and the leader lost its term: every run at 300 k on tmpfs. Next files
+   are now prepared ahead on helper threads; a roll writes a header and
+   renames. 0 of 6 runs stall.
+3. *Raft stamped messages with the time of its last tick*, so a node that
+   had itself been held up saw its peers as silent (`advance_clock`).
+4. *Under overload the core waited on a full ring and stopped ticking*
+   (157 ms in mode b at 250 k offered; the leader lost its term). The core
+   now takes submits only while its output rings have room (admission
+   control; ingress answers BUSY).
+5. *Resends were logged again while their original was being committed*:
+   when commits are slower than the retry interval, 40 log entries per
+   message and goodput about 9 k msg/s. The leader now drops them.
+6. Metrics to see these: `cluster_loop_max_ns` (how long Raft went
+   without a tick), `raft_pre_votes`, `raft_quorum_lost`,
+   `submits_deferred`, `resends_filtered`.
+
+**What it took to run Aeron Cluster well here** (for whoever repeats it):
+a SHARED media driver on the leader cannot drain its consensus socket and
+loopback drops the followers' datagrams (NAK storms, 100-300 ms medians);
+the leader needs a DEDICATED driver; the drivers read their properties
+files over `-D` options; every spinning agent needs a CPU of its own; the
+archive's catalog must sync at least as much as its files. Turning off
+periodic safepoints did not change its tail; the disk did.
+
+**Caveats.** One host, loopback: no NIC, switch or interrupt coalescing.
+Three nodes share one consumer NVMe, which serializes their flushes (mode
+b, Aeron sync level 1). We configured Aeron, not its authors; its tail
+below 4 ms on tmpfs (a few ms at p99.99 in some 60-second runs) is not
+explained. The services differ: Aeron's echoes, KrustyCast's sequences
+(deduplication, conditional appends, a published feed). KrustyCast's
+throughput figures are the clients' limits, so the cluster's are higher.
 
 ## Next
 
@@ -409,7 +630,8 @@ p50 19–20, p99 47–49, max 115–166; 100 000 msg/s p50 26, p99 40–41, max
   cores) and record the results here, next to the laptop numbers; for M3,
   `krusty-load --cluster 3` across three machines (the in-process mode
   needs a multi-host variant) and the failover example.
-- Aeron Cluster baseline on the same hardware (E3).
+- E3 again on the reference servers, and KrustyCast with batched submits
+  and feedback (its clients set its throughput here).
 - A perf smoke test in CI (a short low-rate run that must not lose messages)
   is in `ci.yml`. It fails on loss and on generator lag, not on latency,
   because shared CI runners are too noisy for latency.
