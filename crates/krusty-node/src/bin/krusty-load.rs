@@ -3,13 +3,16 @@
 //! Each sender is a krusty-session client submitting on a fixed schedule;
 //! latency is measured from each message's *scheduled* time (no coordinated
 //! omission) to (a) its arrival on the feed and (b) its ACCEPTED. A run is
-//! INVALID (exit 1) if the generator could not keep up or anything was lost.
+//! INVALID (exit 1) if the generator could not keep up, anything was lost,
+//! or nothing came back for 5 s with messages outstanding (STALLED: say,
+//! the leader changed; the generator does not follow it).
 //!
 //!   krusty-load [--rate N] [--duration S] [--warmup S] [--senders K] [--payload B]
 //!               [--pin-senders a,b] [--pin-receiver c] [--node-cores i,c,e,r] [--spin]
 //!               [--combined] [--storage DIR] [--durability a|b]
 //!               [--cluster N] [--cluster-cores c1,c2,..] [--sleep-us U]
 //!               [--leader-cores i,c,e,repl[,store]] [--follower-cores c,repl,o[,store]/...]
+//!               [--connect INGRESS --feed-bind ADDR]
 //!
 //! `--leader-cores`: node 1 gets shorter election timeouts (so it leads),
 //! spins, and pins ingress, core, egress, replication (and optionally the
@@ -23,6 +26,16 @@
 //! `--cluster N` runs N replicated nodes in this process (storage under
 //! `--storage`, default a temporary directory) and sends to the leader;
 //! `--cluster-cores` puts all of node k's stages on core ck.
+//!
+//! `--connect` sends to a node (or cluster leader) running in another
+//! process instead of starting one, and reads its feed on `--feed-bind`
+//! (the address in that node's `feed` setting); the node options are then
+//! ignored.
+//!
+//! `--combined`: sender 0 also reads the feed (all of it) in its own loop,
+//! instead of a separate receiver thread. Each sender reports its busy
+//! fraction, the share of its time in loop iterations that did any work:
+//! near 100% means the generator, not the node, sets the pace.
 use hdrhistogram::Histogram;
 use krusty_net::{RecvBatch, SendBatch};
 use krusty_node::{Idle, NodeConfig};
@@ -75,6 +88,8 @@ struct Args {
     sleep_us: Option<u64>,
     leader_cores: Vec<usize>,
     follower_cores: Vec<Vec<usize>>,
+    connect: Option<SocketAddrV4>,
+    feed_bind: SocketAddrV4,
 }
 
 fn parse() -> Args {
@@ -96,6 +111,8 @@ fn parse() -> Args {
         sleep_us: None,
         leader_cores: Vec::new(),
         follower_cores: Vec::new(),
+        connect: None,
+        feed_bind: "127.0.0.1:0".parse().unwrap(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -134,6 +151,8 @@ fn parse() -> Args {
                     })
                     .collect()
             }
+            "--connect" => a.connect = Some(v().parse().unwrap()),
+            "--feed-bind" => a.feed_bind = v().parse().unwrap(),
             "--cluster-cores" => {
                 a.cluster_cores = v().split(',').map(|c| c.parse().unwrap()).collect()
             }
@@ -148,9 +167,6 @@ fn parse() -> Args {
         }
     }
     assert!(a.payload >= 24, "--payload must be at least 24");
-    if a.combined {
-        assert_eq!(a.senders, 1, "--combined needs exactly one sender");
-    }
     a
 }
 
@@ -162,7 +178,17 @@ struct SenderOut {
     events: u64,
     failed: u64,
     elapsed: Duration,
+    /// Time in loop iterations that did any work (sent, or received
+    /// feedback or feed), against `elapsed`: the thread's headroom, which
+    /// a spinning thread's CPU time does not show.
+    busy: Duration,
+    /// Nothing came back for `STALL_AFTER` with messages outstanding (the
+    /// leader changed, or the cluster stopped): the sender gave up.
+    stalled: bool,
 }
+
+/// How long a sender waits without any feedback or feed before it gives up.
+const STALL_AFTER: Duration = Duration::from_secs(5);
 
 #[allow(clippy::too_many_arguments)]
 fn sender(
@@ -176,6 +202,7 @@ fn sender(
     payload_len: usize,
     core: Option<usize>,
     feed_sock: Option<UdpSocket>,
+    feed_target: u64,
 ) -> SenderOut {
     pin(core);
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -199,14 +226,18 @@ fn sender(
         events: 0,
         failed: 0,
         elapsed: Duration::ZERO,
+        busy: Duration::ZERO,
+        stalled: false,
     };
+    let mut last_heard = Instant::now();
     let mut rb = RecvBatch::new(64, 2048);
     let mut sb = SendBatch::new(64, 2048);
     let mut fbb = RecvBatch::new(64, 128);
     let (mut tx, mut ev) = (Vec::with_capacity(128), Vec::with_capacity(128));
     let mut payload = vec![0u8; payload_len];
     let mut submitted = 0u64;
-    let feed_target = if feed_sock.is_some() { count } else { 0 };
+    let mut feed_seen = 0u64;
+    let feed_target = if feed_sock.is_some() { feed_target } else { 0 };
     // Feed datagrams lost on the way (the generator does not recover them)
     // would otherwise keep it waiting forever; the run is then INVALID.
     let mut drain_until: Option<Instant> = None;
@@ -220,8 +251,10 @@ fn sender(
                 break;
             }
         }
+        let iter_start = Instant::now();
+        let mut work = 0;
         if let Some(fs) = &feed_sock {
-            read_feed(fs, &mut rb, epoch, warmup, &mut out.feed, &mut out.feed_got);
+            work += read_feed(fs, &mut rb, epoch, warmup, &mut out.feed, &mut out.feed_got);
         }
         let now = Instant::now();
         // Submit everything that is due (if the window allows).
@@ -233,9 +266,11 @@ fn sender(
                 out.late += 1;
             }
             submitted += 1;
+            work += 1;
         }
         let now_ns = (Instant::now() - epoch).as_nanos() as u64;
         session.poll(now_ns, &mut tx, &mut ev);
+        work += tx.len();
         for t in tx.drain(..) {
             let due_ns = (due_of(t.handle) - epoch).as_nanos() as u64;
             payload[0..8].copy_from_slice(&due_ns.to_le_bytes());
@@ -257,6 +292,7 @@ fn sender(
             let _ = sb.flush(&sock);
         }
         let n = fbb.recv(&sock).unwrap_or(0);
+        work += n;
         for i in 0..n {
             if let Ok(f) = Feedback::decode(fbb.get(i).0) {
                 session.on_feedback(&f, now_ns, &mut ev);
@@ -275,9 +311,23 @@ fn sender(
                 _ => out.failed += 1,
             }
         }
+        if work > 0 && drain_until.is_none() {
+            out.busy += iter_start.elapsed();
+        }
+        if n > 0 || out.feed_got > feed_seen {
+            last_heard = Instant::now();
+            feed_seen = out.feed_got;
+        } else if drain_until.is_none()
+            && session.in_flight() > 0
+            && last_heard.elapsed() > STALL_AFTER
+        {
+            out.stalled = true;
+            out.elapsed = start.elapsed();
+            break;
+        }
         std::hint::spin_loop();
     }
-    if drain_until.is_none() {
+    if drain_until.is_none() && !out.stalled {
         out.elapsed = start.elapsed();
     }
     out
@@ -310,7 +360,7 @@ fn read_feed(
 
 fn main() {
     let a = parse();
-    let feed_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let feed_sock = UdpSocket::bind(a.feed_bind).unwrap();
     let _ = socket2::SockRef::from(&feed_sock).set_recv_buffer_size(16 << 20);
     feed_sock.set_nonblocking(true).unwrap();
     let mut cfg = NodeConfig::new(
@@ -335,8 +385,10 @@ fn main() {
         });
     }
     let mut followers = Vec::new();
-    let node = if a.cluster == 0 {
-        krusty_node::start(cfg).unwrap()
+    let node = if a.connect.is_some() {
+        None
+    } else if a.cluster == 0 {
+        Some(krusty_node::start(cfg).unwrap())
     } else {
         let base = a.storage.clone().unwrap_or_else(|| {
             std::env::temp_dir().join(format!("krusty-load-{}", std::process::id()))
@@ -410,9 +462,12 @@ fn main() {
         };
         let leader = nodes.remove(k);
         followers = nodes;
-        leader
+        Some(leader)
     };
-    let ingress = node.ingress_addr();
+    let ingress = match &node {
+        Some(n) => n.ingress_addr(),
+        None => a.connect.unwrap(),
+    };
 
     let per_sender = (a.warmup + a.duration) * a.rate / a.senders;
     let warmup = a.warmup * a.rate / a.senders;
@@ -424,7 +479,7 @@ fn main() {
     let sending = Arc::new(AtomicBool::new(true));
     let rx_sending = sending.clone();
     let pin_receiver = a.pin_receiver;
-    // --combined: sender 0 also reads the feed (one isolated core does both).
+    // --combined: sender 0 also reads the feed (all of it) in its loop.
     let mut combined_feed = if a.combined {
         Some(feed_sock.try_clone().unwrap())
     } else {
@@ -478,6 +533,7 @@ fn main() {
                     payload,
                     core,
                     fs,
+                    total,
                 )
             })
         })
@@ -486,13 +542,17 @@ fn main() {
     let mut feed_c = hist();
     let mut got_c = 0;
     let (mut late, mut failed, mut elapsed) = (0, 0, Duration::ZERO);
+    let mut stalled = false;
+    let mut sender_busy = Vec::new();
     for s in senders {
         let o = s.join().unwrap();
+        sender_busy.push(o.busy.as_secs_f64() / o.elapsed.as_secs_f64().max(1e-9));
         ack.add(&o.ack).unwrap();
         feed_c.add(&o.feed).unwrap();
         got_c += o.feed_got;
         late += o.late;
         failed += o.failed;
+        stalled |= o.stalled;
         elapsed = elapsed.max(o.elapsed);
     }
     sending.store(false, Ordering::Relaxed);
@@ -501,9 +561,18 @@ fn main() {
     } else {
         receiver.join().unwrap()
     };
-    let busy = node.stats.busy.load(Ordering::Relaxed);
-    let leader_terms = node.stats.leader_terms.load(Ordering::Relaxed);
-    node.stop();
+    // An external node's counters are not visible here (see krusty-stat).
+    let (busy, leader_terms) = match node {
+        Some(node) => {
+            let s = (
+                node.stats.busy.load(Ordering::Relaxed),
+                node.stats.leader_terms.load(Ordering::Relaxed),
+            );
+            node.stop();
+            s
+        }
+        None => (0, 0),
+    };
     for f in followers {
         f.stop();
     }
@@ -532,7 +601,21 @@ fn main() {
         "achieved {:.0} msg/s; {} submits >100 µs late; feed {} of {}; {} failed; {} BUSY",
         achieved, late, got, total, failed, busy
     );
-    let invalid = achieved < 0.98 * a.rate as f64 || got < total || failed > 0;
+    println!(
+        "sender busy (iterations with work): {}",
+        sender_busy
+            .iter()
+            .map(|b| format!("{:.0}%", 100.0 * b))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if stalled {
+        println!(
+            "STALLED: nothing came back for {} s with messages outstanding (did the leader change?)",
+            STALL_AFTER.as_secs()
+        );
+    }
+    let invalid = stalled || achieved < 0.98 * a.rate as f64 || got < total || failed > 0;
     if invalid {
         println!("INVALID RUN: the generator fell behind or messages were lost");
     }
