@@ -126,7 +126,7 @@ pub(crate) fn restore(cfg: &NodeConfig, st: &StorageConfig) -> io::Result<Restor
         return Err(io::Error::new(io::ErrorKind::InvalidData, f));
     }
     for (seqno, pos) in published {
-        log.index_published(seqno, pos);
+        log.index_published(seqno, pos)?;
     }
     log.flush()?;
     let log_index = core.applied();
@@ -143,6 +143,12 @@ pub(crate) fn restore(cfg: &NodeConfig, st: &StorageConfig) -> io::Result<Restor
 
 /// Bytes egress records in mode (b) are staged in before forwarding.
 const PENDING_BYTES: usize = 4 << 20;
+/// At most this many ring S records between two fsyncs. A group takes
+/// whatever has queued up, so the slower the fsync, the larger the next
+/// group: throughput does not depend on how many fsyncs a second the
+/// device manages (it was 128 entries per fsync, about 160 k msg/s on a
+/// consumer NVMe; BASELINE E3).
+const MAX_GROUP: usize = 1 << 16;
 
 fn fatal(what: &str, e: io::Error) -> ! {
     // Decisions that cannot be made durable must not go out (G3): stop hard;
@@ -180,49 +186,67 @@ pub(crate) fn store_stage(
         let mut appended = 0u64;
         let mut snapshot_at: Option<u64> = None;
         pending.clear();
-        let n = input.read(cfg.batch * 4, |kind, rec| match kind {
-            S_ENTRY => {
-                let (li, term, ts) = (u64_at(rec, 0), u64_at(rec, 8), u64_at(rec, 16));
-                if li != log.next_index() {
-                    fatal(
-                        "append",
-                        io::Error::other(format!("entry {li}, expected {}", log.next_index())),
-                    );
+        let mut n = 0;
+        // Group commit: drain what is queued (bounded) before one fsync.
+        // Stop at a snapshot (one per group: its bytes come in order on the
+        // channel) and before the staged egress records (mode b) could
+        // outgrow their buffer: one chunk adds at most chunk * max record.
+        let chunk = cfg.batch * 4;
+        let chunk_bytes = chunk * (cfg.mtu + 64);
+        loop {
+            let k = input.read(chunk, |kind, rec| match kind {
+                S_ENTRY => {
+                    let (li, term, ts) = (u64_at(rec, 0), u64_at(rec, 8), u64_at(rec, 16));
+                    if li != log.next_index() {
+                        fatal(
+                            "append",
+                            io::Error::other(format!("entry {li}, expected {}", log.next_index())),
+                        );
+                    }
+                    let pos = log
+                        .append_entry(term, ts, &rec[S_ENTRY_HEADER..])
+                        .unwrap_or_else(|e| fatal("append", e));
+                    recent.push_back(pos);
+                    appended += 1;
+                    entries += 1;
                 }
-                let pos = log
-                    .append_entry(term, ts, &rec[S_ENTRY_HEADER..])
-                    .unwrap_or_else(|e| fatal("append", e));
-                recent.push_back(pos);
-                appended += 1;
-                entries += 1;
-            }
-            S_PUBLISHED => {
-                let (seqno, li) = (u64_at(rec, 0), u64_at(rec, 8));
-                while recent.front().is_some_and(|p| p.log_index < li) {
-                    recent.pop_front();
+                S_PUBLISHED => {
+                    let (seqno, li) = (u64_at(rec, 0), u64_at(rec, 8));
+                    while recent.front().is_some_and(|p| p.log_index < li) {
+                        recent.pop_front();
+                    }
+                    let pos = match recent.front() {
+                        Some(p) if p.log_index == li => *p,
+                        // Appended before a restart.
+                        _ => log.pos_of(li).unwrap_or_else(|e| fatal("index", e)),
+                    };
+                    log.index_published(seqno, pos)
+                        .unwrap_or_else(|e| fatal("index", e));
                 }
-                let pos = match recent.front() {
-                    Some(p) if p.log_index == li => *p,
-                    // Appended before a restart.
-                    _ => log.pos_of(li).unwrap_or_else(|e| fatal("index", e)),
-                };
-                log.index_published(seqno, pos);
-            }
-            S_TRUNCATE => {
-                let from = u64_at(rec, 0);
-                while recent.back().is_some_and(|p| p.log_index >= from) {
-                    recent.pop_back();
+                S_TRUNCATE => {
+                    let from = u64_at(rec, 0);
+                    while recent.back().is_some_and(|p| p.log_index >= from) {
+                        recent.pop_back();
+                    }
+                    log.truncate_from(from)
+                        .unwrap_or_else(|e| fatal("truncate", e));
                 }
-                log.truncate_from(from)
-                    .unwrap_or_else(|e| fatal("truncate", e));
+                S_SNAPSHOT => snapshot_at = Some(u64_at(rec, 0)),
+                k => {
+                    pending.extend_from_slice(&(k - S_EGRESS).to_le_bytes());
+                    pending.extend_from_slice(&(rec.len() as u32).to_le_bytes());
+                    pending.extend_from_slice(rec);
+                }
+            });
+            n += k;
+            if k < chunk
+                || n >= MAX_GROUP
+                || snapshot_at.is_some()
+                || pending.len() + chunk_bytes > PENDING_BYTES
+            {
+                break;
             }
-            S_SNAPSHOT => snapshot_at = Some(u64_at(rec, 0)),
-            k => {
-                pending.extend_from_slice(&(k - S_EGRESS).to_le_bytes());
-                pending.extend_from_slice(&(rec.len() as u32).to_le_bytes());
-                pending.extend_from_slice(rec);
-            }
-        });
+        }
         if n == 0 {
             if finished && input.is_empty() {
                 log.sync().unwrap_or_else(|e| fatal("final sync", e));

@@ -50,7 +50,7 @@ fn main() {
         let e = core.apply(i, i * 1000, &s).unwrap();
         let pos = log.append(i * 1000, &buf[..k]).unwrap();
         if let Some(p) = e.publish {
-            log.index_published(p.seqno, pos);
+            log.index_published(p.seqno, pos).unwrap();
         }
         if i == snap_at {
             let mut b = Vec::new();

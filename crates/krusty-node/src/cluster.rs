@@ -736,6 +736,10 @@ pub(crate) fn cluster_core_stage(
     let mut empty = 0;
     loop {
         let batch_start = mono_ns();
+        // Peer messages count as heard now, not at the last tick: after this
+        // thread was held up (a full ring, a slow segment roll), stale
+        // stamps would make answering peers look silent (BASELINE E3).
+        sh.raft.advance_clock(batch_start);
         let mut work = peers_in.read(cfg.batch, |_, rec| sh.on_peer(rec));
         work += input.read(cfg.batch, |_, rec| sh.on_submit(rec, batch_start));
         if sh.proposals > 0 {
@@ -869,6 +873,19 @@ pub(crate) fn cluster_core_stage(
             done.store(true, Ordering::Release);
             return;
         }
+        // How long Raft went without a tick: a pass that waited on a full
+        // ring (storage, egress, peers) shows here.
+        let pass = mono_ns().saturating_sub(batch_start);
+        if work > 0 || pass > 1_000_000 {
+            stats.cluster_loop.record(pass);
+            stats.cluster_loop_max_ns.fetch_max(pass, Ordering::Relaxed);
+        }
+        let ev = sh.raft.events();
+        stats.raft_pre_votes.store(ev.pre_votes, Ordering::Relaxed);
+        stats.raft_elections.store(ev.elections, Ordering::Relaxed);
+        stats
+            .raft_quorum_lost
+            .store(ev.quorum_lost, Ordering::Relaxed);
         if work == 0 {
             idle(cfg.idle, &mut empty);
         } else {

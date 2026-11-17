@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAGIC: u64 = 0x5354_4154_534B_434B; // "KCKSTATS"
-pub const LAYOUT_VERSION: u64 = 6;
+pub const LAYOUT_VERSION: u64 = 7;
 pub const BUCKETS: usize = 64;
 
 /// log2 histogram: bucket `b` counts values in `[2^(b-1), 2^b)` ns (bucket 0: 0).
@@ -70,6 +70,7 @@ macro_rules! counters {
             pub recovery_service: Histogram,
             /// One storage fsync (group commit of a batch).
             pub store_sync: Histogram,
+            pub cluster_loop: Histogram,
         }
 
         impl Shared {
@@ -78,13 +79,14 @@ macro_rules! counters {
                 vec![$((stringify!($name), self.$name.load(Ordering::Relaxed)),)*]
             }
 
-            pub fn histograms(&self) -> [(&'static str, &Histogram); 5] {
+            pub fn histograms(&self) -> [(&'static str, &Histogram); 6] {
                 [
                     ("ingress_to_core", &self.ingress_to_core),
                     ("core_batch", &self.core_batch),
                     ("core_to_egress", &self.core_to_egress),
                     ("recovery_service", &self.recovery_service),
                     ("store_sync", &self.store_sync),
+                    ("cluster_loop", &self.cluster_loop),
                 ]
             }
         }
@@ -123,6 +125,10 @@ counters! {
     raft_leader: "Gauge: the leader this node knows of (0: none).",
     snapshot_index: "Gauge: log index of the last snapshot handed to storage.",
     clients: "Gauge: client sessions in the core.",
+    raft_pre_votes: "Election timeouts: pre-votes this node started.",
+    raft_elections: "Elections this node started (pre-vote won, or a transfer).",
+    raft_quorum_lost: "Times this node stepped down as leader: a majority went quiet (check-quorum).",
+    cluster_loop_max_ns: "Gauge: the longest pass of the cluster core loop (ns): how long Raft went without ticks.",
 }
 
 /// Counters that are levels, not totals (no rate is computed for them).
@@ -135,6 +141,7 @@ pub const GAUGES: &[&str] = &[
     "raft_leader",
     "snapshot_index",
     "clients",
+    "cluster_loop_max_ns",
 ];
 
 /// The node's metrics: a shared mapping (or private memory when no path is

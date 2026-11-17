@@ -28,6 +28,15 @@
 //!
 //! Retention deletes whole segments, oldest first, and only below the latest
 //! snapshot, so a restart never needs anything that was deleted.
+//!
+//! The next segment and the next egress index file are prepared ahead, on
+//! a helper thread each ([`Spare`]: created, preallocated and synced as
+//! `*-spare.tmp`), so rolling over is a header write and a rename: creating
+//! a file there stalled the storage stage for 50 ms and more (BASELINE E3),
+//! long enough for the Raft thread behind it to go quiet. The rename and
+//! header become durable with the next sync, before any entry in the new
+//! file counts as synced; a crash before that leaves a tail file with an
+//! unwritten (zero) header, which `open` removes.
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -35,6 +44,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, RwLock};
 
 const SEG_MAGIC: u64 = 0x4745_5347_4F4C_434B; // "KCLOGSEG"
@@ -131,6 +141,101 @@ pub struct Log {
     active_sparse: Arc<Mutex<Option<Vec<u32>>>>,
     /// Log index of the latest published entry (truncation stays above it).
     last_published_index: u64,
+    seg_spare: Spare,
+    idx_spare: Spare,
+    /// A file was renamed into place since the last sync: sync the directory.
+    dir_dirty: bool,
+}
+
+/// A file prepared ahead of need on a helper thread: created as
+/// `dir/<prefix>-spare.tmp`, preallocated to `size` and synced with its
+/// directory. [`take`](Spare::take) hands it over (waiting if it is not
+/// ready, making it here if the helper failed) and starts the next one.
+struct Spare {
+    dir: PathBuf,
+    path: PathBuf,
+    size: u64,
+    request: SyncSender<()>,
+    ready: Receiver<io::Result<File>>,
+    pending: bool,
+}
+
+impl Spare {
+    fn new(dir: &Path, prefix: &str, size: u64) -> Spare {
+        let path = dir.join(format!("{prefix}-spare.tmp"));
+        let (request, rx) = sync_channel::<()>(1);
+        let (tx, ready) = sync_channel(1);
+        let (d, p) = (dir.to_path_buf(), path.clone());
+        std::thread::Builder::new()
+            .name(format!("krusty-{prefix}-spare"))
+            .spawn(move || {
+                while rx.recv().is_ok() {
+                    if tx.send(Spare::make(&d, &p, size)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn a spare-file thread");
+        let mut s = Spare {
+            dir: dir.to_path_buf(),
+            path,
+            size,
+            request,
+            ready,
+            pending: false,
+        };
+        s.ask();
+        s
+    }
+
+    fn make(dir: &Path, path: &Path, size: u64) -> io::Result<File> {
+        match fs::remove_file(path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        preallocate(&f, size)?;
+        f.sync_all()?;
+        sync_dir(dir)?;
+        Ok(f)
+    }
+
+    fn ask(&mut self) {
+        self.pending = self.request.try_send(()).is_ok();
+    }
+
+    /// The prepared file, renamed to `dir/file` with `header` written at
+    /// its start (neither synced yet: the caller's next sync does both).
+    fn take(&mut self, file: &str, header: &[u8]) -> io::Result<(PathBuf, File)> {
+        let made = if self.pending {
+            self.pending = false;
+            self.ready
+                .recv()
+                .unwrap_or_else(|_| Err(io::Error::other("spare thread gone")))
+        } else {
+            Err(io::Error::other("no spare requested"))
+        };
+        let f = match made {
+            Ok(f) => f,
+            Err(_) => Spare::make(&self.dir, &self.path, self.size)?,
+        };
+        f.write_all_at(header, 0)?;
+        let path = self.dir.join(file);
+        fs::rename(&self.path, &path)?;
+        self.ask();
+        Ok((path, f))
+    }
+}
+
+/// Whether a file's header was never written (all zeros).
+fn header_unwritten(f: &File) -> io::Result<bool> {
+    let mut h = [0u8; FILE_HEADER as usize];
+    f.read_exact_at(&mut h, 0)?;
+    Ok(h.iter().all(|&b| b == 0))
 }
 
 /// What `open` found.
@@ -392,10 +497,25 @@ impl Log {
         idxs.sort_unstable();
         snaps.sort_unstable();
 
+        // Files renamed into place whose header never reached the disk (a
+        // crash before the next sync) hold nothing synced: drop them, but
+        // only at the tail.
+        let mut dropped = false;
         let mut segments = Vec::new();
         for first in &segs {
             let path = cfg.dir.join(name("log", *first, "seg"));
             let file = OpenOptions::new().read(true).write(true).open(&path)?;
+            if header_unwritten(&file)? {
+                fs::remove_file(&path)?;
+                dropped = true;
+                continue;
+            }
+            if dropped {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "a segment follows one with an unwritten header",
+                ));
+            }
             check_header(&file, SEG_MAGIC, *first)?;
             segments.push(Segment {
                 first_index: *first,
@@ -435,9 +555,22 @@ impl Log {
 
         // Egress index: drop entries pointing past the end of the log.
         let mut indexes = Vec::new();
+        let mut idx_dropped = false;
         for first in &idxs {
             let path = cfg.dir.join(name("egress", *first, "idx"));
             let file = OpenOptions::new().read(true).write(true).open(&path)?;
+            if header_unwritten(&file)? {
+                fs::remove_file(&path)?;
+                dropped = true;
+                idx_dropped = true;
+                continue;
+            }
+            if idx_dropped {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "an index file follows one with an unwritten header",
+                ));
+            }
             check_header(&file, IDX_MAGIC, *first)?;
             indexes.push(IndexFile {
                 first_seqno: *first,
@@ -502,6 +635,9 @@ impl Log {
             }
         }
 
+        if dropped {
+            sync_dir(&cfg.dir)?;
+        }
         let earliest_seqno = indexes.first().map(|i| i.first_seqno).unwrap_or(1);
         let shared = Arc::new(Shared {
             segments: RwLock::new(segments),
@@ -511,6 +647,8 @@ impl Log {
             synced_seqno: AtomicU64::new(next_seqno - 1),
             earliest_seqno: AtomicU64::new(earliest_seqno),
         });
+        let (cfg_dir, seg_bytes) = (cfg.dir.clone(), cfg.segment_bytes);
+        let idx_bytes = FILE_HEADER + cfg.index_entries * IDX_SLOT;
         let log = Log {
             cfg,
             shared,
@@ -529,6 +667,9 @@ impl Log {
             sparse_pending: Vec::with_capacity(4096),
             active_sparse,
             last_published_index: 0,
+            seg_spare: Spare::new(&cfg_dir, "log", seg_bytes),
+            idx_spare: Spare::new(&cfg_dir, "egress", idx_bytes),
+            dir_dirty: false,
         };
         Ok(Opened {
             log,
@@ -627,6 +768,11 @@ impl Log {
         if self.write_off + n > self.cfg.segment_bytes {
             self.roll()?;
         }
+        // Write out (no fsync) rather than grow the buffer: appending
+        // allocates nothing, however many entries come between syncs.
+        if self.buf.len() + n as usize > self.buf.capacity() {
+            self.flush()?;
+        }
         let log_index = self.next_index;
         let len = payload.len() as u32;
         let at = self.buf.len();
@@ -651,14 +797,20 @@ impl Log {
     }
 
     /// Records that stream message `seqno` came from the entry at `pos`.
-    pub fn index_published(&mut self, seqno: u64, pos: Pos) {
+    /// May write out buffered entries and index slots (no fsync) to make
+    /// room.
+    pub fn index_published(&mut self, seqno: u64, pos: Pos) -> io::Result<()> {
         assert_eq!(
             seqno, self.next_seqno,
             "published seqnos must be contiguous"
         );
+        if self.idx_buf.len() == self.idx_buf.capacity() {
+            self.flush()?;
+        }
         self.idx_buf.push((seqno, pos));
         self.next_seqno += 1;
         self.last_published_index = pos.log_index;
+        Ok(())
     }
 
     /// Rewrites the index from `seqno` on (recovery replay regenerates it).
@@ -678,13 +830,11 @@ impl Log {
             self.cfg.segment_bytes,
         )))));
         let first = self.next_index;
-        let (path, file) = create_file(
-            &self.cfg.dir,
+        let (path, file) = self.seg_spare.take(
             &name("log", first, "seg"),
-            SEG_MAGIC,
-            first,
-            self.cfg.segment_bytes,
+            &header(SEG_MAGIC, first, self.cfg.segment_bytes),
         )?;
+        self.dir_dirty = true;
         let file = Arc::new(file);
         self.unsynced.push(self.active.clone());
         self.active = file.clone();
@@ -818,7 +968,7 @@ impl Log {
         Ok(())
     }
 
-    fn index_file_for(&self, seqno: u64) -> io::Result<(u64, Arc<File>)> {
+    fn index_file_for(&mut self, seqno: u64) -> io::Result<(u64, Arc<File>)> {
         {
             // Usually the last file; after a restart, replay may rewrite an
             // earlier one.
@@ -839,13 +989,11 @@ impl Log {
             ));
         }
         let size = FILE_HEADER + self.cfg.index_entries * IDX_SLOT;
-        let (path, file) = create_file(
-            &self.cfg.dir,
+        let (path, file) = self.idx_spare.take(
             &name("egress", first, "idx"),
-            IDX_MAGIC,
-            first,
-            size,
+            &header(IDX_MAGIC, first, size),
         )?;
+        self.dir_dirty = true;
         let file = Arc::new(file);
         self.shared.indexes.write().unwrap().push(IndexFile {
             first_seqno: first,
@@ -886,6 +1034,12 @@ impl Log {
             f.sync_data()?;
         }
         self.active.sync_data()?;
+        if self.dir_dirty {
+            // Files renamed into place; their headers are synced above (an
+            // index file's with the next full `sync`, or rewritten by replay).
+            sync_dir(&self.cfg.dir)?;
+            self.dir_dirty = false;
+        }
         self.shared
             .synced_seqno
             .store(self.next_seqno - 1, Ordering::Release);

@@ -38,7 +38,7 @@ fn fill(log: &mut Log, from: u64, to: u64) {
         assert_eq!(pos.log_index, i);
         if i % 2 == 0 {
             let s = log.next_seqno();
-            log.index_published(s, pos);
+            log.index_published(s, pos).unwrap();
         }
     }
     log.sync().unwrap();
@@ -241,7 +241,8 @@ fn reindexing_after_restart_can_rewrite_an_earlier_index_file() {
                 log_index: 2 * n,
                 offset: 0,
             },
-        );
+        )
+        .unwrap();
     }
     log.flush().unwrap();
     assert_eq!(log.next_seqno(), 501);
@@ -346,4 +347,90 @@ fn hard_state_survives_and_tolerates_a_torn_slot() {
     file.write_all_at(&[0xFF; 4], 3 * 32 % 64 + 20).unwrap();
     let (_, hs) = HardStateFile::open(&d.0).unwrap();
     assert_eq!(hs, (4, 0));
+}
+
+/// The next segment and index file are prepared ahead (`*-spare.tmp`), and
+/// rolling over renames them into place.
+#[test]
+fn spare_files_are_prepared_ahead_and_renamed_into_place() {
+    let d = Dir::new("spare");
+    let mut log = Log::open(cfg(&d)).unwrap().log;
+    fill(&mut log, 1, 3001);
+    let names = || {
+        let mut v: Vec<String> = fs::read_dir(&d.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    // The helper threads prepare the next files in the background.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !(names().contains(&"log-spare.tmp".to_string())
+        && names().contains(&"egress-spare.tmp".to_string()))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no spares: {:?}",
+            names()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let segs = names().iter().filter(|n| n.ends_with(".seg")).count();
+    assert!(segs > 1, "segments must have rolled: {:?}", names());
+    drop(log);
+    let o = Log::open(cfg(&d)).unwrap();
+    assert_eq!(o.last_index, 3000);
+    assert_eq!(replayed(&o.log, 1).len(), 3000);
+}
+
+/// A crash after a roll's rename but before the next sync can leave tail
+/// files whose header never reached the disk; nothing in them was synced,
+/// so `open` drops them. An unwritten header before a valid file is
+/// corruption.
+#[test]
+fn tail_files_with_unwritten_headers_are_dropped() {
+    let d = Dir::new("unwritten");
+    let mut log = Log::open(cfg(&d)).unwrap().log;
+    fill(&mut log, 1, 3001);
+    let next_seqno = log.next_seqno();
+    drop(log);
+    let zeros = |name: &str, len: u64| {
+        let f = File::create(d.0.join(name)).unwrap();
+        f.set_len(len).unwrap();
+    };
+    let seg = name("log", 3001, "seg");
+    let idx_first = {
+        let mut v: Vec<u64> = fs::read_dir(&d.0)
+            .unwrap()
+            .filter_map(|e| parse_name(&e.unwrap().file_name().to_string_lossy(), "egress", "idx"))
+            .collect();
+        v.sort();
+        v.last().unwrap() + 256
+    };
+    assert!(idx_first > next_seqno - 1);
+    let idx = name("egress", idx_first, "idx");
+    zeros(&seg, 64 << 10);
+    zeros(&idx, FILE_HEADER + 256 * IDX_SLOT);
+    let o = Log::open(cfg(&d)).unwrap();
+    assert_eq!(o.last_index, 3000);
+    assert_eq!(o.log.next_seqno(), next_seqno);
+    assert!(!d.0.join(&seg).exists() && !d.0.join(&idx).exists());
+    drop(o);
+
+    // In the middle: refuse to open.
+    let first = {
+        let mut v: Vec<u64> = fs::read_dir(&d.0)
+            .unwrap()
+            .filter_map(|e| parse_name(&e.unwrap().file_name().to_string_lossy(), "log", "seg"))
+            .collect();
+        v.sort();
+        v[1]
+    };
+    let f = OpenOptions::new()
+        .write(true)
+        .open(d.0.join(name("log", first, "seg")))
+        .unwrap();
+    f.write_all_at(&[0u8; FILE_HEADER as usize], 0).unwrap();
+    assert!(Log::open(cfg(&d)).is_err());
 }
