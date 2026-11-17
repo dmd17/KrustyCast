@@ -6,7 +6,7 @@ exclude = ["spikes"]
 
 [workspace.package]
 edition = "2024"
-license = "MIT"
+license = "Apache-2.0"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

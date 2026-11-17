@@ -156,3 +156,12 @@ checkout (see `spec/lean/lakefile.lean` and `.github/workflows/proofs.yml`).
 - [Gap analysis](docs/GAP-ANALYSIS.md): status against the target, with roadmap
 - [Baseline](docs/BASELINE.md): measurements per milestone
 - [Specs](spec/README.md): TLA+ models, trace validation and Lean proofs; spike reports in `spikes/`
+
+## License
+
+Copyright 2025-2026 Dan Mihai Dumitriu.
+
+Licensed under the Apache License, Version 2.0 ([LICENSE](LICENSE)); see
+also [NOTICE](NOTICE). Unless you explicitly state otherwise, any
+contribution you submit for inclusion is licensed as above, without any
+additional terms or conditions.
