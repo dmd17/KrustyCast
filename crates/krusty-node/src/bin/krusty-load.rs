@@ -12,7 +12,7 @@
 //!               [--combined] [--storage DIR] [--durability a|b]
 //!               [--cluster N] [--cluster-cores c1,c2,..] [--sleep-us U]
 //!               [--leader-cores i,c,e,repl[,store]] [--follower-cores c,repl,o[,store]/...]
-//!               [--connect INGRESS --feed-bind ADDR] [--window W]
+//!               [--connect INGRESS --feed-bind ADDR] [--window W] [--retry-ms R]
 //!
 //! `--leader-cores`: node 1 gets shorter election timeouts (so it leads),
 //! spins, and pins ingress, core, egress, replication (and optionally the
@@ -36,6 +36,8 @@
 //! node's `outcome_ring` must be at least this). In-flight messages are at
 //! most senders x window, so throughput is at most that over the latency:
 //! with mode (b)'s millisecond fsyncs, 2 x 64 caps it near 70 k msg/s.
+//! `--retry-ms` (default 5): resend interval; a large window with a short
+//! interval floods the generator with its own resends once latency grows.
 //!
 //! `--combined`: sender 0 also reads the feed (all of it) in its own loop,
 //! instead of a separate receiver thread. Each sender reports its busy
@@ -82,6 +84,7 @@ struct Args {
     senders: u64,
     payload: usize,
     window: usize,
+    retry_ms: u64,
     pin_senders: Vec<usize>,
     pin_receiver: Option<usize>,
     node_cores: [Option<usize>; 4],
@@ -106,6 +109,7 @@ fn parse() -> Args {
         senders: 1,
         payload: 64,
         window: 64,
+        retry_ms: 5,
         pin_senders: Vec::new(),
         pin_receiver: None,
         node_cores: [None; 4],
@@ -131,6 +135,7 @@ fn parse() -> Args {
             "--senders" => a.senders = v().parse().unwrap(),
             "--payload" => a.payload = v().parse().unwrap(),
             "--window" => a.window = v().parse().unwrap(),
+            "--retry-ms" => a.retry_ms = v().parse().unwrap(),
             "--pin-senders" => a.pin_senders = v().split(',').map(|c| c.parse().unwrap()).collect(),
             "--pin-receiver" => a.pin_receiver = Some(v().parse().unwrap()),
             "--node-cores" => {
@@ -213,6 +218,7 @@ fn sender(
     feed_sock: Option<UdpSocket>,
     feed_target: u64,
     window: usize,
+    retry_ms: u64,
 ) -> SenderOut {
     pin(core);
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -222,7 +228,7 @@ fn sender(
         SessionConfig {
             client_id: k as u32 + 1,
             window,
-            retry_interval_ns: 5_000_000,
+            retry_interval_ns: retry_ms * 1_000_000,
             max_attempts: 1000,
         },
         epoch.elapsed().as_nanos() as u64 + 1,
@@ -549,6 +555,7 @@ fn main() {
                     fs,
                     total,
                     a.window,
+                    a.retry_ms,
                 )
             })
         })
