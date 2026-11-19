@@ -1,1 +1,3 @@
 /target
+# TLC writes counterexample traces next to the spec.
+spec/tla/*_TTrace_*
