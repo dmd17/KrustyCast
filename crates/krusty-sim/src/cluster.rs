@@ -115,10 +115,10 @@ struct Node {
     synced: u64,
     /// Mode (b): successful AppendReplies waiting for a sync.
     held: Vec<(NodeId, Message)>,
-    /// Leader: per (client, incarnation), the highest seqno proposed in
-    /// its term and that entry's (index, term); resends at or below it are
-    /// dropped while the entry is not applied (as krusty-node's leader).
-    proposed: HashMap<(u32, u64), (u64, u64, u64)>,
+    /// Leader: messages (client, incarnation, seqno) proposed and not yet
+    /// applied, with their (index, term); a resend of one in the same term
+    /// is dropped (as krusty-node's leader; Cluster.tla).
+    proposed: HashMap<(u32, u64, u64), (u64, u64)>,
 }
 
 struct ClientState {
@@ -329,6 +329,14 @@ impl Sim<'_> {
                     .push(format!("node {id}: undecodable committed entry"));
                 continue;
             };
+            let key = (s.client_id, s.incarnation, s.client_seqno);
+            if node
+                .proposed
+                .get(&key)
+                .is_some_and(|&(pi, _)| pi <= node.applied)
+            {
+                node.proposed.remove(&key);
+            }
             node.core_index += 1;
             let e = node.core.apply(node.core_index, ts, &s).expect("in order");
             let mut frame = None;
@@ -398,12 +406,11 @@ impl Sim<'_> {
                 return;
             }
             let node = &mut self.nodes[k];
-            let key = (s.client_id, s.incarnation);
+            let key = (s.client_id, s.incarnation, s.client_seqno);
             let term = node.raft.as_ref().unwrap().term();
-            if let Some(&(seq, index, t)) = node.proposed.get(&key)
+            if let Some(&(index, t)) = node.proposed.get(&key)
                 && t == term
                 && index > node.applied
-                && s.client_seqno <= seq
             {
                 return; // already in the log; its outcome follows
             }
@@ -413,10 +420,7 @@ impl Sim<'_> {
             let mut out = Outbox::default();
             let raft = node.raft.as_mut().unwrap();
             let i = raft.propose(&entry, &mut out).expect("the leader proposes");
-            let e = node.proposed.entry(key).or_insert((0, 0, 0));
-            if e.2 != term || s.client_seqno >= e.0 {
-                *e = (s.client_seqno, i, term);
-            }
+            node.proposed.insert(key, (i, term));
             let raft = node.raft.as_mut().unwrap();
             raft.replicate(&mut out, false);
             self.after_step(k, out);

@@ -270,15 +270,19 @@ struct Shell {
     stats: Arc<Metrics>,
     /// Entries this node proposed: (index, term, client).
     pending: VecDeque<(u64, u64, SocketAddrV4)>,
-    /// Leader: per session (client, incarnation), the highest seqno it
-    /// proposed and that entry's (index, term). A resend at or below it
-    /// while that entry is not yet applied is dropped: it is already in the
-    /// log, and its outcome goes out when it commits. Without this, clients
-    /// whose retry interval is shorter than the commit latency (mode b
-    /// under load) filled the log with copies, 40 per message, and goodput
-    /// collapsed (BASELINE E3). A leader's own entries are never truncated
-    /// within its term, so nothing dropped here is lost.
-    proposed: HashMap<(u32, u64), (u64, u64, u64)>,
+    /// Leader: messages (client, incarnation, seqno) proposed in its term
+    /// and not yet applied, with their (index, term). A resend of one is
+    /// dropped: it is in the log, and its outcome goes out when it commits.
+    /// Without this, clients whose retry interval is shorter than the
+    /// commit latency (mode b under load) filled the log with copies, 40
+    /// per message, and goodput collapsed (BASELINE E3). Keyed by message,
+    /// not by session: per-session versions dropped seqs that were never
+    /// proposed, or let a lower seq's resends through after a NAK
+    /// (Cluster.tla, SessionFilter). A leader's own entries are never
+    /// truncated within its term (RaftKC LeaderAppendOnly), so nothing
+    /// dropped here is lost. Entries leave when applied; the table is
+    /// cleared on becoming leader, and if it fills.
+    proposed: HashMap<(u32, u64, u64), (u64, u64)>,
     /// Mode (b): the storage stage's count of synced entries.
     synced: Option<Arc<AtomicU64>>,
     /// Entries handed to the storage stage so far.
@@ -301,8 +305,9 @@ struct Shell {
     fb: [u8; krusty_wire::feedback::LEN],
 }
 
-/// Sessions the leader tracks for the resend filter (allocated once).
-const PROPOSED_SESSIONS: usize = 8192;
+/// Unapplied proposals the resend filter tracks (allocated once; a commit
+/// lag of 64 Ki entries is 200 ms at 300 k msg/s).
+const PROPOSED_MAX: usize = 1 << 16;
 
 fn send_feedback(out: &mut Out, fb: &mut [u8], to: SocketAddrV4, f: &Feedback) {
     let t = mono_ns();
@@ -499,12 +504,11 @@ impl Shell {
         let raw = &rec[REC_HDR..];
         let Ok(s) = Submit::decode(raw) else { return };
         if self.raft.role() == Role::Leader && self.raft.transferring().is_none() {
-            let key = (s.client_id, s.incarnation);
+            let key = (s.client_id, s.incarnation, s.client_seqno);
             let term = self.raft.term();
-            if let Some(&(seq, index, t)) = self.proposed.get(&key)
+            if let Some(&(index, t)) = self.proposed.get(&key)
                 && t == term
                 && index > self.applied
-                && s.client_seqno <= seq
             {
                 self.stats.resends_filtered.fetch_add(1, Ordering::Relaxed);
                 return;
@@ -520,15 +524,12 @@ impl Shell {
                 .expect("the leader proposes");
             self.pending.push_back((i, term, src));
             self.proposals += 1;
-            if self.proposed.len() >= PROPOSED_SESSIONS && !self.proposed.contains_key(&key) {
-                // Full (incarnations come and go): start again rather than
-                // grow; at worst a few resends are logged twice.
+            if self.proposed.len() >= PROPOSED_MAX && !self.proposed.contains_key(&key) {
+                // Full (a long commit stall): start again rather than grow;
+                // at worst some resends are logged twice.
                 self.proposed.clear();
             }
-            let e = self.proposed.entry(key).or_insert((0, 0, 0));
-            if e.2 != term || s.client_seqno >= e.0 {
-                *e = (s.client_seqno, i, term);
-            }
+            self.proposed.insert(key, (i, term));
         } else {
             self.stats.not_leader.fetch_add(1, Ordering::Relaxed);
             let f = Feedback {
@@ -580,6 +581,10 @@ impl Shell {
                 } else {
                     let s = Submit::decode(&self.data[8..])
                         .unwrap_or_else(|e| fatal("apply", format!("entry {i}: {e:?}")));
+                    let key = (s.client_id, s.incarnation, s.client_seqno);
+                    if self.proposed.get(&key).is_some_and(|&(pi, _)| pi <= i) {
+                        self.proposed.remove(&key);
+                    }
                     let e = if s.incarnation <= self.epoch.floor && self.epoch.floor > 0 {
                         // A client from before the roll: what a fresh core whose
                         // floor starts at the roll's timestamp would answer.
@@ -740,7 +745,7 @@ pub(crate) fn cluster_core_stage(
         history,
         stats: stats.clone(),
         pending: VecDeque::with_capacity(1 << 16),
-        proposed: HashMap::with_capacity(PROPOSED_SESSIONS),
+        proposed: HashMap::with_capacity(PROPOSED_MAX),
         synced,
         handed: 0,
         unsynced: VecDeque::with_capacity(1 << 16),
@@ -810,6 +815,7 @@ pub(crate) fn cluster_core_stage(
             leader_flag.store(leader, Ordering::Release);
             if leader {
                 stats.leader_terms.fetch_add(1, Ordering::Relaxed);
+                sh.proposed.clear(); // proposals of earlier terms
                 last_sent = Instant::now() - heartbeat; // announce at once
             }
         }

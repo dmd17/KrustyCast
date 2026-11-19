@@ -603,7 +603,10 @@ the PRD's 1 M msg/s (NFR-5), not the cluster.
    control; ingress answers BUSY).
 5. *Resends were logged again while their original was being committed*:
    when commits are slower than the retry interval, 40 log entries per
-   message and goodput about 9 k msg/s. The leader now drops them. The
+   message and goodput about 9 k msg/s. The leader now drops them (keyed
+   by message since 2026-11-19: `Cluster.tla` showed the first,
+   per-session filter let resends through after a NAK, and its first fix
+   could starve a lower seq; spec/README.md). The
    nightly simulation hit the same bug that morning from the other side
    (`cluster3-harsh`: network delays near the retry interval, 5 of 1000
    seeds livelocked); `krusty-sim`'s cluster shell has the same filter

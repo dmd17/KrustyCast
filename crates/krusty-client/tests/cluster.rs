@@ -333,13 +333,79 @@ fn resends_of_messages_being_committed_are_not_logged_again() {
         .map(|k| stat(k, |s| s.resends_filtered.load(Ordering::Relaxed)))
         .sum();
     assert!(filtered > 0, "no resend was filtered");
-    // Entries applied: the messages, a no-op per term, and the few resends
-    // that arrive after their original was applied (before its outcome).
+    // Entries applied: the messages, a no-op per term, and the resends that
+    // arrive after their original was applied but before the client heard
+    // its outcome. Retrying every 50 µs, faster than an outcome comes back,
+    // that is up to one more per message (about 1.75 here): bounded, not
+    // the dozens per message without the filter.
     let applied = stat(leader, |s| s.applied.load(Ordering::Relaxed));
     assert!(
-        applied < n + n / 2,
+        applied < 2 * n,
         "{applied} log entries for {n} messages ({filtered} resends filtered)"
     );
+}
+
+/// Go back N after a NAK: seq 2 arrives first and is NAKed, then seq 1 and
+/// a burst of its resends, all before mode (b) can commit it. The resends
+/// must not be logged again (Cluster.tla's FilterTracksHighestSeq: the
+/// filter first kept the index of the highest seq's proposal, already
+/// applied here, and let every resend of seq 1 through).
+#[test]
+fn resends_after_a_nak_are_not_logged_again() {
+    use krusty_wire::feedback::{Feedback, Outcome};
+    use krusty_wire::ingress::Submit;
+    let c = Cluster::new(3, "resend-nak", Durability::Sync);
+    let leader = c.wait_leader(Duration::from_secs(5));
+    let to = c.cfgs[leader].ingress;
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(50)))
+        .unwrap();
+    let send = |seq: u64| {
+        let mut b = [0u8; 256];
+        let n = Submit {
+            client_id: 11,
+            incarnation: 1,
+            client_seqno: seq,
+            append: Append::Unconditional,
+            payload: b"x",
+        }
+        .encode(&mut b)
+        .unwrap();
+        sock.send_to(&b[..n], to).unwrap();
+    };
+    let wait_for = |want: &dyn Fn(&Feedback) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut b = [0u8; 256];
+        loop {
+            assert!(Instant::now() < deadline, "no such outcome");
+            if let Ok(n) = sock.recv(&mut b)
+                && let Ok(f) = Feedback::decode(&b[..n])
+                && want(&f)
+            {
+                return;
+            }
+        }
+    };
+    let applied = |c: &Cluster| {
+        c.nodes[leader]
+            .as_ref()
+            .unwrap()
+            .stats
+            .applied
+            .load(Ordering::Relaxed)
+    };
+    send(2);
+    wait_for(&|f| matches!(f.outcome, Outcome::Nak));
+    let before = applied(&c);
+    send(1);
+    for _ in 0..200 {
+        send(1);
+    }
+    wait_for(&|f| f.client_seqno == 1 && matches!(f.outcome, Outcome::Accepted { .. }));
+    // Let anything logged after the ACCEPTED apply too.
+    std::thread::sleep(Duration::from_millis(200));
+    let copies = applied(&c) - before;
+    assert!(copies <= 3, "seq 1 was logged {copies} times for 201 sends");
 }
 
 /// `krusty-admin`'s endpoint: every node reports the same leader and,
