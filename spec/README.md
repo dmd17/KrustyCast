@@ -312,14 +312,20 @@ or if any theorem uses `sorry` or an axiom beyond Lean's standard three.
 | `IdMap.lean` | The client and key tables (`table.rs`: linear probing, backward-shift deletion) are finite maps. A well-formedness invariant (power-of-two size, at most half full, distinct keys, no empty bucket inside a probe run) holds after `new` and is kept by `insert` and `remove`; `get`, `insert` and `remove` are lookup, update and erase on the map the buckets hold. Probing terminates because a half-empty table always has an empty bucket. `remove`'s shift loop is proved with Knuth's invariant, plus a ghost empty bucket that bounds the scan. |
 | `Spec.lean` | The abstract sequencer: sessions, outcome rings, key versions, a bounded client table from which any idle session may be evicted, and a bounded key table, all over maps and naturals. Proved on it: **G4** (`step_hinv`), every step keeps a history invariant, so a message is decided at most once and remembered outcomes are the decisions taken; **G5** (`step_pub`), a publication takes the next seqno, and a conditional append publishes its key's next version and changes no other version. |
 | `Refine.lean` | **Refinement** (`apply_refines`): under an invariant on `Core` (table invariants, slots and sessions in one-to-one correspondence, ring and version bounds), `Core::apply` never panics, keeps the invariant, and its effects and new state are one `spec.Step` of the abstraction (the eviction choice it makes is one the spec allows). `new_inv`: `Core::new` establishes the invariant. `apply_at_most_once`: G4 for the code itself. |
+| `Restore.lean` | **Restoring a snapshot** (`restore_inv`): whatever the bytes, `Core::restore` never panics and either rejects them or returns a core satisfying the invariant (with the configuration asked for), so `apply_refines` holds from the first entry after a restart. The proof found one gap: `restore` accepted fewer sessions than slots in use, a core no run reaches, whose empty slots would never be reused; it now rejects them (2026-11-19). |
 
 G7 (determinism) holds by construction: `Core.apply` is a function of the
 state and the entry.
 
-Not covered: `snapshot.rs` (left out of the translation; its property test
-covers it), so a core restored from a snapshot is not yet proved to satisfy
-the invariant. `Option::clone` is modelled with its standard semantics
-instead of being left an axiom (`regen.sh` reapplies the model).
+Not covered: the snapshot *writer* (`snapshot.rs`, left out of the
+translation; its property test checks that what it writes restores to an
+indistinguishable core). The reader, `restore.rs`, is translated and
+proved; it is written for Aeneas (no early return inside a loop, bytes
+decoded by indexing), and the core variable is `kc` because one named
+`core` would shadow Lean's `core` namespace.
+
+`Option::clone` is modelled with its standard semantics instead of being
+left an axiom (`regen.sh` reapplies the model).
 
 ```
 PATH=$HOME/.elan/bin:$PATH scripts/check-axioms.sh spec/lean

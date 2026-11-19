@@ -2,7 +2,8 @@
 # Regenerates the Lean translation of krusty-core into spec/lean/KrustyCore.
 # Needs Charon and Aeneas (see spikes/aeneas-stream/REPORT.md for setup).
 set -eu
-# Snapshot code is not verified (its property test covers it) and is left out.
+# The snapshot writer is not verified (its property test covers it) and is
+# left out; restore.rs, which reads snapshots, is translated and proved.
 T=${KRUSTY_TOOLS:-$HOME/.local/share/krusty-tools}
 here=$(cd "$(dirname "$0")" && pwd)
 out=$(mktemp -d)

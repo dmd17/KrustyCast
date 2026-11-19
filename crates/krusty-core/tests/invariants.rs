@@ -254,4 +254,20 @@ fn restore_rejects_bad_snapshots() {
         Core::restore(cfg, &bad).err(),
         Some(krusty_core::SnapshotError::BadMagic)
     );
+    // Slots 0..unused are in use (a slot is reused only by evicting its
+    // session): more slots in use than sessions is corrupt. The core's
+    // invariant (spec/lean Refine.lean, clients_len) needs it; a hole would
+    // never be reused.
+    let mut holes = snap.clone();
+    assert_eq!(
+        holes[80], 1,
+        "unused (offset 80) of a core with one session"
+    );
+    holes[80] = 2;
+    assert_eq!(
+        Core::restore(cfg, &holes).err(),
+        Some(krusty_core::SnapshotError::Corrupt(
+            krusty_core::Corruption::SessionCount
+        ))
+    );
 }

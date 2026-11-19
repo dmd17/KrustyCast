@@ -84,27 +84,27 @@ def krusty_wire.stream.MessageMeta.Insts.CoreFmtDebug : core.fmt.Debug
 }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Config}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 42:9-42:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 43:9-43:14
     Visibility: public -/
 def Config.Insts.CoreCloneClone.clone (self : Config) : Result Config := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 42:9-42:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 43:9-43:14 -/
 @[reducible]
 def Config.Insts.CoreCloneClone : core.clone.Clone Config := {
   clone := Config.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 42:16-42:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 43:16-43:20 -/
 @[reducible]
 def Config.Insts.CoreMarkerCopy : core.marker.Copy Config := {
   cloneInst := Config.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Config}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 42:22-42:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 43:22-43:27
     Visibility: public -/
 def Config.Insts.CoreFmtDebug.fmt
   (self : Config) (f : core.fmt.Formatter) :
@@ -120,21 +120,21 @@ def Config.Insts.CoreFmtDebug.fmt
     (toStr "evict_idle_ns") dyn3
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 42:22-42:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 43:22-43:27 -/
 @[reducible]
 def Config.Insts.CoreFmtDebug : core.fmt.Debug Config := {
   fmt := Config.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 42:29-42:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 43:29-43:38 -/
 @[reducible]
 def Config.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Config := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Config> for krusty_core::Config}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 42:29-42:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 43:29-43:38
     Visibility: public -/
 def Config.Insts.CoreCmpPartialEqConfig.eq
   (self : Config) (other : Config) : Result Bool := do
@@ -149,21 +149,21 @@ def Config.Insts.CoreCmpPartialEqConfig.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Config> for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 42:29-42:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 43:29-43:38 -/
 @[reducible]
 def Config.Insts.CoreCmpPartialEqConfig : core.cmp.PartialEq Config Config := {
   eq := Config.Insts.CoreCmpPartialEqConfig.eq
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Config}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 42:40-42:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 43:40-43:42
     Visibility: public -/
 def Config.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Config) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Config}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 42:40-42:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 43:40-43:42 -/
 @[reducible]
 def Config.Insts.CoreCmpEq : core.cmp.Eq Config := {
   partialEqInst := Config.Insts.CoreCmpPartialEqConfig
@@ -171,7 +171,7 @@ def Config.Insts.CoreCmpEq : core.cmp.Eq Config := {
 }
 
 /-- [krusty_core::{krusty_core::Config}::DEFAULT]
-    Source: 'crates/krusty-core/src/lib.rs', lines 56:4-61:6
+    Source: 'crates/krusty-core/src/lib.rs', lines 57:4-62:6
     Visibility: public -/
 @[global_simps, irreducible]
 def Config.DEFAULT : Result Config := do
@@ -185,27 +185,27 @@ def Config.DEFAULT : Result Config := do
     }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Decided}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 65:9-65:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 66:9-66:14
     Visibility: public -/
 def Decided.Insts.CoreCloneClone.clone (self : Decided) : Result Decided := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 65:9-65:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 66:9-66:14 -/
 @[reducible]
 def Decided.Insts.CoreCloneClone : core.clone.Clone Decided := {
   clone := Decided.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 65:16-65:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 66:16-66:20 -/
 @[reducible]
 def Decided.Insts.CoreMarkerCopy : core.marker.Copy Decided := {
   cloneInst := Decided.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Decided}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 65:22-65:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 66:22-66:27
     Visibility: public -/
 def Decided.Insts.CoreFmtDebug.fmt
   (self : Decided) (f : core.fmt.Formatter) :
@@ -223,21 +223,21 @@ def Decided.Insts.CoreFmtDebug.fmt
       "key") __self_01 (toStr "current_version") __self_11
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 65:22-65:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 66:22-66:27 -/
 @[reducible]
 def Decided.Insts.CoreFmtDebug : core.fmt.Debug Decided := {
   fmt := Decided.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 65:29-65:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 66:29-66:38 -/
 @[reducible]
 def Decided.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Decided := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Decided> for krusty_core::Decided}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 65:29-65:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 66:29-66:38
     Visibility: public -/
 def Decided.Insts.CoreCmpPartialEqDecided.eq
   (self : Decided) (other : Decided) : Result Bool := do
@@ -262,7 +262,7 @@ def Decided.Insts.CoreCmpPartialEqDecided.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Decided> for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 65:29-65:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 66:29-66:38 -/
 @[reducible]
 def Decided.Insts.CoreCmpPartialEqDecided : core.cmp.PartialEq Decided Decided
   := {
@@ -270,14 +270,14 @@ def Decided.Insts.CoreCmpPartialEqDecided : core.cmp.PartialEq Decided Decided
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Decided}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 65:40-65:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 66:40-66:42
     Visibility: public -/
 def Decided.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Decided) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Decided}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 65:40-65:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 66:40-66:42 -/
 @[reducible]
 def Decided.Insts.CoreCmpEq : core.cmp.Eq Decided := {
   partialEqInst := Decided.Insts.CoreCmpPartialEqDecided
@@ -285,7 +285,7 @@ def Decided.Insts.CoreCmpEq : core.cmp.Eq Decided := {
 }
 
 /-- [krusty_core::{krusty_core::Decided}::outcome]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 72:4-83:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 73:4-84:5 -/
 def Decided.outcome
   (self : Decided) : Result krusty_wire.feedback.Outcome := do
   match self with
@@ -295,28 +295,28 @@ def Decided.outcome
     ok (krusty_wire.feedback.Outcome.Rejected key current_version)
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::RingSlot}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 86:9-86:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 87:9-87:14
     Visibility: public -/
 def RingSlot.Insts.CoreCloneClone.clone
   (self : RingSlot) : Result RingSlot := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 86:9-86:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 87:9-87:14 -/
 @[reducible]
 def RingSlot.Insts.CoreCloneClone : core.clone.Clone RingSlot := {
   clone := RingSlot.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 86:16-86:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 87:16-87:20 -/
 @[reducible]
 def RingSlot.Insts.CoreMarkerCopy : core.marker.Copy RingSlot := {
   cloneInst := RingSlot.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::RingSlot}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 86:22-86:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 87:22-87:27
     Visibility: public -/
 def RingSlot.Insts.CoreFmtDebug.fmt
   (self : RingSlot) (f : core.fmt.Formatter) :
@@ -329,21 +329,21 @@ def RingSlot.Insts.CoreFmtDebug.fmt
     "client_seqno") dyn (toStr "decided") dyn1
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 86:22-86:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 87:22-87:27 -/
 @[reducible]
 def RingSlot.Insts.CoreFmtDebug : core.fmt.Debug RingSlot := {
   fmt := RingSlot.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 86:29-86:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 87:29-87:38 -/
 @[reducible]
 def RingSlot.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq RingSlot := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::RingSlot> for krusty_core::RingSlot}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 86:29-86:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 87:29-87:38
     Visibility: public -/
 def RingSlot.Insts.CoreCmpPartialEqRingSlot.eq
   (self : RingSlot) (other : RingSlot) : Result Bool := do
@@ -352,7 +352,7 @@ def RingSlot.Insts.CoreCmpPartialEqRingSlot.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::RingSlot> for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 86:29-86:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 87:29-87:38 -/
 @[reducible]
 def RingSlot.Insts.CoreCmpPartialEqRingSlot : core.cmp.PartialEq RingSlot
   RingSlot := {
@@ -360,14 +360,14 @@ def RingSlot.Insts.CoreCmpPartialEqRingSlot : core.cmp.PartialEq RingSlot
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::RingSlot}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 86:40-86:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 87:40-87:42
     Visibility: public -/
 def RingSlot.Insts.CoreCmpEq.assert_fields_are_eq
   (self : RingSlot) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::RingSlot}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 86:40-86:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 87:40-87:42 -/
 @[reducible]
 def RingSlot.Insts.CoreCmpEq : core.cmp.Eq RingSlot := {
   partialEqInst := RingSlot.Insts.CoreCmpPartialEqRingSlot
@@ -375,27 +375,27 @@ def RingSlot.Insts.CoreCmpEq : core.cmp.Eq RingSlot := {
 }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Session}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 92:9-92:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 93:9-93:14
     Visibility: public -/
 def Session.Insts.CoreCloneClone.clone (self : Session) : Result Session := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 92:9-92:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 93:9-93:14 -/
 @[reducible]
 def Session.Insts.CoreCloneClone : core.clone.Clone Session := {
   clone := Session.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 92:16-92:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 93:16-93:20 -/
 @[reducible]
 def Session.Insts.CoreMarkerCopy : core.marker.Copy Session := {
   cloneInst := Session.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Session}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 92:22-92:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 93:22-93:27
     Visibility: public -/
 def Session.Insts.CoreFmtDebug.fmt
   (self : Session) (f : core.fmt.Formatter) :
@@ -411,21 +411,21 @@ def Session.Insts.CoreFmtDebug.fmt
     "last_active_ns") dyn3
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 92:22-92:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 93:22-93:27 -/
 @[reducible]
 def Session.Insts.CoreFmtDebug : core.fmt.Debug Session := {
   fmt := Session.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 92:29-92:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 93:29-93:38 -/
 @[reducible]
 def Session.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Session := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Session> for krusty_core::Session}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 92:29-92:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 93:29-93:38
     Visibility: public -/
 def Session.Insts.CoreCmpPartialEqSession.eq
   (self : Session) (other : Session) : Result Bool := do
@@ -440,7 +440,7 @@ def Session.Insts.CoreCmpPartialEqSession.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Session> for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 92:29-92:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 93:29-93:38 -/
 @[reducible]
 def Session.Insts.CoreCmpPartialEqSession : core.cmp.PartialEq Session Session
   := {
@@ -448,14 +448,14 @@ def Session.Insts.CoreCmpPartialEqSession : core.cmp.PartialEq Session Session
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Session}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 92:40-92:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 93:40-93:42
     Visibility: public -/
 def Session.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Session) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Session}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 92:40-92:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 93:40-93:42 -/
 @[reducible]
 def Session.Insts.CoreCmpEq : core.cmp.Eq Session := {
   partialEqInst := Session.Insts.CoreCmpPartialEqSession
@@ -463,27 +463,27 @@ def Session.Insts.CoreCmpEq : core.cmp.Eq Session := {
 }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Request}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 104:9-104:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 105:9-105:14
     Visibility: public -/
 def Request.Insts.CoreCloneClone.clone (self : Request) : Result Request := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 104:9-104:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 105:9-105:14 -/
 @[reducible]
 def Request.Insts.CoreCloneClone : core.clone.Clone Request := {
   clone := Request.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 104:16-104:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 105:16-105:20 -/
 @[reducible]
 def Request.Insts.CoreMarkerCopy : core.marker.Copy Request := {
   cloneInst := Request.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Request}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 104:22-104:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 105:22-105:27
     Visibility: public -/
 def Request.Insts.CoreFmtDebug.fmt
   (self : Request) (f : core.fmt.Formatter) :
@@ -500,21 +500,21 @@ def Request.Insts.CoreFmtDebug.fmt
     (toStr "append") dyn3
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 104:22-104:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 105:22-105:27 -/
 @[reducible]
 def Request.Insts.CoreFmtDebug : core.fmt.Debug Request := {
   fmt := Request.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 104:29-104:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 105:29-105:38 -/
 @[reducible]
 def Request.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Request := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Request> for krusty_core::Request}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 104:29-104:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 105:29-105:38
     Visibility: public -/
 def Request.Insts.CoreCmpPartialEqRequest.eq
   (self : Request) (other : Request) : Result Bool := do
@@ -531,7 +531,7 @@ def Request.Insts.CoreCmpPartialEqRequest.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Request> for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 104:29-104:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 105:29-105:38 -/
 @[reducible]
 def Request.Insts.CoreCmpPartialEqRequest : core.cmp.PartialEq Request Request
   := {
@@ -539,14 +539,14 @@ def Request.Insts.CoreCmpPartialEqRequest : core.cmp.PartialEq Request Request
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Request}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 104:40-104:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 105:40-105:42
     Visibility: public -/
 def Request.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Request) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Request}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 104:40-104:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 105:40-105:42 -/
 @[reducible]
 def Request.Insts.CoreCmpEq : core.cmp.Eq Request := {
   partialEqInst := Request.Insts.CoreCmpPartialEqRequest
@@ -554,7 +554,7 @@ def Request.Insts.CoreCmpEq : core.cmp.Eq Request := {
 }
 
 /-- [krusty_core::{krusty_core::Request}::of]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 113:4-120:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 114:4-121:5
     Visibility: public -/
 def Request.of (s : krusty_wire.ingress.Submit) : Result Request := do
   ok
@@ -566,27 +566,27 @@ def Request.of (s : krusty_wire.ingress.Submit) : Result Request := do
     }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Effects}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 124:9-124:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 125:9-125:14
     Visibility: public -/
 def Effects.Insts.CoreCloneClone.clone (self : Effects) : Result Effects := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 124:9-124:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 125:9-125:14 -/
 @[reducible]
 def Effects.Insts.CoreCloneClone : core.clone.Clone Effects := {
   clone := Effects.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 124:16-124:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 125:16-125:20 -/
 @[reducible]
 def Effects.Insts.CoreMarkerCopy : core.marker.Copy Effects := {
   cloneInst := Effects.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Published}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 132:22-132:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 133:22-133:27
     Visibility: public -/
 def Published.Insts.CoreFmtDebug.fmt
   (self : Published) (f : core.fmt.Formatter) :
@@ -600,14 +600,14 @@ def Published.Insts.CoreFmtDebug.fmt
     "seqno") dyn (toStr "meta") dyn1
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 132:22-132:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 133:22-133:27 -/
 @[reducible]
 def Published.Insts.CoreFmtDebug : core.fmt.Debug Published := {
   fmt := Published.Insts.CoreFmtDebug.fmt
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::Effects}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 124:22-124:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 125:22-125:27
     Visibility: public -/
 def Effects.Insts.CoreFmtDebug.fmt
   (self : Effects) (f : core.fmt.Formatter) :
@@ -623,21 +623,21 @@ def Effects.Insts.CoreFmtDebug.fmt
     "publish") dyn (toStr "reply") dyn1
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 124:22-124:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 125:22-125:27 -/
 @[reducible]
 def Effects.Insts.CoreFmtDebug : core.fmt.Debug Effects := {
   fmt := Effects.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 124:29-124:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 125:29-125:38 -/
 @[reducible]
 def Effects.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Effects := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Published> for krusty_core::Published}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 132:29-132:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 133:29-133:38
     Visibility: public -/
 def Published.Insts.CoreCmpPartialEqPublished.eq
   (self : Published) (other : Published) : Result Bool := do
@@ -648,7 +648,7 @@ def Published.Insts.CoreCmpPartialEqPublished.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Published> for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 132:29-132:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 133:29-133:38 -/
 @[reducible]
 def Published.Insts.CoreCmpPartialEqPublished : core.cmp.PartialEq Published
   Published := {
@@ -656,7 +656,7 @@ def Published.Insts.CoreCmpPartialEqPublished : core.cmp.PartialEq Published
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::Effects> for krusty_core::Effects}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 124:29-124:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 125:29-125:38
     Visibility: public -/
 def Effects.Insts.CoreCmpPartialEqEffects.eq
   (self : Effects) (other : Effects) : Result Bool := do
@@ -671,7 +671,7 @@ def Effects.Insts.CoreCmpPartialEqEffects.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::Effects> for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 124:29-124:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 125:29-125:38 -/
 @[reducible]
 def Effects.Insts.CoreCmpPartialEqEffects : core.cmp.PartialEq Effects Effects
   := {
@@ -679,14 +679,14 @@ def Effects.Insts.CoreCmpPartialEqEffects : core.cmp.PartialEq Effects Effects
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Effects}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 124:40-124:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 125:40-125:42
     Visibility: public -/
 def Effects.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Effects) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Effects}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 124:40-124:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 125:40-125:42 -/
 @[reducible]
 def Effects.Insts.CoreCmpEq : core.cmp.Eq Effects := {
   partialEqInst := Effects.Insts.CoreCmpPartialEqEffects
@@ -694,42 +694,42 @@ def Effects.Insts.CoreCmpEq : core.cmp.Eq Effects := {
 }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::Published}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 132:9-132:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 133:9-133:14
     Visibility: public -/
 def Published.Insts.CoreCloneClone.clone
   (self : Published) : Result Published := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 132:9-132:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 133:9-133:14 -/
 @[reducible]
 def Published.Insts.CoreCloneClone : core.clone.Clone Published := {
   clone := Published.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 132:16-132:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 133:16-133:20 -/
 @[reducible]
 def Published.Insts.CoreMarkerCopy : core.marker.Copy Published := {
   cloneInst := Published.Insts.CoreCloneClone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 132:29-132:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 133:29-133:38 -/
 @[reducible]
 def Published.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq Published := {
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::Published}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 132:40-132:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 133:40-133:42
     Visibility: public -/
 def Published.Insts.CoreCmpEq.assert_fields_are_eq
   (self : Published) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::Published}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 132:40-132:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 133:40-133:42 -/
 @[reducible]
 def Published.Insts.CoreCmpEq : core.cmp.Eq Published := {
   partialEqInst := Published.Insts.CoreCmpPartialEqPublished
@@ -737,28 +737,28 @@ def Published.Insts.CoreCmpEq : core.cmp.Eq Published := {
 }
 
 /-- [krusty_core::{impl core::clone::Clone for krusty_core::ApplyError}::clone]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 138:9-138:14
+    Source: 'crates/krusty-core/src/lib.rs', lines 139:9-139:14
     Visibility: public -/
 def ApplyError.Insts.CoreCloneClone.clone
   (self : ApplyError) : Result ApplyError := do
   ok self
 
 /-- Trait implementation: [krusty_core::{impl core::clone::Clone for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 138:9-138:14 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 139:9-139:14 -/
 @[reducible]
 def ApplyError.Insts.CoreCloneClone : core.clone.Clone ApplyError := {
   clone := ApplyError.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::Copy for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 138:16-138:20 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 139:16-139:20 -/
 @[reducible]
 def ApplyError.Insts.CoreMarkerCopy : core.marker.Copy ApplyError := {
   cloneInst := ApplyError.Insts.CoreCloneClone
 }
 
 /-- [krusty_core::{impl core::fmt::Debug for krusty_core::ApplyError}::fmt]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 138:22-138:27
+    Source: 'crates/krusty-core/src/lib.rs', lines 139:22-139:27
     Visibility: public -/
 def ApplyError.Insts.CoreFmtDebug.fmt
   (self : ApplyError) (f : core.fmt.Formatter) :
@@ -771,21 +771,21 @@ def ApplyError.Insts.CoreFmtDebug.fmt
     "expected") __self_01 (toStr "got") __self_11
 
 /-- Trait implementation: [krusty_core::{impl core::fmt::Debug for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 138:22-138:27 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 139:22-139:27 -/
 @[reducible]
 def ApplyError.Insts.CoreFmtDebug : core.fmt.Debug ApplyError := {
   fmt := ApplyError.Insts.CoreFmtDebug.fmt
 }
 
 /-- Trait implementation: [krusty_core::{impl core::marker::StructuralPartialEq for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 138:29-138:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 139:29-139:38 -/
 @[reducible]
 def ApplyError.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq ApplyError := {
 }
 
 /-- [krusty_core::{impl core::cmp::PartialEq<krusty_core::ApplyError> for krusty_core::ApplyError}::eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 138:29-138:38
+    Source: 'crates/krusty-core/src/lib.rs', lines 139:29-139:38
     Visibility: public -/
 def ApplyError.Insts.CoreCmpPartialEqApplyError.eq
   (self : ApplyError) (other : ApplyError) : Result Bool := do
@@ -797,7 +797,7 @@ def ApplyError.Insts.CoreCmpPartialEqApplyError.eq
   else ok false
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::PartialEq<krusty_core::ApplyError> for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 138:29-138:38 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 139:29-139:38 -/
 @[reducible]
 def ApplyError.Insts.CoreCmpPartialEqApplyError : core.cmp.PartialEq ApplyError
   ApplyError := {
@@ -805,14 +805,14 @@ def ApplyError.Insts.CoreCmpPartialEqApplyError : core.cmp.PartialEq ApplyError
 }
 
 /-- [krusty_core::{impl core::cmp::Eq for krusty_core::ApplyError}::assert_fields_are_eq]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 138:40-138:42
+    Source: 'crates/krusty-core/src/lib.rs', lines 139:40-139:42
     Visibility: public -/
 def ApplyError.Insts.CoreCmpEq.assert_fields_are_eq
   (self : ApplyError) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [krusty_core::{impl core::cmp::Eq for krusty_core::ApplyError}]
-    Source: 'crates/krusty-core/src/lib.rs', lines 138:40-138:42 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 139:40-139:42 -/
 @[reducible]
 def ApplyError.Insts.CoreCmpEq : core.cmp.Eq ApplyError := {
   partialEqInst := ApplyError.Insts.CoreCmpPartialEqApplyError
@@ -870,7 +870,7 @@ def table.IdMap.new (max_len : Std.Usize) : Result table.IdMap := do
   ok { buckets := v, mask := i1, len := 0#usize, max_len }
 
 /-- [krusty_core::{krusty_core::Core}::new]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 170:4-188:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 171:4-189:5
     Visibility: public -/
 def Core.new (cfg : Config) : Result Core := do
   massert (cfg.max_clients >= 1#usize)
@@ -907,19 +907,19 @@ def Core.new (cfg : Config) : Result Core := do
     }
 
 /-- [krusty_core::{krusty_core::Core}::applied]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 190:4-192:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 191:4-193:5
     Visibility: public -/
 def Core.impl.applied (self : Core) : Result Std.U64 := do
   ok self.applied
 
 /-- [krusty_core::{krusty_core::Core}::next_seqno]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 194:4-196:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 195:4-197:5
     Visibility: public -/
 def Core.impl.next_seqno (self : Core) : Result Std.U64 := do
   ok self.next_seqno
 
 /-- [krusty_core::{krusty_core::Core}::incarnation_floor]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 198:4-200:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 199:4-201:5
     Visibility: public -/
 def Core.impl.incarnation_floor (self : Core) : Result Std.U64 := do
   ok self.incarnation_floor
@@ -931,7 +931,7 @@ def table.IdMap.impl.len (self : table.IdMap) : Result Std.Usize := do
   ok self.len
 
 /-- [krusty_core::{krusty_core::Core}::clients]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 202:4-204:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 203:4-205:5
     Visibility: public -/
 def Core.impl.clients (self : Core) : Result Std.Usize := do
   table.IdMap.impl.len self.clients
@@ -1013,7 +1013,7 @@ def table.IdMap.get
   | some b1 => ok (some b1.slot)
 
 /-- [krusty_core::{krusty_core::Core}::version]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 207:4-212:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 208:4-213:5
     Visibility: public -/
 def Core.version (self : Core) (key : Std.U64) : Result Std.U64 := do
   let o ← table.IdMap.get self.keys key
@@ -1067,7 +1067,7 @@ def table.IdMap.insert
       ok (true, { self with buckets := v, len := i1 })
 
 /-- [krusty_core::{krusty_core::Core}::set_version]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 484:4-501:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 485:4-502:5 -/
 def Core.set_version
   (self : Core) (key : Std.U64) (version : Std.U64) :
   Result (Bool × Core)
@@ -1094,7 +1094,7 @@ def Core.set_version
     ok (true, { self with versions := v })
 
 /-- [krusty_core::{krusty_core::Core}::decide_append]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 436:4-481:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 437:4-482:5 -/
 def Core.decide_append
   (self : Core) (s : Request) :
   Result (((Option Decided) × (Option krusty_wire.stream.MessageMeta)) ×
@@ -1129,7 +1129,7 @@ def Core.decide_append
         else ok ((none, none), self1)
 
 /-- [krusty_core::{krusty_core::Core}::ring_index]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 355:4-358:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 356:4-359:5 -/
 def Core.ring_index
   (self : Core) (slot : Std.U32) (client_seqno : Std.U64) :
   Result Std.Usize
@@ -1142,7 +1142,7 @@ def Core.ring_index
   i1 + i4
 
 /-- [krusty_core::{krusty_core::Core}::reply]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 235:4-245:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 236:4-246:5 -/
 def Core.reply
   (s : Request) (client_seqno : Std.U64)
   (outcome : krusty_wire.feedback.Outcome) :
@@ -1162,12 +1162,12 @@ def Core.reply
     }
 
 /-- [krusty_core::{krusty_core::Core}::busy]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 247:4-249:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 248:4-250:5 -/
 def Core.busy (s : Request) : Result Effects := do
   Core.reply s s.client_seqno (krusty_wire.feedback.Outcome.Busy 0#u64)
 
 /-- [krusty_core::{krusty_core::Core}::in_session]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 360:4-431:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 361:4-432:5 -/
 def Core.in_session
   (self : Core) (slot : Std.U32) (s : Request) : Result (Effects × Core) := do
   let i ← lift (UScalar.cast .Usize slot)
@@ -1249,7 +1249,7 @@ def Core.in_session
               { self1 with next_seqno := i4, sessions := v, ring := v1 })
 
 /-- [krusty_core::{krusty_core::Core}::start_session]: loop body 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 349:8-352:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 350:8-353:9 -/
 @[rust_loop_body]
 def Core.start_session_loop.body
   (n : Std.Usize) (base : Std.Usize) (v : alloc.vec.Vec (Option RingSlot))
@@ -1269,7 +1269,7 @@ def Core.start_session_loop.body
   else ok (done v)
 
 /-- [krusty_core::{krusty_core::Core}::start_session]: loop 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 349:8-352:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 350:8-353:9 -/
 @[rust_loop]
 def Core.start_session_loop
   (v : alloc.vec.Vec (Option RingSlot)) (n : Std.Usize) (base : Std.Usize)
@@ -1281,7 +1281,7 @@ def Core.start_session_loop
     (v, i)
 
 /-- [krusty_core::{krusty_core::Core}::start_session]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 339:4-353:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 340:4-354:5 -/
 def Core.start_session
   (self : Core) (slot : Std.U32) (s : Request) : Result Core := do
   let i ← lift (UScalar.cast .Usize slot)
@@ -1389,7 +1389,7 @@ def table.IdMap.remove
     ok { self with buckets := v1, len := i }
 
 /-- [krusty_core::{krusty_core::Core}::allocate_session]: loop body 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 311:8-325:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 312:8-326:9 -/
 @[rust_loop_body]
 def Core.allocate_session_loop.body
   (i : Std.U64) (v : alloc.vec.Vec (Option Session)) (c : Config)
@@ -1430,7 +1430,7 @@ def Core.allocate_session_loop.body
   else ok (done (c, victim))
 
 /-- [krusty_core::{krusty_core::Core}::allocate_session]: loop 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 311:8-325:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 312:8-326:9 -/
 @[rust_loop]
 def Core.allocate_session_loop
   (c : Config) (i : Std.U64) (v : alloc.vec.Vec (Option Session))
@@ -1443,7 +1443,7 @@ def Core.allocate_session_loop
     (c, victim, i1)
 
 /-- [krusty_core::{krusty_core::Core}::allocate_session]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 304:4-337:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 305:4-338:5 -/
 def Core.allocate_session
   (self : Core) : Result ((Option Std.U32) × Core) := do
   let i := alloc.vec.Vec.len self.sessions
@@ -1480,7 +1480,7 @@ def Core.allocate_session
         })
 
 /-- [krusty_core::{krusty_core::Core}::decide]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 251:4-300:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 252:4-301:5 -/
 def Core.decide (self : Core) (s : Request) : Result (Effects × Core) := do
   let i ← lift (UScalar.cast .U64 s.client_id)
   let found ← table.IdMap.get self.clients i
@@ -1536,7 +1536,7 @@ def Core.decide (self : Core) (s : Request) : Result (Effects × Core) := do
           ok (e, self)
 
 /-- [krusty_core::{krusty_core::Core}::apply]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 216:4-233:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 217:4-234:5
     Visibility: public -/
 def Core.apply
   (self : Core) (log_index : Std.U64) (timestamp_ns : Std.U64)
@@ -1565,6 +1565,958 @@ def Core.apply
         let r ← Request.of s
         let (e, self1) ← Core.decide { self with applied := log_index } r
         ok (core.result.Result.Ok e, self1)
+
+/-- [krusty_core::restore::MAGIC]
+    Source: 'crates/krusty-core/src/restore.rs', lines 10:0-10:52 -/
+@[global_simps, irreducible]
+def restore.MAGIC : Std.U64 := 3544421148157756235#u64
+
+/-- [krusty_core::restore::VERSION]
+    Source: 'crates/krusty-core/src/restore.rs', lines 11:0-11:34 -/
+@[global_simps, irreducible] def restore.VERSION : Std.U32 := 1#u32
+
+/-- [krusty_core::restore::{impl core::clone::Clone for krusty_core::restore::SnapshotError}::clone]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 13:9-13:14
+    Visibility: public -/
+def restore.SnapshotError.Insts.CoreCloneClone.clone
+  (self : restore.SnapshotError) : Result restore.SnapshotError := do
+  ok self
+
+/-- Trait implementation: [krusty_core::restore::{impl core::clone::Clone for krusty_core::restore::SnapshotError}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 13:9-13:14 -/
+@[reducible]
+def restore.SnapshotError.Insts.CoreCloneClone : core.clone.Clone
+  restore.SnapshotError := {
+  clone := restore.SnapshotError.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [krusty_core::restore::{impl core::marker::Copy for krusty_core::restore::SnapshotError}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 13:16-13:20 -/
+@[reducible]
+def restore.SnapshotError.Insts.CoreMarkerCopy : core.marker.Copy
+  restore.SnapshotError := {
+  cloneInst := restore.SnapshotError.Insts.CoreCloneClone
+}
+
+/-- [krusty_core::restore::{impl core::fmt::Debug for krusty_core::restore::Corruption}::fmt]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 24:22-24:27
+    Visibility: public -/
+def restore.Corruption.Insts.CoreFmtDebug.fmt
+  (self : restore.Corruption) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  match self with
+  | restore.Corruption.Scalars =>
+    core.fmt.Formatter.write_str f (toStr "Scalars")
+  | restore.Corruption.SessionCount =>
+    core.fmt.Formatter.write_str f (toStr "SessionCount")
+  | restore.Corruption.SessionSlot =>
+    core.fmt.Formatter.write_str f (toStr "SessionSlot")
+  | restore.Corruption.DuplicateClient =>
+    core.fmt.Formatter.write_str f (toStr "DuplicateClient")
+  | restore.Corruption.RingCount =>
+    core.fmt.Formatter.write_str f (toStr "RingCount")
+  | restore.Corruption.RingSlot =>
+    core.fmt.Formatter.write_str f (toStr "RingSlot")
+  | restore.Corruption.OutcomeKind =>
+    core.fmt.Formatter.write_str f (toStr "OutcomeKind")
+  | restore.Corruption.KeyCount =>
+    core.fmt.Formatter.write_str f (toStr "KeyCount")
+  | restore.Corruption.DuplicateKey =>
+    core.fmt.Formatter.write_str f (toStr "DuplicateKey")
+  | restore.Corruption.TrailingBytes =>
+    core.fmt.Formatter.write_str f (toStr "TrailingBytes")
+
+/-- Trait implementation: [krusty_core::restore::{impl core::fmt::Debug for krusty_core::restore::Corruption}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 24:22-24:27 -/
+@[reducible]
+def restore.Corruption.Insts.CoreFmtDebug : core.fmt.Debug restore.Corruption
+  := {
+  fmt := restore.Corruption.Insts.CoreFmtDebug.fmt
+}
+
+/-- [krusty_core::restore::{impl core::fmt::Debug for krusty_core::restore::SnapshotError}::fmt]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 13:22-13:27
+    Visibility: public -/
+def restore.SnapshotError.Insts.CoreFmtDebug.fmt
+  (self : restore.SnapshotError) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  match self with
+  | restore.SnapshotError.Truncated =>
+    core.fmt.Formatter.write_str f (toStr "Truncated")
+  | restore.SnapshotError.BadMagic =>
+    core.fmt.Formatter.write_str f (toStr "BadMagic")
+  | restore.SnapshotError.UnsupportedVersion __self_0 =>
+    let __self_01 := Dyn.mk _ (core.fmt.DebugShared core.fmt.DebugU32) __self_0
+    core.fmt.Formatter.debug_tuple_field1_finish f (toStr "UnsupportedVersion")
+      __self_01
+  | restore.SnapshotError.ConfigMismatch =>
+    core.fmt.Formatter.write_str f (toStr "ConfigMismatch")
+  | restore.SnapshotError.Corrupt __self_0 =>
+    let __self_01 :=
+      Dyn.mk _ (core.fmt.DebugShared restore.Corruption.Insts.CoreFmtDebug)
+        __self_0
+    core.fmt.Formatter.debug_tuple_field1_finish f (toStr "Corrupt") __self_01
+
+/-- Trait implementation: [krusty_core::restore::{impl core::fmt::Debug for krusty_core::restore::SnapshotError}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 13:22-13:27 -/
+@[reducible]
+def restore.SnapshotError.Insts.CoreFmtDebug : core.fmt.Debug
+  restore.SnapshotError := {
+  fmt := restore.SnapshotError.Insts.CoreFmtDebug.fmt
+}
+
+/-- Trait implementation: [krusty_core::restore::{impl core::marker::StructuralPartialEq for krusty_core::restore::SnapshotError}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 13:29-13:38 -/
+@[reducible]
+def restore.SnapshotError.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq restore.SnapshotError := {
+}
+
+/-- [krusty_core::restore::{impl core::cmp::PartialEq<krusty_core::restore::Corruption> for krusty_core::restore::Corruption}::eq]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 24:29-24:38
+    Visibility: public -/
+def restore.Corruption.Insts.CoreCmpPartialEqCorruption.eq
+  (self : restore.Corruption) (other : restore.Corruption) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [krusty_core::restore::{impl core::cmp::PartialEq<krusty_core::restore::Corruption> for krusty_core::restore::Corruption}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 24:29-24:38 -/
+@[reducible]
+def restore.Corruption.Insts.CoreCmpPartialEqCorruption : core.cmp.PartialEq
+  restore.Corruption restore.Corruption := {
+  eq := restore.Corruption.Insts.CoreCmpPartialEqCorruption.eq
+}
+
+/-- [krusty_core::restore::{impl core::cmp::PartialEq<krusty_core::restore::SnapshotError> for krusty_core::restore::SnapshotError}::eq]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 13:29-13:38
+    Visibility: public -/
+def restore.SnapshotError.Insts.CoreCmpPartialEqSnapshotError.eq
+  (self : restore.SnapshotError) (other : restore.SnapshotError) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  if self1 = other1
+  then
+    match self with
+    | restore.SnapshotError.Truncated => ok true
+    | restore.SnapshotError.BadMagic => ok true
+    | restore.SnapshotError.UnsupportedVersion __self_0 =>
+      match other with
+      | restore.SnapshotError.Truncated => ok true
+      | restore.SnapshotError.BadMagic => ok true
+      | restore.SnapshotError.UnsupportedVersion __arg1_0 =>
+        lift (core.cmp.impls.PartialEqU32.eq __self_0 __arg1_0)
+      | restore.SnapshotError.ConfigMismatch => ok true
+      | restore.SnapshotError.Corrupt _ => ok true
+    | restore.SnapshotError.ConfigMismatch => ok true
+    | restore.SnapshotError.Corrupt __self_0 =>
+      match other with
+      | restore.SnapshotError.Truncated => ok true
+      | restore.SnapshotError.BadMagic => ok true
+      | restore.SnapshotError.UnsupportedVersion _ => ok true
+      | restore.SnapshotError.ConfigMismatch => ok true
+      | restore.SnapshotError.Corrupt __arg1_0 =>
+        restore.Corruption.Insts.CoreCmpPartialEqCorruption.eq __self_0
+          __arg1_0
+  else ok false
+
+/-- Trait implementation: [krusty_core::restore::{impl core::cmp::PartialEq<krusty_core::restore::SnapshotError> for krusty_core::restore::SnapshotError}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 13:29-13:38 -/
+@[reducible]
+def restore.SnapshotError.Insts.CoreCmpPartialEqSnapshotError :
+  core.cmp.PartialEq restore.SnapshotError restore.SnapshotError := {
+  eq := restore.SnapshotError.Insts.CoreCmpPartialEqSnapshotError.eq
+}
+
+/-- [krusty_core::restore::{impl core::cmp::Eq for krusty_core::restore::SnapshotError}::assert_fields_are_eq]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 13:40-13:42
+    Visibility: public -/
+def restore.SnapshotError.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : restore.SnapshotError) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [krusty_core::restore::{impl core::cmp::Eq for krusty_core::restore::SnapshotError}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 13:40-13:42 -/
+@[reducible]
+def restore.SnapshotError.Insts.CoreCmpEq : core.cmp.Eq restore.SnapshotError
+  := {
+  partialEqInst := restore.SnapshotError.Insts.CoreCmpPartialEqSnapshotError
+  assert_fields_are_eq :=
+    restore.SnapshotError.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [krusty_core::restore::{impl core::clone::Clone for krusty_core::restore::Corruption}::clone]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 24:9-24:14
+    Visibility: public -/
+def restore.Corruption.Insts.CoreCloneClone.clone
+  (self : restore.Corruption) : Result restore.Corruption := do
+  ok self
+
+/-- Trait implementation: [krusty_core::restore::{impl core::clone::Clone for krusty_core::restore::Corruption}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 24:9-24:14 -/
+@[reducible]
+def restore.Corruption.Insts.CoreCloneClone : core.clone.Clone
+  restore.Corruption := {
+  clone := restore.Corruption.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [krusty_core::restore::{impl core::marker::Copy for krusty_core::restore::Corruption}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 24:16-24:20 -/
+@[reducible]
+def restore.Corruption.Insts.CoreMarkerCopy : core.marker.Copy
+  restore.Corruption := {
+  cloneInst := restore.Corruption.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [krusty_core::restore::{impl core::marker::StructuralPartialEq for krusty_core::restore::Corruption}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 24:29-24:38 -/
+@[reducible]
+def restore.Corruption.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq restore.Corruption := {
+}
+
+/-- Trait implementation: [krusty_core::restore::{impl core::cmp::Eq for krusty_core::restore::Corruption}]
+    Source: 'crates/krusty-core/src/restore.rs', lines 24:40-24:42 -/
+@[reducible]
+impl_def restore.Corruption.Insts.CoreCmpEq : core.cmp.Eq restore.Corruption
+  := {
+  partialEqInst := restore.Corruption.Insts.CoreCmpPartialEqCorruption
+  assert_fields_are_eq := core.cmp.Eq.assert_fields_are_eq.default
+    restore.Corruption.Insts.CoreCmpEq
+}
+
+/-- [krusty_core::restore::read_u64]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 44:0-57:1 -/
+def restore.read_u64
+  (b : Slice Std.U8) («at» : Std.Usize) :
+  Result (core.result.Result (Std.U64 × Std.Usize) restore.SnapshotError)
+  := do
+  let i := Slice.len b
+  if «at» > i
+  then ok (core.result.Result.Err restore.SnapshotError.Truncated)
+  else
+    let i1 := Slice.len b
+    let i2 ← i1 - «at»
+    if i2 < 8#usize
+    then ok (core.result.Result.Err restore.SnapshotError.Truncated)
+    else
+      let i3 ← Slice.index_usize b «at»
+      let i4 ← lift (UScalar.cast .U64 i3)
+      let i5 ← «at» + 1#usize
+      let i6 ← Slice.index_usize b i5
+      let i7 ← lift (UScalar.cast .U64 i6)
+      let i8 ← i7 <<< 8#i32
+      let i9 ← lift (i4 ||| i8)
+      let i10 ← «at» + 2#usize
+      let i11 ← Slice.index_usize b i10
+      let i12 ← lift (UScalar.cast .U64 i11)
+      let i13 ← i12 <<< 16#i32
+      let i14 ← lift (i9 ||| i13)
+      let i15 ← «at» + 3#usize
+      let i16 ← Slice.index_usize b i15
+      let i17 ← lift (UScalar.cast .U64 i16)
+      let i18 ← i17 <<< 24#i32
+      let i19 ← lift (i14 ||| i18)
+      let i20 ← «at» + 4#usize
+      let i21 ← Slice.index_usize b i20
+      let i22 ← lift (UScalar.cast .U64 i21)
+      let i23 ← i22 <<< 32#i32
+      let i24 ← lift (i19 ||| i23)
+      let i25 ← «at» + 5#usize
+      let i26 ← Slice.index_usize b i25
+      let i27 ← lift (UScalar.cast .U64 i26)
+      let i28 ← i27 <<< 40#i32
+      let i29 ← lift (i24 ||| i28)
+      let i30 ← «at» + 6#usize
+      let i31 ← Slice.index_usize b i30
+      let i32 ← lift (UScalar.cast .U64 i31)
+      let i33 ← i32 <<< 48#i32
+      let i34 ← lift (i29 ||| i33)
+      let i35 ← «at» + 7#usize
+      let i36 ← Slice.index_usize b i35
+      let i37 ← lift (UScalar.cast .U64 i36)
+      let i38 ← i37 <<< 56#i32
+      let v ← lift (i34 ||| i38)
+      let i39 ← «at» + 8#usize
+      ok (core.result.Result.Ok (v, i39))
+
+/-- [krusty_core::restore::restore_slot]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 60:0-89:1 -/
+def restore.restore_slot
+  (kc : Core) (b : Slice Std.U8) («at» : Std.Usize) (cfg : Config)
+  (slot : Std.Usize) :
+  Result ((core.result.Result Std.Usize restore.SnapshotError) × Core)
+  := do
+  let r ← restore.read_u64 b «at»
+  let cf ← core.result.Result.Insts.CoreOpsTry.branch r
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let (i, at1) := val
+    let r1 ← restore.read_u64 b at1
+    let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
+    match cf1 with
+    | core.ops.control_flow.ControlFlow.Continue val1 =>
+      let (client_seqno, at2) := val1
+      let r2 ← restore.read_u64 b at2
+      let cf2 ← core.result.Result.Insts.CoreOpsTry.branch r2
+      match cf2 with
+      | core.ops.control_flow.ControlFlow.Continue val2 =>
+        let (kind, at3) := val2
+        let r3 ← restore.read_u64 b at3
+        let cf3 ← core.result.Result.Insts.CoreOpsTry.branch r3
+        match cf3 with
+        | core.ops.control_flow.ControlFlow.Continue val3 =>
+          let (x, at4) := val3
+          let r4 ← restore.read_u64 b at4
+          let cf4 ← core.result.Result.Insts.CoreOpsTry.branch r4
+          match cf4 with
+          | core.ops.control_flow.ControlFlow.Continue val4 =>
+            let (y, at5) := val4
+            let ring ← lift (UScalar.cast .U64 cfg.outcome_ring)
+            if i >= ring
+            then
+              ok (core.result.Result.Err (restore.SnapshotError.Corrupt
+                restore.Corruption.RingSlot), kc)
+            else
+              let i1 ← client_seqno % ring
+              if i1 != i
+              then
+                ok (core.result.Result.Err (restore.SnapshotError.Corrupt
+                  restore.Corruption.RingSlot), kc)
+              else
+                match kind with
+                | 0#uscalar =>
+                  let i2 ← slot * cfg.outcome_ring
+                  let i3 ← lift (UScalar.cast .Usize i)
+                  let i4 ← i2 + i3
+                  let (_, index_mut_back) ←
+                    alloc.vec.Vec.index_mut
+                      (core.slice.index.SliceIndexUsizeSlice (Option RingSlot))
+                      kc.ring i4
+                  let v :=
+                    index_mut_back (some
+                      { client_seqno, decided := (Decided.Accepted x) })
+                  ok (core.result.Result.Ok at5, { kc with ring := v })
+                | 1#uscalar =>
+                  let i2 ← slot * cfg.outcome_ring
+                  let i3 ← lift (UScalar.cast .Usize i)
+                  let i4 ← i2 + i3
+                  let (_, index_mut_back) ←
+                    alloc.vec.Vec.index_mut
+                      (core.slice.index.SliceIndexUsizeSlice (Option RingSlot))
+                      kc.ring i4
+                  let v :=
+                    index_mut_back (some
+                      { client_seqno, decided := (Decided.Rejected x y) })
+                  ok (core.result.Result.Ok at5, { kc with ring := v })
+                | _ =>
+                  ok (core.result.Result.Err (restore.SnapshotError.Corrupt
+                    restore.Corruption.OutcomeKind), kc)
+          | core.ops.control_flow.ControlFlow.Break residual =>
+            let r5 ←
+              core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                Std.Usize (core.convert.FromSame restore.SnapshotError)
+                residual
+            ok (r5, kc)
+        | core.ops.control_flow.ControlFlow.Break residual =>
+          let r4 ←
+            core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+              Std.Usize (core.convert.FromSame restore.SnapshotError) residual
+          ok (r4, kc)
+      | core.ops.control_flow.ControlFlow.Break residual =>
+        let r3 ←
+          core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+            Std.Usize (core.convert.FromSame restore.SnapshotError) residual
+        ok (r3, kc)
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      let r2 ←
+        core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+          Std.Usize (core.convert.FromSame restore.SnapshotError) residual
+      ok (r2, kc)
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    let r1 ←
+      core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+        Std.Usize (core.convert.FromSame restore.SnapshotError) residual
+    ok (r1, kc)
+
+/-- [krusty_core::restore::restore_session]: loop body 0:
+    Source: 'crates/krusty-core/src/restore.rs', lines 126:4-132:5 -/
+@[rust_loop_body]
+def restore.restore_session_loop.body
+  (b : Slice Std.U8) (i : Std.Usize) (i1 : Std.Usize) (i2 : Std.Usize)
+  (i3 : Std.U64) (slot : Std.Usize) (n : Std.U64) (kc : Core)
+  («at» : Std.Usize) (err : Option restore.SnapshotError) (k : Std.U64) :
+  Result (ControlFlow (Core × Std.Usize × (Option restore.SnapshotError) ×
+    Std.U64) (Core × Std.Usize × (Option restore.SnapshotError)))
+  := do
+  if k < n
+  then
+    let b1 := core.option.Option.is_none err
+    if b1
+    then
+      let (r, kc1) ←
+        restore.restore_slot kc b «at»
+          {
+            max_clients := i,
+            outcome_ring := i1,
+            max_keys := i2,
+            evict_idle_ns := i3
+          } slot
+      let (at1, err1) ←
+        match r with
+        | core.result.Result.Ok a => ok (a, err)
+        | core.result.Result.Err e => ok («at», some e)
+      let k1 ← k + 1#u64
+      ok (cont (kc1, at1, err1, k1))
+    else ok (done (kc, «at», err))
+  else ok (done (kc, «at», err))
+
+/-- [krusty_core::restore::restore_session]: loop 0:
+    Source: 'crates/krusty-core/src/restore.rs', lines 126:4-132:5 -/
+@[rust_loop]
+def restore.restore_session_loop
+  (kc : Core) (b : Slice Std.U8) (i : Std.Usize) (i1 : Std.Usize)
+  (i2 : Std.Usize) (i3 : Std.U64) (slot : Std.Usize) (n : Std.U64)
+  («at» : Std.Usize) (err : Option restore.SnapshotError) (k : Std.U64) :
+  Result (Core × Std.Usize × (Option restore.SnapshotError))
+  := do
+  loop
+    (fun (kc1, at1, err1, k1) => restore.restore_session_loop.body b i i1 i2 i3
+      slot n kc1 at1 err1 k1)
+    (kc, «at», err, k)
+
+/-- [krusty_core::restore::restore_session]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 92:0-137:1 -/
+def restore.restore_session
+  (kc : Core) (b : Slice Std.U8) («at» : Std.Usize) (cfg : Config) :
+  Result ((core.result.Result Std.Usize restore.SnapshotError) × Core)
+  := do
+  let r ← restore.read_u64 b «at»
+  let cf ← core.result.Result.Insts.CoreOpsTry.branch r
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let (slot, at1) := val
+    let i ← lift (UScalar.cast .U64 kc.unused)
+    if slot >= i
+    then
+      ok (core.result.Result.Err (restore.SnapshotError.Corrupt
+        restore.Corruption.SessionSlot), kc)
+    else
+      let i1 ← lift (UScalar.cast .Usize slot)
+      let o ←
+        alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Option
+          Session)) kc.sessions i1
+      let b1 := core.option.Option.is_some o
+      if b1
+      then
+        ok (core.result.Result.Err (restore.SnapshotError.Corrupt
+          restore.Corruption.SessionSlot), kc)
+      else
+        let slot1 ← lift (UScalar.cast .Usize slot)
+        let r1 ← restore.read_u64 b at1
+        let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
+        match cf1 with
+        | core.ops.control_flow.ControlFlow.Continue val1 =>
+          let (client_id, at2) := val1
+          let r2 ← restore.read_u64 b at2
+          let cf2 ← core.result.Result.Insts.CoreOpsTry.branch r2
+          match cf2 with
+          | core.ops.control_flow.ControlFlow.Continue val2 =>
+            let (incarnation, at3) := val2
+            let r3 ← restore.read_u64 b at3
+            let cf3 ← core.result.Result.Insts.CoreOpsTry.branch r3
+            match cf3 with
+            | core.ops.control_flow.ControlFlow.Continue val3 =>
+              let (next, at4) := val3
+              let r4 ← restore.read_u64 b at4
+              let cf4 ← core.result.Result.Insts.CoreOpsTry.branch r4
+              match cf4 with
+              | core.ops.control_flow.ControlFlow.Continue val4 =>
+                let (last_active_ns, at5) := val4
+                let i2 ← lift (UScalar.cast .U32 client_id)
+                let i3 ← lift (UScalar.cast .U64 i2)
+                let o1 ← table.IdMap.get kc.clients i3
+                let b2 := core.option.Option.is_some o1
+                if b2
+                then
+                  ok (core.result.Result.Err (restore.SnapshotError.Corrupt
+                    restore.Corruption.DuplicateClient), kc)
+                else
+                  let i4 ← lift (UScalar.cast .U64 i2)
+                  let i5 ← lift (UScalar.cast .U32 slot1)
+                  let (b3, im) ← table.IdMap.insert kc.clients i4 i5
+                  if b3
+                  then
+                    let (_, index_mut_back) ←
+                      alloc.vec.Vec.index_mut
+                        (core.slice.index.SliceIndexUsizeSlice (Option
+                        Session)) kc.sessions slot1
+                    let r5 ← restore.read_u64 b at5
+                    let cf5 ← core.result.Result.Insts.CoreOpsTry.branch r5
+                    match cf5 with
+                    | core.ops.control_flow.ControlFlow.Continue val5 =>
+                      let (n, at6) := val5
+                      let i6 ← lift (UScalar.cast .U64 cfg.outcome_ring)
+                      if n > i6
+                      then
+                        let v :=
+                          index_mut_back (some
+                            {
+                              client_id := i2,
+                              incarnation,
+                              next,
+                              last_active_ns
+                            })
+                        ok (core.result.Result.Err
+                          (restore.SnapshotError.Corrupt
+                          restore.Corruption.RingCount),
+                          { kc with clients := im, sessions := v })
+                      else
+                        let v :=
+                          index_mut_back (some
+                            {
+                              client_id := i2,
+                              incarnation,
+                              next,
+                              last_active_ns
+                            })
+                        let (kc1, at7, err) ←
+                          restore.restore_session_loop
+                            { kc with clients := im, sessions := v } b
+                            cfg.max_clients cfg.outcome_ring cfg.max_keys
+                            cfg.evict_idle_ns slot1 n at6 none 0#u64
+                        match err with
+                        | none => ok (core.result.Result.Ok at7, kc1)
+                        | some e => ok (core.result.Result.Err e, kc1)
+                    | core.ops.control_flow.ControlFlow.Break residual =>
+                      let r6 ←
+                        core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                          Std.Usize (core.convert.FromSame
+                          restore.SnapshotError) residual
+                      let v :=
+                        index_mut_back (some
+                          { client_id := i2, incarnation, next, last_active_ns
+                          })
+                      ok (r6, { kc with clients := im, sessions := v })
+                  else
+                    ok (core.result.Result.Err (restore.SnapshotError.Corrupt
+                      restore.Corruption.DuplicateClient),
+                      { kc with clients := im })
+              | core.ops.control_flow.ControlFlow.Break residual =>
+                let r5 ←
+                  core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                    Std.Usize (core.convert.FromSame restore.SnapshotError)
+                    residual
+                ok (r5, kc)
+            | core.ops.control_flow.ControlFlow.Break residual =>
+              let r4 ←
+                core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                  Std.Usize (core.convert.FromSame restore.SnapshotError)
+                  residual
+              ok (r4, kc)
+          | core.ops.control_flow.ControlFlow.Break residual =>
+            let r3 ←
+              core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                Std.Usize (core.convert.FromSame restore.SnapshotError)
+                residual
+            ok (r3, kc)
+        | core.ops.control_flow.ControlFlow.Break residual =>
+          let r2 ←
+            core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+              Std.Usize (core.convert.FromSame restore.SnapshotError) residual
+          ok (r2, kc)
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    let r1 ←
+      core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+        Std.Usize (core.convert.FromSame restore.SnapshotError) residual
+    ok (r1, kc)
+
+/-- [krusty_core::restore::restore_key]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 140:0-149:1 -/
+def restore.restore_key
+  (kc : Core) (b : Slice Std.U8) («at» : Std.Usize) (i : Std.Usize) :
+  Result ((core.result.Result Std.Usize restore.SnapshotError) × Core)
+  := do
+  let r ← restore.read_u64 b «at»
+  let cf ← core.result.Result.Insts.CoreOpsTry.branch r
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let (key, at1) := val
+    let r1 ← restore.read_u64 b at1
+    let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
+    match cf1 with
+    | core.ops.control_flow.ControlFlow.Continue val1 =>
+      let (version, at2) := val1
+      let o ← table.IdMap.get kc.keys key
+      let b1 := core.option.Option.is_some o
+      if b1
+      then
+        ok (core.result.Result.Err (restore.SnapshotError.Corrupt
+          restore.Corruption.DuplicateKey), kc)
+      else
+        let i1 ← lift (UScalar.cast .U32 i)
+        let (b2, im) ← table.IdMap.insert kc.keys key i1
+        if b2
+        then
+          let v ← alloc.vec.Vec.push kc.versions version
+          let v1 ← alloc.vec.Vec.push kc.key_of_slot key
+          ok (core.result.Result.Ok at2,
+            { kc with keys := im, versions := v, key_of_slot := v1 })
+        else
+          ok (core.result.Result.Err (restore.SnapshotError.Corrupt
+            restore.Corruption.DuplicateKey), { kc with keys := im })
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      let r2 ←
+        core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+          Std.Usize (core.convert.FromSame restore.SnapshotError) residual
+      ok (r2, kc)
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    let r1 ←
+      core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+        Std.Usize (core.convert.FromSame restore.SnapshotError) residual
+    ok (r1, kc)
+
+/-- [krusty_core::restore::{krusty_core::Core}::restore]: loop body 0:
+    Source: 'crates/krusty-core/src/restore.rs', lines 200:8-206:9
+    Visibility: public -/
+@[rust_loop_body]
+def restore.Core.restore_loop0.body
+  (i : Std.Usize) (i1 : Std.Usize) (i2 : Std.Usize) (i3 : Std.U64)
+  (b : Slice Std.U8) (sessions : Std.U64) (kc : Core) («at» : Std.Usize)
+  (err : Option restore.SnapshotError) (k : Std.U64) :
+  Result (ControlFlow (Core × Std.Usize × (Option restore.SnapshotError) ×
+    Std.U64) (Core × Std.Usize × (Option restore.SnapshotError)))
+  := do
+  if k < sessions
+  then
+    let b1 := core.option.Option.is_none err
+    if b1
+    then
+      let (r, kc1) ←
+        restore.restore_session kc b «at»
+          {
+            max_clients := i,
+            outcome_ring := i1,
+            max_keys := i2,
+            evict_idle_ns := i3
+          }
+      let (at1, err1) ←
+        match r with
+        | core.result.Result.Ok a => ok (a, err)
+        | core.result.Result.Err e => ok («at», some e)
+      let k1 ← k + 1#u64
+      ok (cont (kc1, at1, err1, k1))
+    else ok (done (kc, «at», err))
+  else ok (done (kc, «at», err))
+
+/-- [krusty_core::restore::{krusty_core::Core}::restore]: loop 0:
+    Source: 'crates/krusty-core/src/restore.rs', lines 200:8-206:9
+    Visibility: public -/
+@[rust_loop]
+def restore.Core.restore_loop0
+  (i : Std.Usize) (i1 : Std.Usize) (i2 : Std.Usize) (i3 : Std.U64)
+  (b : Slice Std.U8) (kc : Core) (sessions : Std.U64) («at» : Std.Usize)
+  (err : Option restore.SnapshotError) (k : Std.U64) :
+  Result (Core × Std.Usize × (Option restore.SnapshotError))
+  := do
+  loop
+    (fun (kc1, at1, err1, k1) => restore.Core.restore_loop0.body i i1 i2 i3 b
+      sessions kc1 at1 err1 k1)
+    (kc, «at», err, k)
+
+/-- [krusty_core::restore::{krusty_core::Core}::restore]: loop body 1:
+    Source: 'crates/krusty-core/src/restore.rs', lines 216:8-222:9
+    Visibility: public -/
+@[rust_loop_body]
+def restore.Core.restore_loop1.body
+  (b : Slice Std.U8) (keys : Std.U64) (kc : Core)
+  (err : Option restore.SnapshotError) («at» : Std.Usize) (i : Std.Usize) :
+  Result (ControlFlow (Core × (Option restore.SnapshotError) × Std.Usize ×
+    Std.Usize) (Core × (Option restore.SnapshotError) × Std.Usize))
+  := do
+  let i1 ← lift (UScalar.cast .U64 i)
+  if i1 < keys
+  then
+    let b1 := core.option.Option.is_none err
+    if b1
+    then
+      let (r, kc1) ← restore.restore_key kc b «at» i
+      let (err1, at1) ←
+        match r with
+        | core.result.Result.Ok a => ok (err, a)
+        | core.result.Result.Err e => ok (some e, «at»)
+      let i2 ← i + 1#usize
+      ok (cont (kc1, err1, at1, i2))
+    else ok (done (kc, err, «at»))
+  else ok (done (kc, err, «at»))
+
+/-- [krusty_core::restore::{krusty_core::Core}::restore]: loop 1:
+    Source: 'crates/krusty-core/src/restore.rs', lines 216:8-222:9
+    Visibility: public -/
+@[rust_loop]
+def restore.Core.restore_loop1
+  (b : Slice Std.U8) (kc : Core) (err : Option restore.SnapshotError)
+  (keys : Std.U64) («at» : Std.Usize) (i : Std.Usize) :
+  Result (Core × (Option restore.SnapshotError) × Std.Usize)
+  := do
+  loop
+    (fun (kc1, err1, at1, i1) => restore.Core.restore_loop1.body b keys kc1
+      err1 at1 i1)
+    (kc, err, «at», i)
+
+/-- [krusty_core::restore::{krusty_core::Core}::restore]:
+    Source: 'crates/krusty-core/src/restore.rs', lines 154:4-230:5
+    Visibility: public -/
+def restore.Core.restore
+  (cfg : Config) (bytes : Slice Std.U8) :
+  Result (core.result.Result Core restore.SnapshotError)
+  := do
+  let r ← restore.read_u64 bytes 0#usize
+  let cf ← core.result.Result.Insts.CoreOpsTry.branch r
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let (magic, «at») := val
+    let r1 ← restore.read_u64 bytes «at»
+    let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
+    match cf1 with
+    | core.ops.control_flow.ControlFlow.Continue val1 =>
+      let (version, at1) := val1
+      if magic != restore.MAGIC
+      then ok (core.result.Result.Err restore.SnapshotError.BadMagic)
+      else
+        let i ← lift (UScalar.cast .U64 restore.VERSION)
+        if version != i
+        then
+          let i1 ← lift (UScalar.cast .U32 version)
+          ok (core.result.Result.Err (restore.SnapshotError.UnsupportedVersion
+            i1))
+        else
+          let r2 ← restore.read_u64 bytes at1
+          let cf2 ← core.result.Result.Insts.CoreOpsTry.branch r2
+          match cf2 with
+          | core.ops.control_flow.ControlFlow.Continue val2 =>
+            let (max_clients, at2) := val2
+            let r3 ← restore.read_u64 bytes at2
+            let cf3 ← core.result.Result.Insts.CoreOpsTry.branch r3
+            match cf3 with
+            | core.ops.control_flow.ControlFlow.Continue val3 =>
+              let (outcome_ring, at3) := val3
+              let r4 ← restore.read_u64 bytes at3
+              let cf4 ← core.result.Result.Insts.CoreOpsTry.branch r4
+              match cf4 with
+              | core.ops.control_flow.ControlFlow.Continue val4 =>
+                let (max_keys, at4) := val4
+                let r5 ← restore.read_u64 bytes at4
+                let cf5 ← core.result.Result.Insts.CoreOpsTry.branch r5
+                match cf5 with
+                | core.ops.control_flow.ControlFlow.Continue val5 =>
+                  let (evict_idle_ns, at5) := val5
+                  let i1 ← lift (UScalar.cast .U64 cfg.max_clients)
+                  if max_clients != i1
+                  then
+                    ok (core.result.Result.Err
+                      restore.SnapshotError.ConfigMismatch)
+                  else
+                    let i2 ← lift (UScalar.cast .U64 cfg.outcome_ring)
+                    if outcome_ring != i2
+                    then
+                      ok (core.result.Result.Err
+                        restore.SnapshotError.ConfigMismatch)
+                    else
+                      let i3 ← lift (UScalar.cast .U64 cfg.max_keys)
+                      if max_keys != i3
+                      then
+                        ok (core.result.Result.Err
+                          restore.SnapshotError.ConfigMismatch)
+                      else
+                        if evict_idle_ns != cfg.evict_idle_ns
+                        then
+                          ok (core.result.Result.Err
+                            restore.SnapshotError.ConfigMismatch)
+                        else
+                          let kc ← Core.new cfg
+                          let r6 ← restore.read_u64 bytes at5
+                          let cf6 ←
+                            core.result.Result.Insts.CoreOpsTry.branch r6
+                          match cf6 with
+                          | core.ops.control_flow.ControlFlow.Continue val6 =>
+                            let (applied, at6) := val6
+                            let r7 ← restore.read_u64 bytes at6
+                            let cf7 ←
+                              core.result.Result.Insts.CoreOpsTry.branch r7
+                            match cf7 with
+                            | core.ops.control_flow.ControlFlow.Continue val7
+                              =>
+                              let (next_seqno, at7) := val7
+                              let r8 ← restore.read_u64 bytes at7
+                              let cf8 ←
+                                core.result.Result.Insts.CoreOpsTry.branch r8
+                              match cf8 with
+                              | core.ops.control_flow.ControlFlow.Continue val8
+                                =>
+                                let (now_ns, at8) := val8
+                                let r9 ← restore.read_u64 bytes at8
+                                let cf9 ←
+                                  core.result.Result.Insts.CoreOpsTry.branch r9
+                                match cf9 with
+                                | core.ops.control_flow.ControlFlow.Continue
+                                  val9 =>
+                                  let (incarnation_floor, at9) := val9
+                                  let r10 ← restore.read_u64 bytes at9
+                                  let cf10 ←
+                                    core.result.Result.Insts.CoreOpsTry.branch
+                                      r10
+                                  match cf10 with
+                                  | core.ops.control_flow.ControlFlow.Continue
+                                    val10 =>
+                                    let (unused, at10) := val10
+                                    let r11 ← restore.read_u64 bytes at10
+                                    let cf11 ←
+                                      core.result.Result.Insts.CoreOpsTry.branch
+                                        r11
+                                    match cf11 with
+                                    |
+                                      core.ops.control_flow.ControlFlow.Continue
+                                      val11 =>
+                                      let (sessions, at11) := val11
+                                      let i4 ←
+                                        lift (UScalar.cast .U64
+                                          cfg.max_clients)
+                                      if unused > i4
+                                      then
+                                        ok (core.result.Result.Err
+                                          (restore.SnapshotError.Corrupt
+                                          restore.Corruption.Scalars))
+                                      else
+                                        if next_seqno = 0#u64
+                                        then
+                                          ok (core.result.Result.Err
+                                            (restore.SnapshotError.Corrupt
+                                            restore.Corruption.Scalars))
+                                        else
+                                          let i5 ←
+                                            lift (UScalar.cast .Usize unused)
+                                          if sessions != unused
+                                          then
+                                            ok (core.result.Result.Err
+                                              (restore.SnapshotError.Corrupt
+                                              restore.Corruption.SessionCount))
+                                          else
+                                            let (kc1, at12, err) ←
+                                              restore.Core.restore_loop0
+                                                cfg.max_clients
+                                                cfg.outcome_ring cfg.max_keys
+                                                cfg.evict_idle_ns bytes
+                                                {
+                                                  kc
+                                                    with
+                                                    applied,
+                                                    next_seqno,
+                                                    now_ns,
+                                                    incarnation_floor,
+                                                    unused := i5
+                                                } sessions at11 none 0#u64
+                                            match err with
+                                            | none =>
+                                              let r12 ←
+                                                restore.read_u64 bytes at12
+                                              let cf12 ←
+                                                core.result.Result.Insts.CoreOpsTry.branch
+                                                  r12
+                                              match cf12 with
+                                              |
+                                                core.ops.control_flow.ControlFlow.Continue
+                                                val12 =>
+                                                let (keys, at13) := val12
+                                                let i6 ←
+                                                  lift (UScalar.cast .U64
+                                                    cfg.max_keys)
+                                                if keys > i6
+                                                then
+                                                  ok (core.result.Result.Err
+                                                    (restore.SnapshotError.Corrupt
+                                                    restore.Corruption.KeyCount))
+                                                else
+                                                  let (kc2, err1, at14) ←
+                                                    restore.Core.restore_loop1
+                                                      bytes kc1 none keys at13
+                                                      0#usize
+                                                  match err1 with
+                                                  | none =>
+                                                    let i7 := Slice.len bytes
+                                                    if at14 != i7
+                                                    then
+                                                      ok
+                                                        (core.result.Result.Err
+                                                        (restore.SnapshotError.Corrupt
+                                                        restore.Corruption.TrailingBytes))
+                                                    else
+                                                      ok (core.result.Result.Ok
+                                                        kc2)
+                                                  | some e =>
+                                                    ok (core.result.Result.Err
+                                                      e)
+                                              |
+                                                core.ops.control_flow.ControlFlow.Break
+                                                residual =>
+                                                core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                                                  Core (core.convert.FromSame
+                                                  restore.SnapshotError)
+                                                  residual
+                                            | some e =>
+                                              ok (core.result.Result.Err e)
+                                    | core.ops.control_flow.ControlFlow.Break
+                                      residual =>
+                                      core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                                        Core (core.convert.FromSame
+                                        restore.SnapshotError) residual
+                                  | core.ops.control_flow.ControlFlow.Break
+                                    residual =>
+                                    core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                                      Core (core.convert.FromSame
+                                      restore.SnapshotError) residual
+                                | core.ops.control_flow.ControlFlow.Break
+                                  residual =>
+                                  core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                                    Core (core.convert.FromSame
+                                    restore.SnapshotError) residual
+                              | core.ops.control_flow.ControlFlow.Break
+                                residual =>
+                                core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                                  Core (core.convert.FromSame
+                                  restore.SnapshotError) residual
+                            | core.ops.control_flow.ControlFlow.Break residual
+                              =>
+                              core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                                Core (core.convert.FromSame
+                                restore.SnapshotError) residual
+                          | core.ops.control_flow.ControlFlow.Break residual =>
+                            core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                              Core (core.convert.FromSame
+                              restore.SnapshotError) residual
+                | core.ops.control_flow.ControlFlow.Break residual =>
+                  core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                    Core (core.convert.FromSame restore.SnapshotError) residual
+              | core.ops.control_flow.ControlFlow.Break residual =>
+                core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                  Core (core.convert.FromSame restore.SnapshotError) residual
+            | core.ops.control_flow.ControlFlow.Break residual =>
+              core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                Core (core.convert.FromSame restore.SnapshotError) residual
+          | core.ops.control_flow.ControlFlow.Break residual =>
+            core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+              Core (core.convert.FromSame restore.SnapshotError) residual
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+        Core (core.convert.FromSame restore.SnapshotError) residual
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+      Core (core.convert.FromSame restore.SnapshotError) residual
 
 /-- Trait implementation: [krusty_core::table::{impl core::marker::Copy for krusty_core::table::Bucket}]
     Source: 'crates/krusty-core/src/table.rs', lines 5:16-5:20 -/

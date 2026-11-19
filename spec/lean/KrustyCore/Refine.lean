@@ -1505,7 +1505,8 @@ theorem new_inv (cfg : Config) (h1 : 1 ≤ cfg.max_clients.val) (h2 : cfg.max_cl
     (h3 : 1 ≤ cfg.outcome_ring.val) (h4 : cfg.max_keys.val ≤ U32.max)
     (h5 : cfg.max_clients.val * cfg.outcome_ring.val ≤ Usize.max)
     (h6 : 4 * cfg.max_clients.val ≤ Usize.max) (h7 : 4 * cfg.max_keys.val ≤ Usize.max) :
-    Core.new cfg ⦃ c => Inv c ∧ c.cfg = cfg ∧ c.applied.val = 0 ∧ c.next_seqno.val = 1 ⦄ := by
+    Core.new cfg ⦃ c => Inv c ∧ c.cfg = cfg ∧ c.applied.val = 0 ∧ c.next_seqno.val = 1 ∧
+      c.unused.val = 0 ∧ c.keys.len.val = 0 ⦄ := by
   unfold Core.new
   have hu32 : (UScalar.cast .Usize core.num.U32.MAX).val = U32.max := by
     rw [UScalar.cast_val_eq]
@@ -1520,7 +1521,7 @@ theorem new_inv (cfg : Config) (h1 : 1 ≤ cfg.max_clients.val) (h2 : cfg.max_cl
   step with new_spec cfg.max_keys h7 as ⟨ im1, hw1, hmax1, hlen1, hnone1 ⟩
   refine ⟨⟨h1, h2, h3, h5, h4, hw, hmax, hw1, hmax1, by simp [v_post], by simp [v1_post, i2_post],
     by simp, by simp [hlen], ?_, ?_, by simp [hlen1, alloc.vec.Vec.with_capacity], by simp [hlen1, alloc.vec.Vec.with_capacity],
-    ?_, ?_⟩, rfl, rfl⟩
+    ?_, ?_⟩, rfl, rfl, rfl, hlen1⟩
   · intro k slot hk; simp only [slotOf, hnone] at hk; cases hk
   · intro j S hS; simp only [v_post] at hS; rw [List.getElem?_replicate] at hS; split at hS <;> simp at hS
   · intro k i hk; simp only [hnone1] at hk; cases hk

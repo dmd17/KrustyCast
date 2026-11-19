@@ -29,10 +29,11 @@
     clippy::while_let_loop
 )]
 
+mod restore;
 mod snapshot;
 mod table;
 
-pub use snapshot::SnapshotError;
+pub use restore::{Corruption, SnapshotError};
 
 use krusty_wire::feedback::{Feedback, Outcome};
 use krusty_wire::ingress::{Append, Submit};

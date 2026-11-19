@@ -76,7 +76,7 @@ structure krusty_wire.stream.MessageMeta where
   conditional : Option (Std.U64 × Std.U64)
 
 /-- [krusty_core::Config]
-    Source: 'crates/krusty-core/src/lib.rs', lines 43:0-53:1
+    Source: 'crates/krusty-core/src/lib.rs', lines 44:0-54:1
     Visibility: public -/
 structure Config where
   max_clients : Std.Usize
@@ -85,20 +85,20 @@ structure Config where
   evict_idle_ns : Std.U64
 
 /-- [krusty_core::Decided]
-    Source: 'crates/krusty-core/src/lib.rs', lines 66:0-69:1 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 67:0-70:1 -/
 @[discriminant isize]
 inductive Decided where
 | Accepted : Std.U64 → Decided
 | Rejected : Std.U64 → Std.U64 → Decided
 
 /-- [krusty_core::RingSlot]
-    Source: 'crates/krusty-core/src/lib.rs', lines 87:0-90:1 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 88:0-91:1 -/
 structure RingSlot where
   client_seqno : Std.U64
   decided : Decided
 
 /-- [krusty_core::Session]
-    Source: 'crates/krusty-core/src/lib.rs', lines 93:0-100:1 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 94:0-101:1 -/
 structure Session where
   client_id : Std.U32
   incarnation : Std.U64
@@ -106,7 +106,7 @@ structure Session where
   last_active_ns : Std.U64
 
 /-- [krusty_core::Request]
-    Source: 'crates/krusty-core/src/lib.rs', lines 105:0-110:1
+    Source: 'crates/krusty-core/src/lib.rs', lines 106:0-111:1
     Visibility: public -/
 structure Request where
   client_id : Std.U32
@@ -115,21 +115,21 @@ structure Request where
   append : krusty_wire.ingress.Append
 
 /-- [krusty_core::Published]
-    Source: 'crates/krusty-core/src/lib.rs', lines 133:0-136:1
+    Source: 'crates/krusty-core/src/lib.rs', lines 134:0-137:1
     Visibility: public -/
 structure Published where
   seqno : Std.U64
   «meta» : krusty_wire.stream.MessageMeta
 
 /-- [krusty_core::Effects]
-    Source: 'crates/krusty-core/src/lib.rs', lines 125:0-130:1
+    Source: 'crates/krusty-core/src/lib.rs', lines 126:0-131:1
     Visibility: public -/
 structure Effects where
   publish : Option Published
   reply : Option krusty_wire.feedback.Feedback
 
 /-- [krusty_core::ApplyError]
-    Source: 'crates/krusty-core/src/lib.rs', lines 139:0-142:1
+    Source: 'crates/krusty-core/src/lib.rs', lines 140:0-143:1
     Visibility: public -/
 @[discriminant isize]
 inductive ApplyError where
@@ -151,7 +151,7 @@ structure table.IdMap where
   max_len : Std.Usize
 
 /-- [krusty_core::Core]
-    Source: 'crates/krusty-core/src/lib.rs', lines 144:0-167:1
+    Source: 'crates/krusty-core/src/lib.rs', lines 145:0-168:1
     Visibility: public -/
 structure Core where
   cfg : Config
@@ -166,5 +166,32 @@ structure Core where
   keys : table.IdMap
   versions : alloc.vec.Vec Std.U64
   key_of_slot : alloc.vec.Vec Std.U64
+
+/-- [krusty_core::restore::Corruption]
+    Source: 'crates/krusty-core/src/restore.rs', lines 25:0-36:1
+    Visibility: public -/
+@[discriminant isize]
+inductive restore.Corruption where
+| Scalars : restore.Corruption
+| SessionCount : restore.Corruption
+| SessionSlot : restore.Corruption
+| DuplicateClient : restore.Corruption
+| RingCount : restore.Corruption
+| RingSlot : restore.Corruption
+| OutcomeKind : restore.Corruption
+| KeyCount : restore.Corruption
+| DuplicateKey : restore.Corruption
+| TrailingBytes : restore.Corruption
+
+/-- [krusty_core::restore::SnapshotError]
+    Source: 'crates/krusty-core/src/restore.rs', lines 14:0-21:1
+    Visibility: public -/
+@[discriminant isize]
+inductive restore.SnapshotError where
+| Truncated : restore.SnapshotError
+| BadMagic : restore.SnapshotError
+| UnsupportedVersion : Std.U32 → restore.SnapshotError
+| ConfigMismatch : restore.SnapshotError
+| Corrupt : restore.Corruption → restore.SnapshotError
 
 end krusty_core

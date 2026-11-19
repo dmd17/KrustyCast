@@ -219,8 +219,8 @@ the M0 spikes.
 **M4: Hardening and release.**
 - Gaps P6 (Tier B), K5, O3, Q8, E3 (final comparison), D1 (user guide),
   O4 (if pulled forward).
-- Carried from M3: NFR-5 (1 M msg/s); a proof that snapshot restore
-  yields the core invariant. E3 showed the cluster sustains 250 k msg/s
+- Carried from M3: NFR-5 (1 M msg/s). (A proof that snapshot restore
+  yields the core invariant: done 2026-11-19, `spec/lean/KrustyCore/Restore.lean`.) E3 showed the cluster sustains 250 k msg/s
   in mode (a) with two client threads saturated: the next step to NFR-5
   is batching submits and feedback (several per datagram), then more
   ingress capacity or Tier B.
