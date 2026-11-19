@@ -297,6 +297,17 @@ LeaderCompleteness ==
                 committed[n].term <= currentTerm[s] =>
                     (n <= Len(log[s]) /\ log[s][n] = committed[n].entry)
 
+\* A leader only appends to its log while it leads in the same term. The
+\* cluster shell relies on it (Cluster.tla): an entry a leader proposed
+\* stays at its index for the rest of that term, so the leader may drop
+\* resends of messages it has proposed and not yet applied.
+LeaderAppendOnly ==
+    [][\A s \in Servers :
+        (role[s] = "leader" /\ role'[s] = "leader"
+            /\ currentTerm'[s] = currentTerm[s])
+            => /\ Len(log'[s]) >= Len(log[s])
+               /\ SubSeq(log'[s], 1, Len(log[s])) = log[s]]_vars
+
 TypeOK ==
     /\ \A s \in Servers : Len(log[s]) <= MaxLog /\ commitIndex[s] <= Len(log[s])
 

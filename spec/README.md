@@ -90,8 +90,13 @@ committed entries form exactly that: one log, agreed by every node, that
 never changes once committed. Every node applies that log to the same
 deterministic core, so every node's egress stream is a prefix of one
 stream (G7). `Egress.tla` takes it from there to the consumers (G1, G2).
-Not modelled: power loss in durability mode (a), which is outside G3's
-assumptions.
+`Cluster.tla` checks the glue between them: how a node turns SUBMITs into
+proposals and committed entries back into outcomes. Not modelled: power
+loss in durability mode (a), which is outside G3's assumptions.
+
+The action property `LeaderAppendOnly` (a leader's log only grows while it
+leads in one term) is checked too: the cluster shell's resend filter
+relies on it. A mutation that lets a leader drop its last entry fails it.
 
 | Config | Bounds | States | Time (laptop) |
 |---|---|---|---|
@@ -235,6 +240,66 @@ model shows it can't matter: the buffer only holds seqnos in
 
 Not modelled: stream switches after END_OF_STREAM, foreign streams,
 unicast fan-out, the MoldUDP64 adapter, timers and rate limits.
+
+## `tla/Cluster.tla`: the cluster shell (`krusty-node/src/cluster.rs`)
+
+How a node turns client SUBMITs into Raft proposals and committed entries
+back into outcomes, with Raft abstracted to what `RaftKC` checks: terms,
+at most one current leader (elected in a fresh term with every committed
+entry), `LeaderAppendOnly`, stale leaders that still think they lead, one
+committed log every node agrees with up to its commit index, and crashes
+that keep the log and term but lose the shell's memory. The core is a
+function of the committed log, as in `Sequencer.tla`.
+
+The shell as the code has it: a node that thinks it leads proposes each
+SUBMIT and queues (index, term, client) in proposal order; applying entry
+i it answers only if the queue's front is (i, t) with t the entry's term;
+others answer NOT_LEADER. **The resend filter** drops a resend of a
+message proposed in the leader's term and not yet applied. Clients go
+back N (on a timeout or NAK, every unanswered message from the oldest
+on), with a retry timer longer than a round trip; their routing (follow
+NOT_LEADER, rotate after silence) is abstracted to "a resend eventually
+reaches the current leader" (strong fairness).
+
+| Property | |
+|---|---|
+| `OutcomesTrue` | Every outcome a client hears, or that is in flight, is true |
+| `CommittedAgree` | The Raft abstraction holds |
+| `CopiesBounded` | No message has more than `MaxCopies` copies in any log: a term change, a loss, a crash, or a resend crossing its outcome each allow one more; without the filter there is no bound (the resend storm of BASELINE E3) |
+| `Liveness` | Every message sent gets an outcome (under fairness, with finitely many losses, crashes and elections) |
+
+| Config | Bounds | States | Time |
+|---|---|---|---|
+| `ClusterLive1.cfg` (CI) | 2 nodes, 1 client, 1 message, 2 terms, 1 loss; liveness | 275 k | 30 s |
+| `ClusterLive2.cfg` (CI) | as above with 1 crash and no loss | 137 k | 15 s |
+| `ClusterTwo.cfg` (large) | 2 messages (gaps, NAKs, go-back-N, reordering), 1 loss; safety and `CopiesBounded` | > 223 M explored to depth 43 without a violation, not exhausted (the per-session filters fail at 4.5 M and 102 M) | 90 min (6 workers) |
+
+Liveness over two messages is out of reach for TLC here (`ClusterTwo`'s
+state space without the liveness check is already that size).
+
+**What it found** (2026-11-19). The filter as first written
+(2026-11-17) kept, per session, the highest seq proposed and that
+proposal's index. After a NAK the client goes back to a lower seq, which
+the leader proposes after the higher one was applied, and every resend of
+it passed: `krusty-client`'s test `resends_after_a_nak_are_not_logged_again`
+logged seq 1 201 times for 201 sends. Tracking the index of the session's
+*latest* proposal instead fixed that and broke liveness: a lower seq that
+was never proposed was dropped while a higher one was pending, and with
+reordering it never got into the log. Both are per-session shortcuts for
+what the filter means; keyed by message, it is exact. Mutations:
+
+| Bug | Caught by |
+|---|---|
+| No filter | `CopiesBounded` (`ClusterLive1`, 2 s) |
+| The filter drops resends after the entry was applied | `Liveness` (`ClusterLive1`, 4 s) |
+| Per session, the highest seq's index (`SessionFilter = "highest"`) | `CopiesBounded` (`ClusterTwo`, 2 min) |
+| Per session, the latest proposal's index (`"latest"`) | `CopiesBounded` (`ClusterTwo`, 37 min: the never-proposed seq is starved while copies of the other pile up) |
+| The filter ignores the term | not caught: an entry from an earlier term only delays a resend until its index is applied |
+| Answering without checking the entry's term | not caught: the reply goes to the wrong client, whose session discards it (it names another message) |
+
+The last two checks in the code are defensive: the model shows they are
+not needed for these properties. `MaxLog` bounds the log, so the model
+can tell bounded copies (a finite log absorbs them) from unbounded ones.
 
 ## `lean/`: the core proof (ARCHITECTURE §11.2, gap Q2)
 
