@@ -298,8 +298,8 @@ reaches the current leader" (strong fairness).
 
 | Config | Bounds | States | Time |
 |---|---|---|---|
-| `ClusterLive1.cfg` (CI) | 2 nodes, 1 client, 1 message, 2 terms, 1 loss; liveness | 275 k | 30 s |
-| `ClusterLive2.cfg` (CI) | as above with 1 crash and no loss | 137 k | 15 s |
+| `ClusterLive1.cfg` (CI) | 2 nodes, 1 client, 1 message, 2 terms, 1 loss; liveness | 306 k | 30 s |
+| `ClusterLive2.cfg` (CI) | as above with 1 crash and no loss | 153 k | 15 s |
 | `ClusterTwo.cfg` (large) | 2 messages (gaps, NAKs, go-back-N, reordering), 1 loss; safety and `CopiesBounded` | > 223 M explored to depth 43 without a violation, not exhausted (the per-session filters fail at 4.5 M and 102 M) | 90 min (6 workers) |
 
 Liveness over two messages is out of reach for TLC here (`ClusterTwo`'s
@@ -328,6 +328,30 @@ what the filter means; keyed by message, it is exact. Mutations:
 The last two checks in the code are defensive: the model shows they are
 not needed for these properties. `MaxLog` bounds the log, so the model
 can tell bounded copies (a finite log absorbs them) from unbounded ones.
+
+**Trace validation** (`TraceCluster.tla`, 2026-11-20). Each node of a
+test cluster writes a trace of its shell (`ClusterConfig::trace`; the
+`krusty-client` test `cluster_shell_traces`: a client retrying every
+50 µs, a NAK and go-back-N, duplicates of decided messages, the leader
+stopping, and its restart from a snapshot). `check-cluster-traces.sh`
+replays each with Cluster.tla's own `Receive` and `Apply`. Each step must
+then match the code: the code proposed at the same index, or dropped the
+resend, or answered NOT_LEADER, and it sent the same outcome for each
+applied entry. The outcome is the model's sequencer against krusty-core's
+decision. What the shell sees of Raft is injected, since Raft is validated
+on its own (`TraceRaftKC`); the abstraction's assumptions are checked
+against it: terms never go back, a leader only appends in its term, and
+committed entries never change. The first run accepted all three traces
+(4.4 k records, 2.5 k resends filtered; 1 min of TLC). It runs nightly.
+One mismatch was fixed in the model beforehand: when Raft truncates the
+log, the code forgets its own proposals from there on, so `Replicate` now
+does too (`KeepProposals`).
+
+| Mutation | Result |
+|---|---|
+| A trace record changed (an ACCEPTED's seqno, an ACCEPTED dropped, a filtered resend as NOT_LEADER, a proposal dropped or at another index) | rejected (deadlock at that record) |
+| The code's filter keyed by session, not message | rejected (the leader's trace) |
+| The code's filter without its "not yet applied" check | accepted, rightly: the code also removes an entry when it is applied, so the check never decides anything |
 
 ## `lean/`: the core proof (ARCHITECTURE §11.2, gap Q2)
 

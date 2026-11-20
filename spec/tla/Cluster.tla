@@ -94,24 +94,25 @@ NoFilterEntry == [seq |-> 0, i |-> 0, t |-> 0]
 NoProposal == [i |-> 0, t |-> 0]
 
 (***************************************************************************)
-(* The sequencer core over the committed log: its state after C[1..j].     *)
+(* The sequencer core over the committed log: its state after C[1..j],    *)
+(* with `out` the outcome of entry j.                                      *)
 (***************************************************************************)
-RECURSIVE St(_)
-St(j) ==
-    IF j = 0
-    THEN [nx |-> [c \in Clients |-> 1],
+Core0 == [nx |-> [c \in Clients |-> 1],
           res |-> [c \in Clients |-> [s \in Seqs |-> NONE]],
-          stream |-> <<>>, outs |-> <<>>]
-    ELSE LET p == St(j - 1)
-             m == C[j].m
-         IN IF m = NOOP THEN [p EXCEPT !.outs = Append(@, NONE)]
-            ELSE IF m.seq < p.nx[m.c] THEN [p EXCEPT !.outs = Append(@, p.res[m.c][m.seq])]
-            ELSE IF m.seq > p.nx[m.c] THEN [p EXCEPT !.outs = Append(@, Nak(p.nx[m.c]))]
-            ELSE LET o == Acc(Len(p.stream) + 1)
-                 IN [nx |-> [p.nx EXCEPT ![m.c] = @ + 1],
-                     res |-> [p.res EXCEPT ![m.c][m.seq] = o],
-                     stream |-> Append(p.stream, m),
-                     outs |-> Append(p.outs, o)]
+          stream |-> <<>>, out |-> NONE]
+
+CoreStep(p, m) ==
+    IF m = NOOP THEN [p EXCEPT !.out = NONE]
+    ELSE IF m.seq < p.nx[m.c] THEN [p EXCEPT !.out = p.res[m.c][m.seq]]
+    ELSE IF m.seq > p.nx[m.c] THEN [p EXCEPT !.out = Nak(p.nx[m.c])]
+    ELSE LET o == Acc(Len(p.stream) + 1)
+         IN [nx |-> [p.nx EXCEPT ![m.c] = @ + 1],
+             res |-> [p.res EXCEPT ![m.c][m.seq] = o],
+             stream |-> Append(p.stream, m),
+             out |-> o]
+
+RECURSIVE St(_)
+St(j) == IF j = 0 THEN Core0 ELSE CoreStep(St(j - 1), C[j].m)
 
 Core == St(Len(C))
 
@@ -153,6 +154,17 @@ Elect(n) ==
               ELSE log
     /\ UNCHANGED <<C, commit, shell, net, clients, faults>>
 
+\* The first index at which log `new` no longer holds what `old` held
+\* (Len(old) + 1 if it holds all of it).
+FirstChange(old, new) ==
+    LET D == {i \in 1..Len(old) : i > Len(new) \/ old[i] # new[i]}
+    IN IF D = {} THEN Len(old) + 1 ELSE CHOOSE i \in D : \A j \in D : i <= j
+
+\* When a node's log changes from `old` to `new`, its own proposals from the
+\* first changed index on are gone; the shell forgets them (carry_out).
+KeepProposals(q, old, new) ==
+    LET k == FirstChange(old, new) IN SelectSeq(q, LAMBDA p : p.i < k)
+
 \* A leader (possibly stale) brings a follower in line: a prefix of its log,
 \* keeping what the follower knows is committed. The follower adopts the
 \* term; a stale leader it reaches steps down.
@@ -160,10 +172,12 @@ Replicate(f, l) ==
     /\ f # l /\ lead[l] /\ term[f] <= term[l]
     /\ IsPrefix(SubSeq(log[f], 1, commit[f]), log[l])
     /\ \E k \in commit[f]..Len(log[l]) :
-          log' = [log EXCEPT ![f] = SubSeq(log[l], 1, k)]
+          LET new == SubSeq(log[l], 1, k) IN
+          /\ log' = [log EXCEPT ![f] = new]
+          /\ pending' = [pending EXCEPT ![f] = KeepProposals(@, log[f], new)]
     /\ term' = [term EXCEPT ![f] = term[l]]
     /\ lead' = [lead EXCEPT ![f] = FALSE]
-    /\ UNCHANGED <<C, commit, shell, net, clients, faults>>
+    /\ UNCHANGED <<C, commit, applied, proposed, sessf, net, clients, faults>>
 
 \* The current leader's next entry reaches a majority and commits.
 AdvanceCommit(l) ==
@@ -256,7 +270,7 @@ Apply(n) ==
           /\ toClient' =
                 IF mine /\ e.m # NOOP
                 THEN toClient \cup {[c |-> Head(q).c, seq |-> e.m.seq,
-                                     about |-> e.m, out |-> St(i).outs[i]]}
+                                     about |-> e.m, out |-> St(i).out]}
                 ELSE toClient
     /\ UNCHANGED <<term, lead, log, C, commit, proposed, sessf, toNode, clients, faults>>
 

@@ -703,3 +703,99 @@ fn mold_session_follows_a_roll() {
     assert_eq!(got, expect);
     assert!(ended.contains(&(session.0, 6)), "{ended:?}");
 }
+
+/// Writes traces of each node's cluster shell for spec/tla/TraceCluster.tla
+/// (spec/tla/check-cluster-traces.sh), across what the shell must get
+/// right: resends faster than commits (the filter), a NAK and go-back-N,
+/// duplicates of decided messages, the leader stopping (NOT_LEADER, a new
+/// term), and the old leader restarting from a snapshot.
+///   KRUSTY_CLUSTER_TRACE_DIR=dir cargo test -p krusty-client --test cluster -- --ignored traces
+#[test]
+#[ignore]
+fn cluster_shell_traces() {
+    use krusty_wire::feedback::{Feedback, Outcome};
+    use krusty_wire::ingress::Submit;
+    let dir = PathBuf::from(
+        std::env::var_os("KRUSTY_CLUSTER_TRACE_DIR").expect("KRUSTY_CLUSTER_TRACE_DIR"),
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+    for id in 1..=3 {
+        let _ = std::fs::remove_file(dir.join(format!("node{id}.trace")));
+    }
+    let mut c = Cluster::with(3, "trace", Durability::Sync, |cfg| {
+        cfg.storage.as_mut().unwrap().snapshot_every = 40;
+        let cl = cfg.cluster.as_mut().unwrap();
+        cl.trace = Some(dir.join(format!("node{}.trace", cl.id)));
+    });
+    let leader = c.wait_leader(Duration::from_secs(5));
+    // A client that retries every 50 µs, inside the commit latency.
+    let mut pcfg = PublisherConfig::new(21, c.ingress());
+    pcfg.retry_interval_ns = 50_000;
+    pcfg.max_attempts = 1_000_000;
+    let mut p = Publisher::new(pcfg).unwrap();
+    publish(&mut p, 1, 41, || {});
+    // A raw client: a gap (NAK), the missing message and a burst of its
+    // resends, then duplicates of what was decided.
+    let to = c.cfgs[leader].ingress;
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
+    let send = |seq: u64| {
+        let mut b = [0u8; 256];
+        let n = Submit {
+            client_id: 23,
+            incarnation: 1,
+            client_seqno: seq,
+            append: Append::Unconditional,
+            payload: b"x",
+        }
+        .encode(&mut b)
+        .unwrap();
+        sock.send_to(&b[..n], to).unwrap();
+    };
+    let wait_for = |want: &dyn Fn(&Feedback) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut b = [0u8; 256];
+        loop {
+            assert!(Instant::now() < deadline, "no such outcome");
+            if let Ok(n) = sock.recv(&mut b)
+                && let Ok(f) = Feedback::decode(&b[..n])
+                && want(&f)
+            {
+                return;
+            }
+        }
+    };
+    send(2);
+    wait_for(&|f| matches!(f.outcome, Outcome::Nak));
+    for _ in 0..30 {
+        send(1);
+    }
+    wait_for(&|f| f.client_seqno == 1 && matches!(f.outcome, Outcome::Accepted { .. }));
+    send(2);
+    wait_for(&|f| f.client_seqno == 2 && matches!(f.outcome, Outcome::Accepted { .. }));
+    send(1);
+    send(2);
+    wait_for(&|f| f.client_seqno == 2 && matches!(f.outcome, Outcome::Accepted { .. }));
+    // The leader stops; the publisher finds the next one.
+    c.stop(leader);
+    publish(&mut p, 41, 81, || {});
+    let second = c.wait_leader(Duration::from_secs(5));
+    assert_ne!(second, leader);
+    // The old leader restarts from its snapshot and log; a second
+    // publisher.
+    c.restart(leader);
+    let mut pcfg = PublisherConfig::new(22, c.ingress());
+    pcfg.retry_interval_ns = 50_000;
+    pcfg.max_attempts = 1_000_000;
+    let mut q = Publisher::new(pcfg).unwrap();
+    publish(&mut q, 1, 41, || {});
+    publish(&mut p, 81, 101, || {});
+    // Let every node apply everything.
+    std::thread::sleep(Duration::from_millis(300));
+    drop(c);
+    for id in 1..=3 {
+        let t = std::fs::read_to_string(dir.join(format!("node{id}.trace"))).unwrap();
+        assert!(t.lines().count() > 10, "node {id}: a short trace");
+    }
+}

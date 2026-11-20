@@ -46,6 +46,7 @@ use crate::stages::{
     pin, put_addr, put_history, put_ts, write_ring,
 };
 use crate::storage::{S_ENTRY, S_ENTRY_HEADER, S_SNAPSHOT, S_TRUNCATE, put_entry};
+use crate::trace::{self, Tracer};
 use crate::{ClusterConfig, NodeConfig, StorageConfig};
 use krusty_core::Core;
 use krusty_log::{HardStateFile, Log, LogReader};
@@ -303,6 +304,8 @@ struct Shell {
     frame: Vec<u8>,
     entry: Vec<u8>,
     fb: [u8; krusty_wire::feedback::LEN],
+    /// Tests: the trace for Cluster.tla (`ClusterConfig::trace`).
+    trace: Option<Tracer>,
 }
 
 /// Unapplied proposals the resend filter tracks (allocated once; a commit
@@ -319,7 +322,51 @@ fn send_feedback(out: &mut Out, fb: &mut [u8], to: SocketAddrV4, f: &Feedback) {
     });
 }
 
+/// An entry's data (timestamp, then the SUBMIT) as the trace has it.
+fn trace_value(data: &[u8]) -> trace::Value {
+    if data.is_empty() {
+        return trace::Value::Noop;
+    }
+    if parse_roll(&data[8..]).is_some() {
+        return trace::Value::Other;
+    }
+    match Submit::decode(&data[8..]) {
+        Ok(s) => trace::Value::Msg {
+            client_id: s.client_id,
+            incarnation: s.incarnation,
+            seqno: s.client_seqno,
+        },
+        Err(_) => trace::Value::Other,
+    }
+}
+
 impl Shell {
+    /// Tests: brings the trace's view of Raft up to date (before each
+    /// decision of the shell's).
+    fn trace_raft(&mut self) {
+        let Some(mut t) = self.trace.take() else {
+            return;
+        };
+        let last = self.raft.last_index();
+        let from = t.first_change(last, |i| self.raft.term_at(i));
+        let mut entries = Vec::new();
+        for i in from..=last {
+            let term = self
+                .load(i)
+                .unwrap_or_else(|| fatal("trace", format!("entry {i}")));
+            entries.push((term, trace_value(&self.data)));
+        }
+        let lead = self.raft.role() == Role::Leader && self.raft.transferring().is_none();
+        t.raft(
+            self.raft.term(),
+            lead,
+            self.raft.commit_index(),
+            from,
+            &entries,
+        );
+        self.trace = Some(t);
+    }
+
     /// Carries out the outbox: hard state, log changes, then messages.
     fn carry_out(&mut self) {
         let sync = self.synced.is_some();
@@ -503,6 +550,12 @@ impl Shell {
             .record(batch_start.saturating_sub(get_ts(rec)));
         let raw = &rec[REC_HDR..];
         let Ok(s) = Submit::decode(raw) else { return };
+        self.trace_raft();
+        let m = || trace::Value::Msg {
+            client_id: s.client_id,
+            incarnation: s.incarnation,
+            seqno: s.client_seqno,
+        };
         if self.raft.role() == Role::Leader && self.raft.transferring().is_none() {
             let key = (s.client_id, s.incarnation, s.client_seqno);
             let term = self.raft.term();
@@ -511,6 +564,9 @@ impl Shell {
                 && index > self.applied
             {
                 self.stats.resends_filtered.fetch_add(1, Ordering::Relaxed);
+                if let Some(t) = &mut self.trace {
+                    t.submit(m(), "filtered", None);
+                }
                 return;
             }
             let ts = now_ns().max(self.last_ts);
@@ -530,8 +586,14 @@ impl Shell {
                 self.proposed.clear();
             }
             self.proposed.insert(key, (i, term));
+            if let Some(t) = &mut self.trace {
+                t.submit(m(), "proposed", Some((i, term)));
+            }
         } else {
             self.stats.not_leader.fetch_add(1, Ordering::Relaxed);
+            if let Some(t) = &mut self.trace {
+                t.submit(m(), "notLeader", None);
+            }
             let f = Feedback {
                 client_id: s.client_id,
                 incarnation: s.incarnation,
@@ -552,6 +614,7 @@ impl Shell {
         if commit <= self.applied {
             return 0;
         }
+        self.trace_raft();
         let leader = self.raft.role() == Role::Leader;
         // Global position of the first message not yet put in frames.
         let mut first = self.epoch.global(self.core.next_seqno());
@@ -572,12 +635,14 @@ impl Shell {
                 }
                 _ => None,
             };
+            let mut sent = trace::Sent::Nothing;
             if !self.data.is_empty() {
                 let ts = u64::from_le_bytes(self.data[..8].try_into().unwrap());
                 if let Some(stream_id) = parse_roll(&self.data[8..]) {
                     published += self.flush_frames(leader, first);
                     self.roll(leader, stream_id, ts);
                     first = self.epoch.g0;
+                    sent = trace::Sent::Other;
                 } else {
                     let s = Submit::decode(&self.data[8..])
                         .unwrap_or_else(|e| fatal("apply", format!("entry {i}: {e:?}")));
@@ -618,8 +683,20 @@ impl Shell {
                     if let (Some(f), Some(addr)) = (e.reply, mine) {
                         send_feedback(&mut self.out, &mut self.fb, addr, &f);
                         replies += 1;
+                        sent = match f.outcome {
+                            Outcome::Accepted { global_seqno } => {
+                                trace::Sent::Accepted(global_seqno)
+                            }
+                            Outcome::Nak => trace::Sent::Nak {
+                                expect: f.client_seqno,
+                            },
+                            _ => trace::Sent::Other,
+                        };
                     }
                 }
+            }
+            if let Some(t) = &mut self.trace {
+                t.apply(i, sent);
             }
             self.applied = i;
         }
@@ -761,6 +838,10 @@ pub(crate) fn cluster_core_stage(
         frame: vec![0u8; cfg.mtu],
         entry: vec![0u8; HIST_HEADER + cfg.max_payload],
         fb: [0u8; krusty_wire::feedback::LEN],
+        trace: cl
+            .trace
+            .as_ref()
+            .map(|p| Tracer::open(p, applied).unwrap_or_else(|e| fatal("trace", e))),
         cfg: cfg.clone(),
     };
     sh.durable = sh.raft.last_index(); // synced by `restore`

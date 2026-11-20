@@ -47,6 +47,11 @@ jobs:
           KRUSTY_RAFT_TRACE_DIR="$RUNNER_TEMP/traces" KRUSTY_RAFT_TRACE_SEEDS=20 KRUSTY_RAFT_TRACE_BASE=$base \
             cargo test -q --release -p krusty-raft --test trace -- --ignored
           TLA2TOOLS="$RUNNER_TEMP/tla/tla2tools.jar" spec/tla/check-traces.sh "$RUNNER_TEMP/traces"
+      - name: Trace validation (the cluster shell against Cluster.tla, 3 nodes, ~1 min of TLC)
+        run: |
+          KRUSTY_CLUSTER_TRACE_DIR="$RUNNER_TEMP/cluster-traces" \
+            cargo test -q --release -p krusty-client --test cluster -- --ignored traces
+          TLA2TOOLS="$RUNNER_TEMP/tla/tla2tools.jar" spec/tla/check-cluster-traces.sh "$RUNNER_TEMP/cluster-traces"
       - name: Node failover smoke (3 nodes over loopback, 20 leader stops)
         run: FAILOVER_MAX_MS=1000 cargo run --release -p krusty-client --example failover -- 20
 

@@ -29,6 +29,7 @@ pub mod epochs;
 pub mod metrics;
 pub mod stages;
 pub mod storage;
+mod trace;
 
 pub use storage::Durability;
 
@@ -75,6 +76,10 @@ pub struct ClusterConfig {
     pub retain_entries: u64,
     /// Core for the replication I/O stage (None: not pinned).
     pub core: Option<usize>,
+    /// Tests: append a trace of the cluster shell here, for validation
+    /// against spec/tla/Cluster.tla (spec/tla/check-cluster-traces.sh).
+    #[doc(hidden)]
+    pub trace: Option<std::path::PathBuf>,
 }
 
 impl ClusterConfig {
@@ -89,6 +94,7 @@ impl ClusterConfig {
             max_inflight: 16,
             retain_entries: 1 << 16,
             core: None,
+            trace: None,
         }
     }
 
