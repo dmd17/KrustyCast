@@ -241,6 +241,34 @@ model shows it can't matter: the buffer only holds seqnos in
 Not modelled: stream switches after END_OF_STREAM, foreign streams,
 unicast fan-out, the MoldUDP64 adapter, timers and rate limits.
 
+## `tla/RaftKCInd.tla`: towards an inductive invariant for Raft
+
+Bounded checks cover the states a few steps reach. An *inductive*
+invariant holds in every state that satisfies it, and so in every
+reachable state at any size; checked for inductiveness (one step from any
+state satisfying it), it would make RaftKC's safety unbounded. This
+module builds one in layers, on top of the unchanged RaftKC (and its trace
+validation), with two history variables updated by observing each step:
+`votedIn[t][T]`, whom t voted for in term T (`votedFor` forgets it on a
+new term), and `hist[T]`, the log of term T's leader while it led.
+
+| Layer | Invariants | Implies |
+|---|---|---|
+| Elections | votes held are votes cast in the term; granted replies in flight likewise; `votedFor` matches the history; leaders hold a quorum | ElectionSafety (checked as an implication) |
+| Logs | an entry of term T, with everything before it, is term T's history, in every log, in every history and in every append in flight; a leader's log is its history | LogMatching (checked as an implication) |
+| Commits | every term at or above an entry's commit term that had a leader has it; what a server knows is committed is in the history of every term from its own; an append's commit index covers committed entries only | (LeaderCompleteness, StateMachineSafety: to be derived) |
+
+Status (2026-11-20): the three layers hold on reachable states:
+`RaftKCIndMC.cfg` (CI, depth 11, 192 k states) and `RaftKCIndTerms3.cfg`
+(three terms: 20 M states to depth 23 in 30 min, no violation, not
+exhausted). Not yet checked for inductiveness: that needs Apalache
+(symbolic, from any state satisfying the invariant), and RaftKC's message
+set mixes record shapes, which Apalache does not type; a typed variant,
+shown equivalent to RaftKC by TLC on small bounds, comes next. The commit
+layer is where the follower rule (entries at or below its commit index
+count as matching) and in-flight replies from earlier terms make the
+argument hard, and where strengthening is expected.
+
 ## `tla/Cluster.tla`: the cluster shell (`krusty-node/src/cluster.rs`)
 
 How a node turns client SUBMITs into Raft proposals and committed entries

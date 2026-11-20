@@ -15,11 +15,11 @@ trap 'rm -rf -- "${meta:?}"' EXIT
 configs="Sequencer:SequencerRace Sequencer:SequencerRestart
 SequencerBounded:SequencerBoundedEvict SequencerBounded:SequencerBoundedRing
 MCRaftKC:MCRaftKC Egress:Egress Egress:EgressGiveUp
-Cluster:ClusterLive1 Cluster:ClusterLive2"
+Cluster:ClusterLive1 Cluster:ClusterLive2 RaftKCInd:RaftKCIndMC"
 [ "${1:-}" = "--large" ] && configs="$configs
 Sequencer:SequencerLarge SequencerBounded:SequencerBoundedEvictLarge
 RaftKC:RaftKC RaftKC:RaftKCLarge RaftKC:RaftKCTerms3 RaftKC:RaftKCTerms4
-Egress:EgressLarge Cluster:ClusterTwo"
+Egress:EgressLarge Cluster:ClusterTwo RaftKCInd:RaftKCIndTerms3"
 
 status=0
 for pair in $configs; do
