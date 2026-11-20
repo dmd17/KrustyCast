@@ -369,6 +369,16 @@ CommittedAgree ==
     /\ \A n \in Nodes : SubSeq(log[n], 1, commit[n]) = SubSeq(C, 1, commit[n])
     /\ \A n \in Nodes : CurLeader(n) => IsPrefix(C, log[n])
 
+\* What the code keeps true of its queue of proposals (carry_out, apply_committed):
+\* each names an entry still in the node's log, with its term and client,
+\* and the queue is in index order (apply_committed pops from the front).
+ProposalsInLog ==
+    \A n \in Nodes : \A j \in 1..Len(pending[n]) :
+        LET p == pending[n][j] IN
+        p.i <= Len(log[n]) /\ log[n][p.i].t = p.t /\ log[n][p.i].m.c = p.c
+ProposalsOrdered ==
+    \A n \in Nodes : \A j \in 1..(Len(pending[n]) - 1) : pending[n][j].i < pending[n][j + 1].i
+
 \* Resends do not multiply the log: no message has more than MaxCopies
 \* copies in any log (a term change, a loss, or a resend crossing its
 \* outcome each allow one more). Without the filter there is no bound.

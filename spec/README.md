@@ -295,6 +295,7 @@ reaches the current leader" (strong fairness).
 | `CommittedAgree` | The Raft abstraction holds |
 | `CopiesBounded` | No message has more than `MaxCopies` copies in any log: a term change, a loss, a crash, or a resend crossing its outcome each allow one more; without the filter there is no bound (the resend storm of BASELINE E3) |
 | `Liveness` | Every message sent gets an outcome (under fairness, with finitely many losses, crashes and elections) |
+| `ProposalsInLog`, `ProposalsOrdered` | What the code keeps true of its queue of proposals: each names an entry still in the node's log (its term and client), in index order |
 
 | Config | Bounds | States | Time |
 |---|---|---|---|
@@ -345,7 +346,18 @@ committed entries never change. The first run accepted all three traces
 (4.4 k records, 2.5 k resends filtered; 1 min of TLC). It runs nightly.
 One mismatch was fixed in the model beforehand: when Raft truncates the
 log, the code forgets its own proposals from there on, so `Replicate` now
-does too (`KeepProposals`).
+does too (`KeepProposals`). The evidence that this was the right fix:
+the model before it breaks `ProposalsInLog`, the code's own invariant,
+within 600 states. A stale leader proposes at index 2, a newer leader
+replaces its log, and its queue still names index 2 of an empty log. The
+model after it keeps both invariants in every configuration, and it still
+catches every filter mutation it caught before (the table above).
+Stale entries were harmless to safety (the term check makes them "not
+mine"), but they left the queue out of order after a re-election. The
+model then withheld answers that the code sends, so its `Liveness` was
+about a shell slightly worse than the real one. The traces so far never
+drop a leader's own unapplied proposals: that path needs a leader
+deposed while alive (a partition), which the test does not yet stage.
 
 | Mutation | Result |
 |---|---|
