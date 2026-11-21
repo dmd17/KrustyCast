@@ -631,6 +631,60 @@ explained. The services differ: Aeron's echoes, KrustyCast's sequences
 (deduplication, conditional appends, a published feed). KrustyCast's
 throughput figures are the clients' limits, so the cluster's are higher.
 
+### After batching (2026-11-21)
+
+Several messages per datagram, packed as Aeron does (d96edd5:
+docs/ARCHITECTURE.md §8.1). Same layout, isolation, two senders on 7 and
+15, and 60 s runs as above, with Aeron's MTU (1408) on the nodes and the
+senders (`sweep11.sh`, results in `results-e3/batching/`). In and out
+are messages per datagram on the leader (`ingress_datagrams`,
+`feedback_datagrams`).
+
+**KrustyCast, logs on tmpfs** (pairs with Aeron on tmpfs)
+
+| Offered | Achieved | p50 | p90 | p99 | p99.9 | p99.99 | max | In | Out | Senders busy |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 100k | 100,000 | 33.2 | 36.1 | 51.7 | 560 | 14 ms | 19 ms | 1.00 | 1.01 | 78%, 44% |
+| 300k | 300,000 | 135 | 164 | 183 | 195 | 205 | 259 | 1.20 | 8.6 | 99%, 98% |
+| 400k | 399,999 | 130 | 159 | 180 | 193 | 205 | 661 | 1.68 | 10.9 | 99%, 98% |
+| 500k | 499,999 | 123 | 156 | 180 | 196 | 208 | 445 | 2.18 | 11.8 | 99%, 98% |
+| 600k | 599,999 | 116 | 153 | 180 | 199 | 222 | 1,255 | 2.78 | 11.8 | 99%, 98% |
+| 750k | 749,999 | 102 | 136 | 169 | 195 | 977 | 1,585 | 3.83 | 10.4 | 99%, 98% |
+| 1M | 898,837 (fell behind; STALLED) | seconds | | | | | | | | 71%, 58% |
+
+**KrustyCast, mode (a), disk** (pairs with Aeron, archive sync level 0)
+
+| Offered | Achieved | p50 | p90 | p99 | p99.9 | p99.99 | max | In | Out | Senders busy |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 100k | 100,000 | 31.2 | 37.4 | 50.2 | 257 | 587 | 817 | 1.00 | 1.00 | 77%, 44% |
+| 300k | 300,000 | 103 | 142 | 177 | 199 | 222 | 354 | 1.24 | 5.4 | 99%, 98% |
+| 400k | 400,000 | 94.8 | 147 | 183 | 209 | 231 | 288 | 1.73 | 5.9 | 99%, 98% |
+| 500k | 500,000 | 85.2 | 150 | 189 | 216 | 241 | 289 | 2.34 | 5.9 | 99%, 99% |
+| 600k | 599,999 | 84.6 | 155 | 197 | 222 | 246 | 300 | 2.92 | 6.6 | 99%, 99% |
+| 750k | 749,998 | 93.8 | 160 | 209 | 3,707 | 6,312 | 7,078 | 4.02 | 8.4 | 97%, 96% |
+| 1M | 914,809 (fell behind) | seconds | | | | | | | | 74%, 55% |
+
+**Against Aeron** (its tables above):
+- **Throughput:** KrustyCast now sustains 750k msg/s with either kind of
+  storage. Aeron fell behind at 750k (about 585k), and before batching
+  KrustyCast's limit was the generator, at 250–300k.
+- **Latency, 300k to 600k:** worse than Aeron in the body. For example,
+  at 500k the p50 is 85–123 µs against Aeron's 57–61, and the p99 is
+  180–189 µs against 85–114. It is better in the tail: p99.99 and max
+  stay under 0.7 ms through 500k, against Aeron's 3.7–14 ms.
+- **Not yet shown to be the cluster's.** The knee is where it was before
+  batching (p50 31–33 µs at 100k, then a flat 85–135 µs plateau from 300k
+  to 750k). Both senders are 96–99% busy from 300k on. The leader's
+  stages do not queue: at 500k, mode (a), ring A takes 0.5 µs at p50
+  (16 µs at p99), ring O 8 µs (33 µs), and a Raft loop pass 2 µs (33 µs);
+  followers' passes are about 1 µs. What no counter covers yet is propose
+  to commit, the replication round trip. KrustyCast's generator also does
+  work that Aeron's client does not: sender 0 reads the whole feed
+  (`--combined`), every message, to measure feed latency, while Aeron's
+  client receives only its echoes. Few SUBMITs are packed at these rates
+  (1.2–4 per datagram), because each sender loop pass finds few new
+  messages. Outcomes pack 5–12 per datagram.
+
 ## Next
 
 - Run the same tool on the reference servers (real NICs, multicast, isolated
