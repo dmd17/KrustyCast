@@ -5,7 +5,6 @@
 use krusty_node::{Idle, NodeConfig};
 use krusty_session::{Config as SessionConfig, Event, Session};
 use krusty_stream::{Config as TrackerConfig, Kind, Tracker};
-use krusty_wire::feedback::Feedback;
 use krusty_wire::ingress::{Append, Submit};
 use krusty_wire::stream::{self, Frame};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -104,7 +103,8 @@ impl Harness {
                 self.client.send_to(&buf[..n], self.ingress).unwrap();
             }
             while let Ok(n) = self.client.recv(&mut buf) {
-                if let Ok(f) = Feedback::decode(&buf[..n]) {
+                // (Outcomes may come several to a datagram.)
+                for f in krusty_wire::batch::feedbacks(&buf[..n]).flatten() {
                     self.session.on_feedback(&f, now, &mut ev);
                 }
             }

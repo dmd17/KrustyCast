@@ -3,7 +3,7 @@
 use crate::metrics::{Metrics, mono_ns};
 use crate::{Idle, NodeConfig};
 use krusty_core::Core;
-use krusty_net::{RecvBatch, SendBatch};
+use krusty_net::{Packed, RecvBatch, SendBatch};
 use krusty_ring::byte_ring::{Consumer, Producer, byte_ring};
 use krusty_ring::history::History;
 use krusty_wire::feedback::{Feedback, Outcome};
@@ -518,7 +518,7 @@ fn ingress(
 ) {
     pin(cfg.cores[0]);
     let mut rb = RecvBatch::new(cfg.batch, 65_536);
-    let mut busy = SendBatch::new(cfg.batch, krusty_wire::feedback::LEN);
+    let mut busy = SendBatch::new(cfg.batch, cfg.mtu.max(krusty_wire::feedback::LEN));
     let mut empty = 0;
     while !stop.load(Ordering::Acquire) {
         let n = rb.recv(&sock).unwrap_or_default();
@@ -528,33 +528,48 @@ fn ingress(
         }
         empty = 0;
         let received = mono_ns();
+        stats
+            .ingress_datagrams
+            .fetch_add(n as u64, Ordering::Relaxed);
         for i in 0..n {
-            let (bytes, src) = rb.get(i);
-            let s = match Submit::decode(bytes) {
-                Ok(s) if s.payload.len() <= cfg.max_payload => s,
-                _ => {
-                    stats.rejected_at_edge.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            };
-            stats.submits.fetch_add(1, Ordering::Relaxed);
-            let wrote = out.try_write(REC_SUBMIT, REC_HDR + bytes.len(), |b| {
-                put_addr(b, src);
-                put_ts(b, received);
-                b[REC_HDR..].copy_from_slice(bytes);
-            });
-            if !wrote {
-                // Overloaded (G9): tell the client to back off; nothing is lost.
-                stats.busy.fetch_add(1, Ordering::Relaxed);
-                let f = Feedback {
-                    client_id: s.client_id,
-                    incarnation: s.incarnation,
-                    client_seqno: s.client_seqno,
-                    outcome: Outcome::Busy {
-                        retry_after_us: 100,
-                    },
+            let (datagram, src) = rb.get(i);
+            // A datagram holds one SUBMIT or several back to back
+            // (krusty_wire::batch); each goes on as its own record.
+            for piece in krusty_wire::batch::submits(datagram) {
+                let (bytes, s) = match piece.map(|p| (p, Submit::decode(p))) {
+                    Ok((p, Ok(s))) if s.payload.len() <= cfg.max_payload => (p, s),
+                    _ => {
+                        stats.rejected_at_edge.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
                 };
-                busy.push(src, |b| f.encode(b).unwrap());
+                stats.submits.fetch_add(1, Ordering::Relaxed);
+                let wrote = out.try_write(REC_SUBMIT, REC_HDR + bytes.len(), |b| {
+                    put_addr(b, src);
+                    put_ts(b, received);
+                    b[REC_HDR..].copy_from_slice(bytes);
+                });
+                if !wrote {
+                    // Overloaded (G9): tell the client to back off; nothing is lost.
+                    stats.busy.fetch_add(1, Ordering::Relaxed);
+                    let f = Feedback {
+                        client_id: s.client_id,
+                        incarnation: s.incarnation,
+                        client_seqno: s.client_seqno,
+                        outcome: Outcome::Busy {
+                            retry_after_us: 100,
+                        },
+                    };
+                    if busy.push_packed(src, krusty_wire::feedback::LEN, |b| {
+                        f.encode(b).unwrap();
+                    }) == Packed::Full
+                    {
+                        let _ = busy.flush(&sock);
+                        busy.push_packed(src, krusty_wire::feedback::LEN, |b| {
+                            f.encode(b).unwrap();
+                        });
+                    }
+                }
             }
         }
         out.publish();
@@ -893,24 +908,31 @@ fn egress(
         let finished = core_done.load(Ordering::Acquire);
         let now = mono_ns();
         let n = input.read(cfg.batch, |kind, rec| {
-            if sb.is_full() {
-                let _ = sb.flush(&sock);
-            }
             stats.core_to_egress.record(now.saturating_sub(get_ts(rec)));
             let body = &rec[REC_HDR..];
             match kind {
                 REC_FEED => {
+                    if sb.is_full() {
+                        let _ = sb.flush(&sock);
+                    }
                     sb.push(cfg.feed, |b| {
                         b[..body.len()].copy_from_slice(body);
                         body.len()
                     });
                 }
                 _ => {
+                    // Outcomes for one client in this pass share datagrams,
+                    // up to the MTU (krusty_wire::batch), as Aeron's sender
+                    // packs what is ready: no waiting for more.
                     let dest = get_addr(rec);
-                    sb.push(dest, |b| {
-                        b[..body.len()].copy_from_slice(body);
-                        body.len()
-                    });
+                    let mut packed = sb.push_packed(dest, body.len(), |b| b.copy_from_slice(body));
+                    if packed == Packed::Full {
+                        let _ = sb.flush(&sock);
+                        packed = sb.push_packed(dest, body.len(), |b| b.copy_from_slice(body));
+                    }
+                    if packed == Packed::New {
+                        stats.feedback_datagrams.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         });

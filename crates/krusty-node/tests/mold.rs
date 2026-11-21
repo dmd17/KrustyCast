@@ -1,7 +1,7 @@
 //! The MoldUDP64 adapter publishes the same sequence with the same seqnos,
 //! answers standard re-requests, and ends the session.
 use krusty_node::{MoldConfig, NodeConfig};
-use krusty_wire::feedback::{Feedback, Outcome};
+use krusty_wire::feedback::Outcome;
 use krusty_wire::ingress::{Append, Submit};
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 use std::time::{Duration, Instant};
@@ -55,9 +55,13 @@ fn mold_feed_carries_the_same_sequence_and_serves_rerequests() {
         let n = s.encode(&mut buf).unwrap();
         loop {
             client.send_to(&buf[..n], node.ingress_addr()).unwrap();
-            let mut fb = [0u8; 64];
+            let mut fb = [0u8; 2048];
             if let Ok(k) = client.recv(&mut fb) {
-                let f = Feedback::decode(&fb[..k]).unwrap();
+                // (Outcomes may come several to a datagram.)
+                let f = krusty_wire::batch::feedbacks(&fb[..k])
+                    .next()
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(f.outcome, Outcome::Accepted { global_seqno: seq });
                 break;
             }

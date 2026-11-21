@@ -11,6 +11,12 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|b: &[u8]| {
     let _ = krusty_wire::peek_type(b);
+    for p in krusty_wire::batch::submits(b).flatten() {
+        let _ = Submit::decode(p);
+    }
+    for f in krusty_wire::batch::feedbacks(b) {
+        let _ = f;
+    }
     if let Ok(s) = Submit::decode(b) {
         let mut out = vec![0u8; s.encoded_len()];
         s.encode(&mut out).unwrap();

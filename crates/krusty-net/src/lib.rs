@@ -150,6 +150,19 @@ pub struct SendBatch {
     iovs: Vec<libc::iovec>,
     hdrs: Vec<libc::mmsghdr>,
     n: usize,
+    /// `push_packed`: the datagram still open for each destination.
+    open: std::collections::HashMap<SocketAddrV4, usize>,
+}
+
+/// Where `push_packed` put a message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Packed {
+    /// Into the datagram already queued for its destination.
+    Appended,
+    /// Into a new datagram.
+    New,
+    /// Nowhere: a new datagram was needed and the batch is full.
+    Full,
 }
 
 // SAFETY: as for RecvBatch.
@@ -173,6 +186,7 @@ impl SendBatch {
             // SAFETY: plain old data.
             hdrs: vec![unsafe { std::mem::zeroed() }; capacity],
             n: 0,
+            open: std::collections::HashMap::with_capacity(capacity),
         }
     }
 
@@ -196,7 +210,41 @@ impl SendBatch {
         self.lens[i] = len;
         self.addrs[i] = to_sockaddr(dest);
         self.n += 1;
+        self.open.remove(&dest);
         true
+    }
+
+    /// Queues a message of `len` bytes for `dest` (built by `fill`): after
+    /// the messages already queued for `dest` in its open datagram if it
+    /// fits under the MTU, else in a new datagram, which becomes the open
+    /// one. Messages to one destination are thus packed back to back
+    /// (krusty_wire::batch), in the order queued, with no waiting: what a
+    /// flush sends is what was queued since the last.
+    pub fn push_packed(
+        &mut self,
+        dest: SocketAddrV4,
+        len: usize,
+        fill: impl FnOnce(&mut [u8]),
+    ) -> Packed {
+        assert!(len <= self.mtu);
+        if let Some(&i) = self.open.get(&dest)
+            && self.lens[i] + len <= self.mtu
+        {
+            let at = i * self.mtu + self.lens[i];
+            fill(&mut self.bufs[at..at + len]);
+            self.lens[i] += len;
+            return Packed::Appended;
+        }
+        if self.is_full() {
+            return Packed::Full;
+        }
+        let i = self.n;
+        fill(&mut self.bufs[i * self.mtu..i * self.mtu + len]);
+        self.lens[i] = len;
+        self.addrs[i] = to_sockaddr(dest);
+        self.n += 1;
+        self.open.insert(dest, i);
+        Packed::New
     }
 
     /// Sends everything queued. Datagrams the kernel refuses are dropped
@@ -242,6 +290,7 @@ impl SendBatch {
         }
         let n = self.n;
         self.n = 0;
+        self.open.clear();
         Ok(n)
     }
 }
@@ -249,6 +298,44 @@ impl SendBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn messages_to_one_destination_are_packed_up_to_the_mtu() {
+        let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let rx2 = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let tx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let v4 = |s: &UdpSocket| match s.local_addr().unwrap() {
+            std::net::SocketAddr::V4(a) => a,
+            _ => unreachable!(),
+        };
+        let (a, b) = (v4(&rx), v4(&rx2));
+        let mut s = SendBatch::new(8, 100);
+        // 40-byte messages: two fit in 100 bytes, the third opens a new one.
+        let mut got = Vec::new();
+        for (i, to) in [a, b, a, a, b, a].into_iter().enumerate() {
+            got.push(s.push_packed(to, 40, |m| m.fill(i as u8)));
+        }
+        use Packed::*;
+        assert_eq!(got, [New, New, Appended, New, Appended, Appended]);
+        assert_eq!(s.flush(&tx).unwrap(), 3);
+        rx.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        rx2.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut buf = [0u8; 200];
+        let mut dgrams = Vec::new();
+        for _ in 0..2 {
+            let n = rx.recv(&mut buf).unwrap();
+            dgrams.push(buf[..n].to_vec());
+        }
+        dgrams.sort_by_key(|d| d[0]);
+        assert_eq!(dgrams[0], [[0u8; 40], [2; 40]].concat());
+        assert_eq!(dgrams[1], [[3u8; 40], [5; 40]].concat());
+        let n = rx2.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], &[[1u8; 40], [4; 40]].concat()[..]);
+        // After a flush nothing is open.
+        assert_eq!(s.push_packed(a, 40, |m| m.fill(9)), New);
+    }
 
     #[test]
     fn batches_round_trip_over_loopback() {

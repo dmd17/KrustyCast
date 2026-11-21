@@ -17,6 +17,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod batch;
 pub mod feedback;
 pub mod ingress;
 pub mod stream;

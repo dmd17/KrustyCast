@@ -211,3 +211,75 @@ fn data_frame_rejects_seqno_overflow_and_bad_padding() {
         Err(WireError::BadField("padding"))
     );
 }
+
+proptest! {
+    /// SUBMITs packed back to back split into the same SUBMITs.
+    #[test]
+    fn submit_batches_split_into_their_messages(
+        msgs in proptest::collection::vec(
+            (any::<u32>(), any::<u64>(), 1..u64::MAX, append(),
+             proptest::collection::vec(any::<u8>(), 0..200)),
+            1..12),
+    ) {
+        let mut d = Vec::new();
+        for (client_id, incarnation, client_seqno, append, payload) in &msgs {
+            let s = Submit { client_id: *client_id, incarnation: *incarnation,
+                             client_seqno: *client_seqno, append: *append, payload };
+            let mut b = vec![0u8; s.encoded_len()];
+            s.encode(&mut b).unwrap();
+            d.extend_from_slice(&b);
+        }
+        let got: Vec<Submit> = krusty_wire::batch::submits(&d)
+            .map(|p| Submit::decode(p.unwrap()).unwrap())
+            .collect();
+        prop_assert_eq!(got.len(), msgs.len());
+        for (g, (client_id, incarnation, client_seqno, append, payload)) in got.iter().zip(&msgs) {
+            prop_assert_eq!(g.client_id, *client_id);
+            prop_assert_eq!(g.incarnation, *incarnation);
+            prop_assert_eq!(g.client_seqno, *client_seqno);
+            prop_assert_eq!(g.append, *append);
+            prop_assert_eq!(g.payload, &payload[..]);
+        }
+        // Cut short anywhere inside the last message: the earlier ones
+        // still come out, then an error, then nothing.
+        let cut = d.len() - 1;
+        let pieces: Vec<_> = krusty_wire::batch::submits(&d[..cut]).collect();
+        prop_assert_eq!(pieces.len(), msgs.len());
+        prop_assert!(pieces[..msgs.len() - 1].iter().all(|p| p.is_ok()));
+        prop_assert_eq!(pieces[msgs.len() - 1], Err(WireError::Truncated));
+    }
+
+    /// Outcomes packed back to back split into the same outcomes.
+    #[test]
+    fn feedback_batches_split_into_their_outcomes(
+        fs in proptest::collection::vec(
+            (any::<u32>(), any::<u64>(), any::<u64>(), outcome()), 1..30),
+    ) {
+        let mut d = Vec::new();
+        let mut want = Vec::new();
+        for (client_id, incarnation, client_seqno, outcome) in fs {
+            let f = Feedback { client_id, incarnation, client_seqno, outcome };
+            let mut b = [0u8; feedback::LEN];
+            f.encode(&mut b).unwrap();
+            d.extend_from_slice(&b);
+            want.push(f);
+        }
+        let got: Vec<Feedback> = krusty_wire::batch::feedbacks(&d).map(|f| f.unwrap()).collect();
+        prop_assert_eq!(got, want);
+    }
+
+    /// Splitting arbitrary bytes never panics, and the pieces cover the
+    /// datagram.
+    #[test]
+    fn splitting_arbitrary_bytes_never_panics(b in proptest::collection::vec(any::<u8>(), 0..600)) {
+        let mut total = 0;
+        for p in krusty_wire::batch::submits(&b) {
+            match p {
+                Ok(p) => { total += p.len(); let _ = Submit::decode(p); }
+                Err(_) => { total = b.len(); }
+            }
+        }
+        prop_assert_eq!(total, b.len());
+        for f in krusty_wire::batch::feedbacks(&b) { let _ = f; }
+    }
+}

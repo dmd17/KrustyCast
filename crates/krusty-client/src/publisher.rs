@@ -28,6 +28,10 @@ pub struct PublisherConfig {
     pub max_attempts: u32,
     /// Largest payload.
     pub max_payload: usize,
+    /// Largest datagram. Everything due at a `poll` (new messages and
+    /// resends) goes out packed back to back in as few datagrams as fit
+    /// (krusty_wire::batch); a message larger than this goes alone.
+    pub mtu: usize,
 }
 
 impl PublisherConfig {
@@ -40,6 +44,7 @@ impl PublisherConfig {
             retry_interval_ns: 20_000_000,
             max_attempts: 50,
             max_payload: 1024,
+            mtu: 1472,
         }
     }
 }
@@ -83,6 +88,9 @@ pub struct Publisher {
     tx: Vec<krusty_session::Transmit>,
     ev: Vec<SessionEvent>,
     buf: Vec<u8>,
+    /// The datagram being packed, and its length.
+    out: Vec<u8>,
+    out_len: usize,
 }
 
 /// A fresh incarnation: the wall clock in ns (ADR-12: incarnations increase).
@@ -117,6 +125,8 @@ impl Publisher {
             tx: Vec::with_capacity(cfg.window),
             ev: Vec::with_capacity(cfg.window),
             buf: vec![0; 65_536],
+            out: vec![0; 65_536],
+            out_len: 0,
             node: 0,
             heard_at: 0,
             rotated_at: 0,
@@ -164,9 +174,14 @@ impl Publisher {
         self.ev.clear();
         self.session.poll(now, &mut self.tx, &mut self.ev);
         let to = self.cfg.nodes[self.node % self.cfg.nodes.len()];
-        for t in &self.tx {
+        for k in 0..self.tx.len() {
+            let t = self.tx[k];
             let slot = t.handle as usize;
             let at = slot * self.cfg.max_payload;
+            let len = krusty_wire::ingress::HEADER_LEN + self.lens[slot];
+            if !krusty_wire::batch::fits(self.out_len, len, self.cfg.mtu) {
+                self.send_packed(to)?;
+            }
             let s = Submit {
                 client_id: self.cfg.client_id,
                 incarnation: t.incarnation,
@@ -174,20 +189,23 @@ impl Publisher {
                 append: t.append,
                 payload: &self.payloads[at..at + self.lens[slot]],
             };
-            let n = s.encode(&mut self.buf).unwrap();
-            match self.sock.send_to(&self.buf[..n], to) {
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {} // resent later
-                Err(e) => return Err(e),
-            }
+            self.out_len += s.encode(&mut self.out[self.out_len..]).unwrap();
         }
+        self.send_packed(to)?;
         loop {
             let n = match self.sock.recv(&mut self.buf) {
                 Ok(n) => n,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e),
             };
-            if let Ok(fb) = Feedback::decode(&self.buf[..n]) {
+            // One outcome or several back to back (krusty_wire::batch).
+            let mut at = 0;
+            while at < n {
+                let end = (at + krusty_wire::feedback::LEN).min(n);
+                let Ok(fb) = Feedback::decode(&self.buf[at..end]) else {
+                    break;
+                };
+                at = end;
                 self.heard_at = now;
                 if let krusty_wire::feedback::Outcome::NotLeader { leader } = fb.outcome {
                     // A window of messages to a follower comes back as a
@@ -222,6 +240,19 @@ impl Publisher {
         }
         self.report(&mut f);
         Ok(())
+    }
+
+    /// Sends the datagram packed so far, if any.
+    fn send_packed(&mut self, to: SocketAddrV4) -> io::Result<()> {
+        if self.out_len == 0 {
+            return Ok(());
+        }
+        let n = std::mem::take(&mut self.out_len);
+        match self.sock.send_to(&self.out[..n], to) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()), // resent later
+            Err(e) => Err(e),
+        }
     }
 
     fn report(&mut self, f: &mut impl FnMut(Event)) {

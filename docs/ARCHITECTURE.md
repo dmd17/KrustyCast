@@ -193,6 +193,22 @@ Types:
 | `NOT_LEADER{leader}` | Talk to another node. |
 | `SESSION_EXPIRED{}` | Dedup state for this incarnation was evicted. |
 
+**Several messages per datagram** (2026-11-21): a datagram holds one
+SUBMIT or several back to back, each with its own header (its `len`
+delimits it), and likewise one outcome or several (48 bytes each). There
+is no batch header, so a one-message datagram is the format above, and
+each message is decoded on its own (`krusty_wire::batch`). Senders pack
+what they have ready, up to the MTU, without waiting for more. That is
+Aeron's model, where a publication's sender sends the frames written so
+far, up to the MTU, in each datagram:
+- The publisher packs everything due at a `poll` (new messages and
+  resends).
+- The node's egress packs each client's outcomes from one pass, NOT_LEADER
+  and BUSY included.
+- Ingress splits each datagram into one ring record per SUBMIT, so the
+  core and the shell still see single messages. The resend filter and
+  every outcome are per message, as before.
+
 The **dedup table is replicated state** (ADR-4, refined by ADR-12):
 - It is bounded: a fixed number of sessions (one per client, its latest
   incarnation), each holding a ring of recent outcomes.

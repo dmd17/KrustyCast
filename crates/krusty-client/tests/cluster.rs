@@ -376,12 +376,14 @@ fn resends_after_a_nak_are_not_logged_again() {
     };
     let wait_for = |want: &dyn Fn(&Feedback) -> bool| {
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut b = [0u8; 256];
+        let mut b = [0u8; 2048];
         loop {
             assert!(Instant::now() < deadline, "no such outcome");
+            // (Outcomes may come several to a datagram.)
             if let Ok(n) = sock.recv(&mut b)
-                && let Ok(f) = Feedback::decode(&b[..n])
-                && want(&f)
+                && krusty_wire::batch::feedbacks(&b[..n])
+                    .flatten()
+                    .any(|f| want(&f))
             {
                 return;
             }
@@ -755,12 +757,14 @@ fn cluster_shell_traces() {
     };
     let wait_for = |want: &dyn Fn(&Feedback) -> bool| {
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut b = [0u8; 256];
+        let mut b = [0u8; 2048];
         loop {
             assert!(Instant::now() < deadline, "no such outcome");
+            // (Outcomes may come several to a datagram.)
             if let Ok(n) = sock.recv(&mut b)
-                && let Ok(f) = Feedback::decode(&b[..n])
-                && want(&f)
+                && krusty_wire::batch::feedbacks(&b[..n])
+                    .flatten()
+                    .any(|f| want(&f))
             {
                 return;
             }

@@ -2,7 +2,7 @@
 //! whole session can be recovered from disk. Both durability modes.
 use krusty_log::LogConfig;
 use krusty_node::{Durability, NodeConfig, StorageConfig};
-use krusty_wire::feedback::{Feedback, Outcome};
+use krusty_wire::feedback::Outcome;
 use krusty_wire::ingress::{Append, Submit};
 use krusty_wire::stream::{self, Frame};
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
@@ -53,16 +53,19 @@ fn submit(client: &UdpSocket, to: SocketAddrV4, inc: u64, seq: u64, payload: &[u
     loop {
         assert!(Instant::now() < deadline, "no answer for seqno {seq}");
         client.send_to(&buf[..n], to).unwrap();
-        let mut fb = [0u8; 64];
+        let mut fb = [0u8; 2048];
         while let Ok(k) = client.recv(&mut fb) {
-            let f = Feedback::decode(&fb[..k]).unwrap();
-            if f.client_seqno == seq
-                && matches!(
-                    f.outcome,
-                    Outcome::Accepted { .. } | Outcome::Rejected { .. }
-                )
-            {
-                return f.outcome;
+            // (Outcomes may come several to a datagram.)
+            for f in krusty_wire::batch::feedbacks(&fb[..k]) {
+                let f = f.unwrap();
+                if f.client_seqno == seq
+                    && matches!(
+                        f.outcome,
+                        Outcome::Accepted { .. } | Outcome::Rejected { .. }
+                    )
+                {
+                    return f.outcome;
+                }
             }
         }
     }

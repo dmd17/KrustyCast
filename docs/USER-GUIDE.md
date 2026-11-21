@@ -276,6 +276,11 @@ loop {
   never sequenced twice; while the original is still being committed, the
   leader drops it (`resends_filtered`), so retries do not multiply the log
   when commits are slower than the retry interval.
+- **Batching** is automatic: everything due at a `poll` goes out packed
+  back to back in as few datagrams as fit under `mtu` (default 1472), and
+  outcomes come back packed the same way. Nothing waits: at low rates a
+  datagram carries one message. Set `mtu` to your path MTU less 28 bytes
+  (IP and UDP headers).
 - **Failover** is automatic: the publisher follows NOT_LEADER to the named
   leader, or moves to the next node after `failover_ns` (60 ms) of silence.
 - **`Failed`** means the fate is unknown: the message may or may not have
@@ -425,6 +430,7 @@ On the leader's instruction every node, at the same log entry:
 | `mold_lost` | `krusty-stat` | The Mold adapter fell behind the history. |
 | `raft_pre_votes`, `raft_elections`, `raft_quorum_lost` | `krusty-stat` | Elections this node started, and step-downs as leader because a majority went quiet. Rising under steady load: some node stopped answering (look at its `cluster_loop_max_ns`). |
 | `resends_filtered` | `krusty-stat` | Resends the leader dropped because the original is still being committed. High: commits are slower than clients' retry interval (mode b on slow disks, overload). |
+| `ingress_datagrams`, `feedback_datagrams` | `krusty-stat` | Datagrams in and out for clients. `submits` / `ingress_datagrams` is SUBMITs per datagram, and `feedback` / `feedback_datagrams` is outcomes per datagram: near 1 at low load, higher under load as publishers and the node pack (see Batching under the publisher). |
 | `submits_deferred` | `krusty-stat` | Passes in which the leader left new submits waiting because storage or egress was behind (admission control: publishers then get BUSY). Rising: the node is at capacity. |
 | `cluster_loop_max_ns`, `cluster_loop` | `krusty-stat` | The longest pass of the Raft thread, and their distribution. Passes near the election timeout (50 ms by default) cost leadership; long ones mean the thread waited on a full ring, usually storage behind a slow disk. |
 
@@ -461,7 +467,9 @@ coordinated omission). A run is INVALID (exit 1) if the generator fell
 behind, anything was lost, or there was no progress for 5 s (STALLED, e.g. a
 leader change: the generator does not follow the leader). It reports each
 sender's busy fraction; near 100% means the generator, not the node, set
-the pace.
+the pace. Its senders pack SUBMITs as the publisher does (`--mtu`,
+default 1472; `--mtu 0` sends one per datagram, the behaviour before
+2026-11-21).
 
 ```sh
 krusty-load --rate 75000 --duration 600 --warmup 5 --spin --combined --pin-senders 7 \

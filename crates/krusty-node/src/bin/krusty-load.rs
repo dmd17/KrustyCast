@@ -13,6 +13,7 @@
 //!               [--cluster N] [--cluster-cores c1,c2,..] [--sleep-us U]
 //!               [--leader-cores i,c,e,repl[,store]] [--follower-cores c,repl,o[,store]/...]
 //!               [--connect INGRESS --feed-bind ADDR] [--window W] [--retry-ms R]
+//!               [--mtu M]
 //!
 //! `--leader-cores`: node 1 gets shorter election timeouts (so it leads),
 //! spins, and pins ingress, core, egress, replication (and optionally the
@@ -39,6 +40,11 @@
 //! `--retry-ms` (default 5): resend interval; a large window with a short
 //! interval floods the generator with its own resends once latency grows.
 //!
+//! `--mtu` (default 1472): largest datagram. A sender packs the SUBMITs it
+//! sends in one loop pass (new and resent) back to back into as few
+//! datagrams as fit (krusty_wire::batch), as Aeron's sender packs a
+//! publication's ready frames; `--mtu 0` sends one per datagram.
+//!
 //! `--combined`: sender 0 also reads the feed (all of it) in its own loop,
 //! instead of a separate receiver thread. Each sender reports its busy
 //! fraction, the share of its time in loop iterations that did any work:
@@ -47,7 +53,6 @@ use hdrhistogram::Histogram;
 use krusty_net::{RecvBatch, SendBatch};
 use krusty_node::{Idle, NodeConfig};
 use krusty_session::{Config as SessionConfig, Event, Session};
-use krusty_wire::feedback::Feedback;
 use krusty_wire::ingress::{Append, Submit};
 use krusty_wire::stream::Frame;
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
@@ -85,6 +90,7 @@ struct Args {
     payload: usize,
     window: usize,
     retry_ms: u64,
+    mtu: usize,
     pin_senders: Vec<usize>,
     pin_receiver: Option<usize>,
     node_cores: [Option<usize>; 4],
@@ -110,6 +116,7 @@ fn parse() -> Args {
         payload: 64,
         window: 64,
         retry_ms: 5,
+        mtu: 1472,
         pin_senders: Vec::new(),
         pin_receiver: None,
         node_cores: [None; 4],
@@ -136,6 +143,7 @@ fn parse() -> Args {
             "--payload" => a.payload = v().parse().unwrap(),
             "--window" => a.window = v().parse().unwrap(),
             "--retry-ms" => a.retry_ms = v().parse().unwrap(),
+            "--mtu" => a.mtu = v().parse().unwrap(),
             "--pin-senders" => a.pin_senders = v().split(',').map(|c| c.parse().unwrap()).collect(),
             "--pin-receiver" => a.pin_receiver = Some(v().parse().unwrap()),
             "--node-cores" => {
@@ -219,6 +227,7 @@ fn sender(
     feed_target: u64,
     window: usize,
     retry_ms: u64,
+    mtu: usize,
 ) -> SenderOut {
     pin(core);
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -247,8 +256,11 @@ fn sender(
     };
     let mut last_heard = Instant::now();
     let mut rb = RecvBatch::new(64, 2048);
-    let mut sb = SendBatch::new(64, 2048);
-    let mut fbb = RecvBatch::new(64, 128);
+    // --mtu 0: one SUBMIT per datagram (each fills its own).
+    let pack = mtu > 0;
+    let mtu = if pack { mtu } else { 2048 };
+    let mut sb = SendBatch::new(64, mtu.max(64 + payload_len));
+    let mut fbb = RecvBatch::new(64, 65_536.min(mtu.max(2048)));
     let (mut tx, mut ev) = (Vec::with_capacity(128), Vec::with_capacity(128));
     let mut payload = vec![0u8; payload_len];
     let mut submitted = 0u64;
@@ -300,10 +312,23 @@ fn sender(
                 append: t.append,
                 payload: &payload,
             };
-            if sb.is_full() {
-                let _ = sb.flush(&sock);
+            if pack {
+                let len = s.encoded_len();
+                if sb.push_packed(ingress, len, |b| {
+                    s.encode(b).unwrap();
+                }) == krusty_net::Packed::Full
+                {
+                    let _ = sb.flush(&sock);
+                    sb.push_packed(ingress, len, |b| {
+                        s.encode(b).unwrap();
+                    });
+                }
+            } else {
+                if sb.is_full() {
+                    let _ = sb.flush(&sock);
+                }
+                sb.push(ingress, |b| s.encode(b).unwrap());
             }
-            sb.push(ingress, |b| s.encode(b).unwrap());
         }
         if !sb.is_empty() {
             let _ = sb.flush(&sock);
@@ -311,7 +336,7 @@ fn sender(
         let n = fbb.recv(&sock).unwrap_or(0);
         work += n;
         for i in 0..n {
-            if let Ok(f) = Feedback::decode(fbb.get(i).0) {
+            for f in krusty_wire::batch::feedbacks(fbb.get(i).0).flatten() {
                 session.on_feedback(&f, now_ns, &mut ev);
             }
         }
@@ -556,6 +581,7 @@ fn main() {
                     total,
                     a.window,
                     a.retry_ms,
+                    a.mtu,
                 )
             })
         })
