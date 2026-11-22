@@ -82,6 +82,14 @@ public final class KrustyMessageTransceiver extends MessageTransceiver
     private final UnsafeBuffer scratch = new UnsafeBuffer(new byte[HEADER_LEN + 65536]);
     private long resends;
 
+    // Handlers held in fields: a method reference written inline creates an
+    // object each time it runs, and these run millions of times a second.
+    // That was about 140 MB/s of garbage and a 1.5-2.2 ms young-GC pause
+    // every 2 s in the rig, which Aeron's client does not have (E3,
+    // 2026-11-22). Nothing here allocates per message.
+    private final org.agrona.concurrent.MessageHandler datagramHandler = this::onDatagram;
+    private final org.agrona.concurrent.MessageHandler submitHandler = this::onSubmit;
+
     private OneToOneRingBuffer toIo;
     private OneToOneRingBuffer fromIo;
     private DatagramChannel channel;
@@ -264,7 +272,7 @@ public final class KrustyMessageTransceiver extends MessageTransceiver
 
     public void receive()
     {
-        fromIo.read(this::onDatagram, 64);
+        fromIo.read(datagramHandler, 64);
         if (oldest <= next && System.nanoTime() - sentAt[(int)(oldest & mask)] > retryNs)
         {
             resendFrom(oldest);
@@ -315,7 +323,7 @@ public final class KrustyMessageTransceiver extends MessageTransceiver
     {
         while (running)
         {
-            toIo.read(this::onSubmit, 1024);
+            toIo.read(submitHandler, 1024);
             flush();
             while (true)
             {
