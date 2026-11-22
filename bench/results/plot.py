@@ -16,6 +16,8 @@ def load(p):
     return rows
 SURF='#fcfcfb'; INK='#1f1f1e'; MUTED='#6b6a64'; GRID='#e6e5e0'
 COL={'Aeron':'#eb6834','KrustyCast':'#2a78d6'}
+# Same data, same file: fixed element ids and no timestamp in the SVG.
+plt.rcParams['svg.hashsalt'] = 'krustycast-e3'
 plt.rcParams.update({'font.size':9,'font.family':'DejaVu Sans','text.color':INK,'axes.labelcolor':MUTED,
     'xtick.color':MUTED,'ytick.color':MUTED,'axes.edgecolor':GRID,'svg.fonttype':'none'})
 def nines(p): return -math.log10(max(1-p,1e-7))
@@ -52,5 +54,5 @@ for kind,title,fn in (('none','Logs on tmpfs (Aeron on tmpfs)','tmpfs'),('async'
     fig.legend(h,list(COL),loc='upper right',frameon=False,ncol=2)
     fig.suptitle(title,x=0.01,ha='left',fontsize=11,color=INK)
     fig.tight_layout(rect=(0,0,0.985,0.93))
-    fig.savefig(f"docs/img/e3-latency-{fn}.svg",facecolor=SURF)
+    fig.savefig(f"docs/img/e3-latency-{fn}.svg",facecolor=SURF,metadata={"Date": None})
     
