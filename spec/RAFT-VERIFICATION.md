@@ -34,6 +34,70 @@ The fix is a design decision. The options:
 
 Whichever is chosen goes into the model before the code.
 
+### Decision (2026-11-22): cautious restart
+
+Dan chose option 1. The design under check is below. It goes into the code
+only once the model passes.
+
+1. **Term and vote are always fsynced,** in both modes, before any message
+   that depends on them. They change only in elections, so this is cheap.
+   It removes the double-vote counterexample on its own.
+2. **Detecting a possible power loss.** The node records the kernel's boot
+   id (`/proc/sys/kernel/random/boot_id`) in its data directory. A process
+   crash keeps the page cache and the boot id. In mode (a), a different
+   boot id at start means unsynced log writes may be gone. Mode (b) does
+   not need this, because it acknowledges only fsynced entries.
+3. **Recovering.** Such a node restarts recovering, remembering its term
+   at restart. It refuses every vote and starts no election (no pre-vote
+   either). It still accepts entries and acknowledges what it really
+   holds.
+4. **Leaving recovery.** Appends carry the leader's last index (`last`, a
+   new field in the replication protocol). The node leaves recovery when
+   it accepts an Append, from a leader of its restart term or later, that
+   leaves it holding everything up to that `last`. Catching up to the
+   leader's commit index is not enough. A leader may still count
+   acknowledgements the node gave before it lost power. If that leader
+   later commits an entry the node no longer holds, the node must have
+   received it before it votes again.
+
+**Costs.**
+- While one node is recovering and another is down, no leader can be
+  elected until one of them comes back. That is within f = 1.
+- If every node loses power at once, which G3 already excludes for mode
+  (a), every node is recovering and no leader can be elected. An operator
+  then needs an explicit override: a `krusty-admin` command that ends
+  recovery, documented as possibly losing acknowledged messages.
+
+**Model check** (`tla/RaftKCRecover.tla`, an exploration copy of RaftKC).
+It adds power loss in mode (a), with term and vote durable and the log
+durable up to the last `Sync`. It also adds the `last` field and the
+recovery rule, selected by `Rule`:
+- `"none"`: today's code. Expected to violate (LeaderCompleteness).
+- `"any"`: leave recovery on any accepted Append from a leader of the
+  restart term or later. Expected to violate: the stale-acknowledgement
+  case.
+- `"last"`: the design. Expected to hold.
+
+`RaftKCRecover-{none,any,last}.cfg` use 3 servers, 2 terms, logs of 2,
+one power loss and depth 17 (the depth of the original counterexample).
+They were started 2026-11-22; results to be recorded here. If `"last"`
+holds, the same check with a third term (stale leaders) follows, then a
+deeper random simulation.
+
+**Implementation, once the model holds.**
+- *krusty-raft:* the `last` field on Append (wire); a `recovering` state
+  (no votes granted, no election or pre-vote timeouts, left by the rule
+  above); power-loss faults in the randomized harness, losing the
+  unsynced suffix.
+- *krusty-node:* the hard state always fsynced; the boot id file and the
+  restart decision (mode (a) only); a `recovering` gauge in metrics and
+  `krusty-admin status`; the operator override.
+- *Spec:* fold `last` and the recovery rule into RaftKC, so the nightly
+  trace validation checks the code's recovery steps, and add the
+  power-loss configurations to the checked set.
+- *Docs:* PRD G3 stands as written once this ships. ARCHITECTURE §8.2 and
+  the user guide describe recovering nodes and the override.
+
 ## The plan
 
 The goal is one chain of checked steps:
