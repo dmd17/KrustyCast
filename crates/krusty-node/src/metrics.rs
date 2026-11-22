@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAGIC: u64 = 0x5354_4154_534B_434B; // "KCKSTATS"
-pub const LAYOUT_VERSION: u64 = 10;
+pub const LAYOUT_VERSION: u64 = 11;
 pub const BUCKETS: usize = 64;
 
 /// log2 histogram: bucket `b` counts values in `[2^(b-1), 2^b)` ns (bucket 0: 0).
@@ -71,6 +71,14 @@ macro_rules! counters {
             /// One storage fsync (group commit of a batch).
             pub store_sync: Histogram,
             pub cluster_loop: Histogram,
+            /// Cluster: a peer datagram received → taken by the core (ring R).
+            pub peer_to_core: Histogram,
+            /// Cluster: the core handling one peer message (decode, Raft, carry out).
+            pub peer_handling: Histogram,
+            /// Leader: an Append sent → the reply that covers it (per follower).
+            pub append_rtt: Histogram,
+            /// Leader: a SUBMIT proposed → applied (its commit wait).
+            pub propose_to_apply: Histogram,
         }
 
         impl Shared {
@@ -79,7 +87,7 @@ macro_rules! counters {
                 vec![$((stringify!($name), self.$name.load(Ordering::Relaxed)),)*]
             }
 
-            pub fn histograms(&self) -> [(&'static str, &Histogram); 6] {
+            pub fn histograms(&self) -> [(&'static str, &Histogram); 10] {
                 [
                     ("ingress_to_core", &self.ingress_to_core),
                     ("core_batch", &self.core_batch),
@@ -87,6 +95,10 @@ macro_rules! counters {
                     ("recovery_service", &self.recovery_service),
                     ("store_sync", &self.store_sync),
                     ("cluster_loop", &self.cluster_loop),
+                    ("peer_to_core", &self.peer_to_core),
+                    ("peer_handling", &self.peer_handling),
+                    ("append_rtt", &self.append_rtt),
+                    ("propose_to_apply", &self.propose_to_apply),
                 ]
             }
         }

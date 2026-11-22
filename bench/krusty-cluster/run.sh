@@ -69,6 +69,16 @@ echo "udp drops before:$(drops)"
 # LOAD (default: one sender on 7 that also reads the feed); e.g. two
 # sessions on one physical core: LOAD="--senders 2 --combined --pin-senders 7,15".
 if [ -n "${RIG:-}" ]; then
+  # Nothing reads the feed (Aeron's echo benchmark has none). Hold its port
+  # so frames are dropped at a full socket buffer: sent to a closed port,
+  # each one made the kernel generate an ICMP port-unreachable on the
+  # egress thread (one per frame, 2026-11-22), which a multicast feed never
+  # costs. The drops show in "udp drops after" (port 27900).
+  taskset -c "$HOUSE" python3 -c 'import socket, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(("127.0.0.1", 27900))
+time.sleep(1e9)' &
+  pids+=($!)
   AB=${AERON_BENCH:-$HOME/.local/share/krusty-tools/aeron-benchmarks}
   export JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}
   RIGJAR=${RIGJAR:-/var/tmp/krusty-aeron-bench/krusty-rig/krusty-rig.jar}

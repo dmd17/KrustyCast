@@ -731,6 +731,49 @@ replication design that bounds Appends by what they carry rather than by
 count, come before any default changes. `cluster.max_inflight` is now a
 node setting.
 
+### Repeats, the feed sink, and where the time goes (2026-11-22)
+
+**Repeats** (`sweep14.sh`, three runs per setting, interleaved): medians
+and p99s repeat to within a few percent (for example 43.6–44.7 µs p50 at
+300k with 1 in flight). p99.99 and max vary from run to run by orders of
+magnitude (70 µs to 17 ms), on both systems.
+
+**A harness artifact.** With the rig, nothing read KrustyCast's feed, and
+every frame sent to the closed port made the kernel generate an ICMP
+port-unreachable on the leader's egress thread (895,329 for 895,314
+frames in a 5 s check). A multicast feed never pays that. `run.sh` now
+holds the port (`RIG=1`), and the frames drop at a full socket buffer. The
+"stuck" state (500k, 2 in flight: p50 about 1 ms in all three repeats)
+was this: egress could not keep up with 146k small frames a second plus
+ICMP, and outcomes queued about 1 ms in ring O. Without the ICMP the same
+run gives 49 µs. The rig results above for KrustyCast carry this cost.
+The 16-in-flight plateau does not come from it: there, outcomes wait 16 µs
+in ring O.
+
+**Where the time goes** (new histograms, metrics layout 11:
+`propose_to_apply`, `append_rtt`, `peer_to_core`, `peer_handling`):
+- Followers are not the limit. An Append waits under 1 µs at p50 in
+  their ring R, and their core handles one in 0.5–2 µs.
+- The leader's replication I/O thread is. With 16 in flight it handles
+  about 250k datagrams a second each way at every rate (Appends out,
+  replies in, for two followers): about 125k Appends a second per
+  follower, the 7.7 µs per Append in the latency slope. `append_rtt` and
+  `propose_to_apply` are 131 µs at p50 there, and 33–65 µs with 1 or 2 in
+  flight.
+
+**With the sink** (`sweep15.sh`, logs on tmpfs), p50 / p99 / p99.9, µs:
+
+| Offered | Aeron (`sweep12.sh`) | KrustyCast, 1 in flight | 2 in flight | 4 in flight | 16 (default) |
+|---|---|---|---|---|---|
+| 300k | 48.9 / 76.7 / 88.1 | 38.1 / 53.2 / 78.0 | 44.3 / 63.4 / 3,168 | 56.8 / 76.0 / 92.2 | 146 / 206 / 219 |
+| 500k | 58.0 / 86.9 / 2,148 | 57.7 / 79.5 / 93.4 | 49.2 / 70.4 / 79.6 | 61.5 / 87.9 / 108 | 143 / 201 / 316 |
+| 750k | fell behind | 115 / 169 / 204 | 76.7 / 116 / 543 | 74.4 / 129 / 652 | 124 / 209 / 468 |
+
+With 2 in flight KrustyCast is ahead of Aeron at 300k and 500k in the
+p50, p99 and p99.9, and it sustains 750k, which Aeron does not. One in
+flight is best at 300k but falls behind at 750k, where each message waits
+a full round trip for the Append ahead of it.
+
 ## Next
 
 - Run the same tool on the reference servers (real NICs, multicast, isolated

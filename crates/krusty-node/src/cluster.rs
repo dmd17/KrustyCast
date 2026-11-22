@@ -219,7 +219,12 @@ pub(crate) fn repl_stage(
             let (b, _) = rb.get(i);
             stats.repl_in.fetch_add(1, Ordering::Relaxed);
             // A full ring drops the message: Raft tolerates loss.
-            if !to_core.try_write(1, b.len(), |d| d.copy_from_slice(b)) {
+            // Stamped on receipt (peer_to_core).
+            let t = mono_ns();
+            if !to_core.try_write(1, 8 + b.len(), |d| {
+                d[..8].copy_from_slice(&t.to_le_bytes());
+                d[8..].copy_from_slice(b);
+            }) {
                 stats.repl_dropped.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -269,8 +274,8 @@ struct Shell {
     disk: LogReader,
     history: Arc<History>,
     stats: Arc<Metrics>,
-    /// Entries this node proposed: (index, term, client).
-    pending: VecDeque<(u64, u64, SocketAddrV4)>,
+    /// Entries this node proposed: (index, term, client, proposed at).
+    pending: VecDeque<(u64, u64, SocketAddrV4, u64)>,
     /// Leader: messages (client, incarnation, seqno) proposed in its term
     /// and not yet applied, with their (index, term). A resend of one is
     /// dropped: it is in the log, and its outcome goes out when it commits.
@@ -306,7 +311,14 @@ struct Shell {
     fb: [u8; krusty_wire::feedback::LEN],
     /// Tests: the trace for Cluster.tla (`ClusterConfig::trace`).
     trace: Option<Tracer>,
+    /// Leader: Appends with entries in flight, per follower: (last index,
+    /// sent at), for `append_rtt`.
+    appends: HashMap<u32, VecDeque<(u64, u64)>>,
 }
+
+/// Appends tracked per follower for `append_rtt` (more in flight are not
+/// timed).
+const APPENDS_TRACKED: usize = 1024;
 
 /// Unapplied proposals the resend filter tracks (allocated once; a commit
 /// lag of 64 Ki entries is 200 ms at 300 k msg/s).
@@ -524,6 +536,12 @@ impl Shell {
                     commit,
                 };
                 wire::encode(&mut self.msg, self.id, &m);
+                if k > 0 {
+                    let q = self.appends.entry(to).or_default();
+                    if q.len() < APPENDS_TRACKED {
+                        q.push_back((prev_index + k, mono_ns()));
+                    }
+                }
                 at
             }
             m => wire::encode(&mut self.msg, self.id, &m),
@@ -533,14 +551,35 @@ impl Shell {
     }
 
     fn on_peer(&mut self, rec: &[u8]) {
+        let start = mono_ns();
+        let received = u64::from_le_bytes(rec[..8].try_into().unwrap());
+        self.stats
+            .peer_to_core
+            .record(start.saturating_sub(received));
+        let rec = &rec[8..];
         let offsets = std::mem::take(&mut self.offsets);
         let Some((from, m, entries)) = wire::decode(rec, offsets) else {
             self.stats.repl_dropped.fetch_add(1, Ordering::Relaxed);
             return;
         };
+        if let Message::AppendReply { success, index, .. } = m
+            && let Some(q) = self.appends.get_mut(&from)
+        {
+            // The Appends this reply covers: their round trips.
+            while q.front().is_some_and(|&(last, _)| last <= index) {
+                let (_, t) = q.pop_front().unwrap();
+                self.stats.append_rtt.record(start.saturating_sub(t));
+            }
+            if !success {
+                q.clear();
+            }
+        }
         self.raft.on_message(from, m, &entries, &mut self.ob);
         self.offsets = entries.into_offsets();
         self.carry_out();
+        self.stats
+            .peer_handling
+            .record(mono_ns().saturating_sub(start));
     }
 
     fn on_submit(&mut self, rec: &[u8], batch_start: u64) {
@@ -578,7 +617,7 @@ impl Shell {
                 .raft
                 .propose(&self.data, &mut self.ob)
                 .expect("the leader proposes");
-            self.pending.push_back((i, term, src));
+            self.pending.push_back((i, term, src, mono_ns()));
             self.proposals += 1;
             if self.proposed.len() >= PROPOSED_MAX && !self.proposed.contains_key(&key) {
                 // Full (a long commit stall): start again rather than grow;
@@ -629,8 +668,13 @@ impl Shell {
                 self.pending.pop_front();
             }
             let mine = match self.pending.front() {
-                Some(&(pi, pt, addr)) if pi == i => {
+                Some(&(pi, pt, addr, at)) if pi == i => {
                     self.pending.pop_front();
+                    if pt == term {
+                        self.stats
+                            .propose_to_apply
+                            .record(mono_ns().saturating_sub(at));
+                    }
                     (pt == term).then_some(addr)
                 }
                 _ => None,
@@ -838,6 +882,7 @@ pub(crate) fn cluster_core_stage(
         frame: vec![0u8; cfg.mtu],
         entry: vec![0u8; HIST_HEADER + cfg.max_payload],
         fb: [0u8; krusty_wire::feedback::LEN],
+        appends: HashMap::new(),
         trace: cl
             .trace
             .as_ref()
