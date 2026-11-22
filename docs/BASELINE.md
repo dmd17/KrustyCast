@@ -409,7 +409,7 @@ p50 19–20, p99 47–49, max 115–166; 100 000 msg/s p50 26, p99 40–41, max
   isolation): new messages on the feed p50 69.7 ms, p90 97.9 ms, max
   164.1 ms; new leader p50 68.5 ms; no failed messages.
 
-## E3: Aeron Cluster on the same machine, 2026-11-17
+## E3: Aeron Cluster on the same machine, 2026-11-17 to 22
 
 The gap analysis's E3: Aeron Cluster (1.54.0, the aeron-io/benchmarks
 suite's echo service and open-loop client) and KrustyCast, three nodes
@@ -441,7 +441,95 @@ is the closest pair, not an equal one):
 | Disk, no fsync before commit | archive on disk, `file.sync.level=0` (writes on the commit path) | mode (a) on disk (storage off the commit path) |
 | fsync before commit | archive `file.sync.level=1` (fsync per recorded block) | mode (b): publish after the group's fsync, on two nodes |
 
-### Results
+### Current results: latency distributions (2026-11-22)
+
+The reference comparison. Everything below this section records how it
+was reached; where an earlier number disagrees, this one stands.
+
+**Method.** As in the original layout above, with these differences:
+- **One load generator for both.** aeron-io/benchmarks' `LoadTestRig`
+  drives Aeron (its own transceiver) and KrustyCast (`bench/aeron-rig-krusty`).
+  So the schedule (open loop), the latency definition (scheduled send time
+  to the answer: Aeron's echo, KrustyCast's ACCEPTED), the histograms and
+  the JVM are the same. Each client gets CPUs 7 and 15: Aeron's media
+  driver and KrustyCast's I/O thread on 7, the rig thread on 15.
+- **One session.** Both clusters were measured in one isolated session,
+  interleaved by rate (`sweep16.sh`), 60 s after 10 s of warm-up per run.
+- **KrustyCast as of 2026-11-22:** several messages per datagram both ways
+  (d96edd5), 2 Appends in flight per follower (`max_inflight`, the new
+  default: 3d9353e), MTU 1408 on both systems (Aeron's default). Nothing
+  reads KrustyCast's feed, as nothing reads one in Aeron's echo benchmark,
+  and its port is held so frames are dropped rather than refused
+  (bf0ab44).
+
+![Latency distributions on tmpfs](img/e3-latency-tmpfs.svg)
+
+![Latency distributions on disk](img/e3-latency-disk.svg)
+
+µs, from each message's scheduled send time:
+
+**Logs on tmpfs (Aeron on tmpfs)**
+
+| Offered | System | min | p10 | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | p99.999 | max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100k | Aeron | 19.7 | 35.6 | 38.3 | 45.3 | 49.8 | 58.2 | 69.8 | 76.6 | 1,097 | 3,240 | 3,455 |
+| 100k | KrustyCast | 20.9 | 25.2 | 27.5 | 28.7 | 35.1 | 35.4 | 40.3 | 45.6 | 55.0 | 69.6 | 136 |
+| 300k | Aeron | 26.7 | 39.6 | 44.7 | 49.0 | 56.0 | 64.3 | 76.7 | 87.7 | 2,288 | 3,525 | 3,695 |
+| 300k | KrustyCast | 29.3 | 39.0 | 42.0 | 44.2 | 47.5 | 50.9 | 62.4 | 75.0 | 9,347 | 13.0 ms | 13.5 ms |
+| 500k | Aeron | 29.8 | 45.0 | 52.5 | 58.4 | 66.0 | 72.6 | 84.7 | 155 | 3,144 | 3,498 | 3,574 |
+| 500k | KrustyCast | 32.3 | 43.6 | 46.7 | 49.2 | 52.6 | 57.2 | 71.2 | 87.3 | 2,107 | 3,357 | 3,783 |
+| 750k | Aeron | fell behind | | | | | | | | | | |
+| 750k | KrustyCast | 37.5 | 59.2 | 68.7 | 76.4 | 87.0 | 97.2 | 116 | 485 | 2,279 | 3,285 | 3,635 |
+
+**On disk (Aeron archive sync level 0; KrustyCast mode (a))**
+
+| Offered | System | min | p10 | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | p99.999 | max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100k | Aeron | 25.9 | 36.1 | 39.6 | 45.9 | 51.3 | 60.5 | 71.6 | 88.8 | 8,815 | 10.3 ms | 10.6 ms |
+| 100k | KrustyCast | 19.6 | 25.2 | 25.4 | 27.5 | 29.7 | 35.3 | 45.1 | 48.1 | 65.4 | 99.0 | 242 |
+| 300k | Aeron | 27.0 | 40.3 | 45.4 | 49.9 | 57.3 | 66.0 | 79.1 | 6,738 | 10.4 ms | 11.3 ms | 11.6 ms |
+| 300k | KrustyCast | 26.8 | 36.0 | 39.5 | 42.5 | 47.0 | 50.8 | 58.0 | 68.5 | 725 | 2,035 | 2,527 |
+| 500k | Aeron | 31.0 | 47.5 | 55.7 | 61.9 | 69.8 | 76.7 | 574 | 9,011 | 11.3 ms | 11.7 ms | 11.8 ms |
+| 500k | KrustyCast | 29.2 | 40.3 | 44.4 | 47.6 | 52.4 | 59.4 | 82.6 | 101 | 2,390 | 4,227 | 4,694 |
+| 750k | Aeron | fell behind | | | | | | | | | | |
+| 750k | KrustyCast | 34.5 | 53.0 | 60.1 | 66.6 | 78.0 | 91.1 | 119 | 1,992 | 5,558 | 6,640 | 6,795 |
+
+**Reading them.**
+- **Through p99.9, KrustyCast is at or below Aeron at every rate and on
+  both storages.** The one exception is the minimum at 300k and 500k on
+  tmpfs, where KrustyCast is about 3 µs higher. Both floors are about
+  20–30 µs, roughly a round trip through three processes over loopback.
+- **The gap is largest at light load.** At 100k, KrustyCast's p50 is 28
+  µs against Aeron's 45, and its whole run stays under 0.25 ms.
+- **KrustyCast's body stays tight as load rises.** From p10 to p99 it
+  spans 39–62 µs at 300k and 44–71 at 500k; Aeron's spans 40–77 and
+  45–85. KrustyCast also sustains 750k msg/s, where Aeron falls behind
+  (about 585k).
+- **On disk, Aeron's tail is consistently worse.** At sync level 0
+  Aeron's archive writes are on the commit path: p99.99 of 9–11 ms and a
+  max of 10–12 ms at every rate. KrustyCast's mode (a) keeps the disk off
+  the commit path: p99.99 of 0.07–5.6 ms.
+- **Beyond p99.9 on tmpfs, single runs do not rank the systems.** Both
+  have about one message in 10,000 held up by a millisecond-scale pause,
+  and its size varies between runs. KrustyCast reached 13 ms at 300k and
+  3.8 ms at 500k. Repeat runs (below) moved p99.99 and max by orders of
+  magnitude on both systems. The cause of the pauses is not yet known.
+
+**Data and reproduction.** `bench/results/e3-2026-11-22/` holds each run's
+distribution as the rig printed it (`*.hgrm`; `*-750k.hgrm` for Aeron
+records that it fell behind), the sweep script, the KrustyCast node
+configurations (`config/`), and `plot.py`, which draws the figures from a
+sweep's results. To run it again: build the rig's jar
+(`bench/aeron-rig-krusty/build.sh`) and the release binaries, then
+`sweep16.sh` on nuc2. That needs the isolation scripts under
+`/var/tmp/krusty-aeron-bench/iso/`, which use sudo and restore everything
+on exit.
+
+### First results (2026-11-17)
+
+Superseded by the section above. These came before batching, with
+`krusty-load` as KrustyCast's client and 16 Appends in flight. The
+10-minute run at 75k still stands as a long run at a low rate.
 
 10 minutes at 75 000 msg/s (µs):
 
@@ -544,6 +632,10 @@ near 70 k msg/s (Little's law); that needs `outcome_ring = 1024`.
 
 ### What limits throughput
 
+(2026-11-17. Since then KrustyCast batches and sustains 750k msg/s on
+either storage (1M falls behind), so the clients no longer set its
+ceiling; see "Current results" and "One load generator for both".)
+
 | | Ceiling here | Set by |
 |---|---|---|
 | Aeron, no fsync | about 585 k msg/s | the cluster: at saturation the client's publication is back-pressured, its sender sits at the leader's flow-control limit, and the leader's log sender at its 32 MiB window (the followers) |
@@ -569,6 +661,12 @@ Aeron's floor with small heaps would be about 2 GB, mostly term buffers,
 which its term length sets.
 
 ### Findings
+
+(2026-11-17. The headline below is about that day's runs. The current
+comparison is in "Current results" above: KrustyCast is ahead through
+p99.9 at every rate. The claim that Aeron carries more per client CPU
+no longer holds since batching (both clients now get the same two CPUs
+under one rig), and NFR-5 is not yet met on this machine either way.)
 
 **KrustyCast at equal footing is faster at every percentile and uses
 370 MB against Aeron's 10 GB as configured (about 2 GB at Aeron's floor);
@@ -774,45 +872,6 @@ p50, p99 and p99.9, and it sustains 750k, which Aeron does not. One in
 flight is best at 300k but falls behind at 750k, where each message waits
 a full round trip for the Append ahead of it.
 
-### Full distributions, one session, max_inflight 2 (2026-11-22)
-
-`sweep16.sh` (`results-e3/one-rig-2/`): both clusters under the rig,
-interleaved by rate, KrustyCast with the new default (2 in flight) and
-the feed port held. 60 s each, µs.
-
-**Logs on tmpfs (Aeron on tmpfs)**
-
-| Offered | System | min | p10 | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | p99.999 | max |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 100k | Aeron | 19.7 | 35.6 | 38.3 | 45.3 | 49.8 | 58.2 | 69.8 | 76.6 | 1,097 | 3,240 | 3,455 |
-| 100k | KrustyCast | 20.9 | 25.2 | 27.5 | 28.7 | 35.1 | 35.4 | 40.3 | 45.6 | 55.0 | 69.6 | 136 |
-| 300k | Aeron | 26.7 | 39.6 | 44.7 | 49.0 | 56.0 | 64.3 | 76.7 | 87.7 | 2,288 | 3,525 | 3,695 |
-| 300k | KrustyCast | 29.3 | 39.0 | 42.0 | 44.2 | 47.5 | 50.9 | 62.4 | 75.0 | 9,347 | 13.0 ms | 13.5 ms |
-| 500k | Aeron | 29.8 | 45.0 | 52.5 | 58.4 | 66.0 | 72.6 | 84.7 | 155 | 3,144 | 3,498 | 3,574 |
-| 500k | KrustyCast | 32.3 | 43.6 | 46.7 | 49.2 | 52.6 | 57.2 | 71.2 | 87.3 | 2,107 | 3,357 | 3,783 |
-| 750k | Aeron | fell behind | | | | | | | | | | |
-| 750k | KrustyCast | 37.5 | 59.2 | 68.7 | 76.4 | 87.0 | 97.2 | 116 | 485 | 2,279 | 3,285 | 3,635 |
-
-**On disk (Aeron archive sync level 0; KrustyCast mode (a))**
-
-| Offered | System | min | p10 | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | p99.999 | max |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 100k | Aeron | 25.9 | 36.1 | 39.6 | 45.9 | 51.3 | 60.5 | 71.6 | 88.8 | 8,815 | 10.3 ms | 10.6 ms |
-| 100k | KrustyCast | 19.6 | 25.2 | 25.4 | 27.5 | 29.7 | 35.3 | 45.1 | 48.1 | 65.4 | 99.0 | 242 |
-| 300k | Aeron | 27.0 | 40.3 | 45.4 | 49.9 | 57.3 | 66.0 | 79.1 | 6,738 | 10.4 ms | 11.3 ms | 11.6 ms |
-| 300k | KrustyCast | 26.8 | 36.0 | 39.5 | 42.5 | 47.0 | 50.8 | 58.0 | 68.5 | 725 | 2,035 | 2,527 |
-| 500k | Aeron | 31.0 | 47.5 | 55.7 | 61.9 | 69.8 | 76.7 | 574 | 9,011 | 11.3 ms | 11.7 ms | 11.8 ms |
-| 500k | KrustyCast | 29.2 | 40.3 | 44.4 | 47.6 | 52.4 | 59.4 | 82.6 | 101 | 2,390 | 4,227 | 4,694 |
-| 750k | Aeron | fell behind | | | | | | | | | | |
-| 750k | KrustyCast | 34.5 | 53.0 | 60.1 | 66.6 | 78.0 | 91.1 | 119 | 1,992 | 5,558 | 6,640 | 6,795 |
-
-Through p99.9, KrustyCast is at or below Aeron at every rate and on
-both storages, except the minimum at 300k and 500k on tmpfs (about 3 µs
-higher). Beyond p99.9 single runs do not rank the systems: both have
-about 0.01% of messages held up by millisecond pauses, whose size moves
-from run to run (KrustyCast's 300k tmpfs run: 13 ms max; its 500k run:
-3.8 ms). On disk at sync level 0, Aeron's tail reaches 10–12 ms at every
-rate.
 
 ## Next
 
@@ -820,8 +879,13 @@ rate.
   cores) and record the results here, next to the laptop numbers; for M3,
   `krusty-load --cluster 3` across three machines (the in-process mode
   needs a multi-host variant) and the failover example.
-- E3 again on the reference servers, and KrustyCast with batched submits
-  and feedback (its clients set its throughput here).
+- E3 again on the reference servers (real NICs, multicast feed).
+- The millisecond pauses behind both systems' p99.99 and max on this
+  machine (about one message in 10,000): where they come from, and
+  whether KrustyCast's are its own.
+- Replication refinements (partial vs full Appends with a byte cap for
+  bulk, one reply per follower pass), measured against the 2-in-flight
+  default.
 - A perf smoke test in CI (a short low-rate run that must not lose messages)
   is in `ci.yml`. It fails on loss and on generator lag, not on latency,
   because shared CI runners are too noisy for latency.
