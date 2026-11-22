@@ -17,6 +17,14 @@
 # leadership to it (krusty-admin transfer) and checks.
 # Latency is krusty-load's, from each message's scheduled send time to the
 # feed and to ACCEPTED (= Aeron's echo round trip).
+#
+# RIG=1: the client is aeron-io/benchmarks' LoadTestRig instead, the one
+# that measures Aeron in bench/aeron-cluster, with the KrustyCast transceiver
+# (bench/aeron-rig-krusty, built by its build.sh). Its JVM is started and
+# pinned as Aeron's client: the rig thread on 15, and the transceiver's I/O
+# thread (Aeron's client has its media driver there) on 7. Latency is then
+# the rig's: scheduled send time to ACCEPTED. RIG_OPTS: more -D options
+# (krusty.window, krusty.mtu, krusty.retry.ms).
 set -euo pipefail
 RATE=$1; SECS=$2; WARM=${3:-10}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -60,10 +68,43 @@ drops() { awk 'NR > 1 && $2 ~ /^0100007F:(69|6A|6B|6C)/ && $NF > 0 {
 echo "udp drops before:$(drops)"
 # LOAD (default: one sender on 7 that also reads the feed); e.g. two
 # sessions on one physical core: LOAD="--senders 2 --combined --pin-senders 7,15".
-taskset -c "$HOUSE" "$BIN/krusty-load" --connect 127.0.0.1:27001 --feed-bind 127.0.0.1:27900 \
-  --rate "$RATE" --duration "$SECS" --warmup "$WARM" --spin ${LOAD:---combined --pin-senders 7} &
-pids+=($!)   # stopped with the nodes if this script is
-wait $! && rc=0 || rc=$?
+if [ -n "${RIG:-}" ]; then
+  AB=${AERON_BENCH:-$HOME/.local/share/krusty-tools/aeron-benchmarks}
+  export JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}
+  RIGJAR=${RIGJAR:-/var/tmp/krusty-aeron-bench/krusty-rig/krusty-rig.jar}
+  # (The launcher takes the last -cp: the suite's jars plus ours.)
+  CP="$AB/benchmarks-all/build/libs/benchmarks.jar:$RIGJAR"
+  OPTS="-Xms1G -Xmx1G -XX:GuaranteedSafepointInterval=0 -cp $CP \
+ -Dio.aeron.benchmarks.message.transceiver=io.krustycast.bench.KrustyMessageTransceiver \
+ -Dkrusty.nodes=127.0.0.1:27001,127.0.0.1:27002,127.0.0.1:27003 \
+ -Dio.aeron.benchmarks.message.rate=$RATE -Dio.aeron.benchmarks.warmup.message.rate=$RATE \
+ -Dio.aeron.benchmarks.iterations=$SECS -Dio.aeron.benchmarks.warmup.iterations=$WARM \
+ -Dio.aeron.benchmarks.output.file=krusty-rig-$RATE ${RIG_OPTS:-}"
+  PROCESS_FILE_NAME=kb-krusty-rig JVM_OPTS="$OPTS" taskset -c "$HOUSE" "$AB/scripts/run-java" \
+    io.aeron.benchmarks.LoadTestRig "$AB/scripts/aeron/low-latency-driver.properties" \
+    "$HERE/../aeron-cluster/cluster.properties" &
+  client=$!
+  pids+=($client)
+  pin() { # thread-name-prefix cpu: waits up to 30 s for the thread
+    local i t
+    for i in $(seq 300); do
+      for t in /proc/$client/task/*; do
+        if [[ $(cat "$t/comm" 2>/dev/null) == "$1"* ]]; then
+          taskset -pc "$2" "$(basename "$t")" > /dev/null; return 0
+        fi
+      done
+      sleep 0.1
+    done
+    echo "run.sh: no thread $1 in the rig" >&2; return 1
+  }
+  pin krusty-io 7; pin load-test-rig 15
+  wait $client && rc=0 || rc=$?
+else
+  taskset -c "$HOUSE" "$BIN/krusty-load" --connect 127.0.0.1:27001 --feed-bind 127.0.0.1:27900 \
+    --rate "$RATE" --duration "$SECS" --warmup "$WARM" --spin ${LOAD:---combined --pin-senders 7} &
+  pids+=($!)   # stopped with the nodes if this script is
+  wait $! && rc=0 || rc=$?
+fi
 echo "udp drops after:$(drops)"
 for n in 1 2 3; do "$BIN/krusty-stat" --file /dev/shm/kb-krusty-node$n.stats; done
 exit $rc

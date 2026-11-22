@@ -39,6 +39,7 @@
 //! election_min_ms = 50
 //! election_max_ms = 100
 //! heartbeat_ms = 10
+//! max_inflight = 16             # Appends in flight per follower
 //! core = 6                      # replication I/O stage
 //! ```
 use crate::{Idle, MoldConfig, NodeConfig};
@@ -75,6 +76,9 @@ pub struct Cluster {
     pub election_max_ms: Option<u64>,
     pub heartbeat_ms: Option<u64>,
     pub max_append_bytes: Option<usize>,
+    /// Appends in flight to each follower before the leader waits for
+    /// replies (default 16).
+    pub max_inflight: Option<u32>,
     pub retain_entries: Option<u64>,
     pub core: Option<usize>,
 }
@@ -222,6 +226,9 @@ impl FileConfig {
             if let Some(v) = c.max_append_bytes {
                 cl.max_append_bytes = v;
             }
+            if let Some(v) = c.max_inflight {
+                cl.max_inflight = v;
+            }
             if let Some(v) = c.retain_entries {
                 cl.retain_entries = v;
             }
@@ -280,6 +287,9 @@ impl NodeConfig {
             }
             if !(c.heartbeat_us < c.election_min_us && c.election_min_us < c.election_max_us) {
                 return Err("cluster: need heartbeat < election_min < election_max".into());
+            }
+            if c.max_inflight == 0 {
+                return Err("cluster.max_inflight: must be at least 1".into());
             }
             if c.max_append_bytes < krusty_raft::wire::entry_len(8 + self.max_payload + 64)
                 || c.max_append_bytes > 65_000

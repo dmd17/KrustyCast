@@ -685,6 +685,52 @@ are messages per datagram on the leader (`ingress_datagrams`,
   (1.2–4 per datagram), because each sender loop pass finds few new
   messages. Outcomes pack 5–12 per datagram.
 
+### One load generator for both (2026-11-22)
+
+To rule the generator out, aeron-io/benchmarks' LoadTestRig now drives
+both clusters (`bench/aeron-rig-krusty`: a KrustyCast transceiver, its I/O
+thread on 7 as Aeron's client's media driver, the rig on 15). Both ran in
+one session, interleaved by rate, MTU 1408 on both (`sweep12.sh`,
+`results-e3/one-rig/`). p50 / p99 / p99.99, µs:
+
+| Offered | Aeron, tmpfs | KrustyCast, tmpfs | Aeron, disk, sync 0 | KrustyCast, mode (a), disk |
+|---|---|---|---|---|
+| 100k | 45.6 / 70.7 / 2,879 | 31.0 / 40.4 / 55.2 | 46.0 / 71.7 / 7,922 | 29.6 / 45.4 / 79.4 |
+| 300k | 48.9 / 76.7 / 2,091 | 145 / 206 / 237 | 49.9 / 78.7 / 9,003 | 110 / 186 / 858 |
+| 400k | 51.4 / 77.8 / 1,896 | 146 / 202 / 5,775 | 53.2 / 81.3 / 9,822 | 110 / 196 / 1,393 |
+| 500k | 58.0 / 86.9 / 3,588 | 144 / 201 / 1,441 | 60.5 / 102 / 13 ms | 111 / 212 / 23 ms |
+| 600k | fell behind | 142 / 202 / 8,659 | fell behind | 110 / 218 / 1,106 |
+| 750k | fell behind | 131 / 211 / 285 | fell behind | 116 / 241 / 4,862 |
+
+The generator was not it: under the same rig KrustyCast's p50 still steps
+from about 30 µs to a 110–145 µs plateau between 100k and 300k. Outcomes
+leave 17–20 to a datagram there, so commits come in bursts.
+
+**The cause: Appends in flight.** The leader sends an Append on nearly
+every loop pass and lets up to `max_inflight` (16) be in flight to each
+follower. The p50 grows in proportion to that limit, about 7.7 µs per
+Append at 300k and at 500k (`sweep13.sh`, logs on tmpfs). The window
+stays full, and the latency is the wait behind it: the replication path
+handles about one small Append per 7.7 µs.
+
+| max_inflight | 300k p50 / p99 / p99.9 | 500k p50 / p99 / p99.9 | 750k p50 / p99 / p99.9 |
+|---|---|---|---|
+| 1 | 43.9 / 61.2 / 1,201 | 50.8 / 73.2 / 84.7 | 105 / 153 / 235 |
+| 2 | 52.1 / 79.1 / 92.7 | 1,150 / 2,198 / 2,398 (see below) | 75.1 / 155 / 686 |
+| 4 | 56.5 / 77.6 / 90.9 | 64.0 / 94.6 / 761 | 76.5 / 126 / 412 |
+| 16 (default) | 142 / 208 / 471 | 145 / 202 / 223 | |
+| 64 | 505 / 577 / 595 | 507 / 578 / 603 | |
+| 256 | 1,965 / 2,072 / 2,120 | 1,972 / 2,078 / 2,142 | |
+
+With one to four Appends in flight, fewer and larger Appends, KrustyCast
+matches or beats Aeron's p50 and p99 at 300k and 500k, and still sustains
+750k. Provisional: these are single runs, the tails (p99.99, max) vary
+from run to run on both systems, and 500k with 2 in flight stayed in the
+queued state for the whole run, with no leader change. Repeat runs, and a
+replication design that bounds Appends by what they carry rather than by
+count, come before any default changes. `cluster.max_inflight` is now a
+node setting.
+
 ## Next
 
 - Run the same tool on the reference servers (real NICs, multicast, isolated
