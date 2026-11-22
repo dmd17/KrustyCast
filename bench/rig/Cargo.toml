@@ -1,0 +1,22 @@
+[package]
+name = "e3-rig"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "One open-loop load generator, in Rust, for Aeron Cluster and KrustyCast (docs/BASELINE.md E3)"
+
+# Not a member of the KrustyCast workspace: it links Aeron's C client
+# (libaeron_static), which CI does not build.
+[workspace]
+
+[dependencies]
+hdrhistogram = { version = "7.5.4", default-features = false }
+libc = "0.2"
+krusty-net = { path = "../../crates/krusty-net" }
+krusty-ring = { path = "../../crates/krusty-ring" }
+krusty-session = { path = "../../crates/krusty-session" }
+krusty-wire = { path = "../../crates/krusty-wire" }
+
+[profile.release]
+debug = 1

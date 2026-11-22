@@ -14,7 +14,8 @@
 #   follower 1 driver 5, consensus 13, archive 10
 #   follower 2 driver 6, consensus 14, archive 11
 #   both followers' services share 9 (off the latency path)
-#   client     driver 7, load generator 15
+#   client     driver 7, load generator 15 (no JVM: Aeron's C media driver,
+#              aeronmd, and the Rust rig bench/rig, e3-rig aeron)
 #
 # Why (measured 2026-11-17, docs/BASELINE.md): with a single shared driver
 # thread on the leader, or with the JVMs' own threads (JIT, GC, client
@@ -75,7 +76,12 @@ C=$HERE/cluster.properties
 start md0 media-driver $C $HERE/node0.properties
 start md1 media-driver $C $HERE/node1.properties
 start md2 media-driver $C $HERE/node2.properties
-start mdc media-driver $C $HERE/client.properties
+# The client's driver: Aeron's C media driver (SHARED: its one agent runs
+# on the main thread), with the files the Java client driver read.
+AERONMD=${AERONMD:-$HOME/.local/share/krusty-tools/aeron-c-src/aeron-1.54.0/build/binaries/aeronmd}
+taskset -c 7 "$AERONMD" "$B/low-latency-driver.properties" $C $HERE/client.properties $X \
+  > "$LOGS/mdc.out" 2>&1 &
+pids+=($!)
 for n in 0 1 2; do
   D=$DATA/node$n
   OPTS="-Daeron.cluster.dir=$D/cluster -Daeron.archive.dir=$D/archive" \
@@ -83,18 +89,19 @@ for n in 0 1 2; do
 done
 # A shared driver's agent thread is named after its Aeron directory.
 pin ${pids[0]} receiver 1; pin ${pids[0]} sender 2
-pin ${pids[1]} /dev/shm/kb 5; pin ${pids[2]} /dev/shm/kb 6; pin ${pids[3]} /dev/shm/kb 7
+pin ${pids[1]} /dev/shm/kb 5; pin ${pids[2]} /dev/shm/kb 6
 pin ${pids[4]} consensus-modul 3;  pin ${pids[4]} archive-conduct 4;  pin ${pids[4]} clustered-servi 12
 pin ${pids[5]} consensus-modul 13; pin ${pids[5]} archive-conduct 10; pin ${pids[5]} clustered-servi 9
 pin ${pids[6]} consensus-modul 14; pin ${pids[6]} archive-conduct 11; pin ${pids[6]} clustered-servi 9
 sleep 5   # leader elected
 
-OPTS="-Dio.aeron.benchmarks.message.rate=$RATE \
- -Dio.aeron.benchmarks.warmup.message.rate=$RATE -Dio.aeron.benchmarks.iterations=$SECS \
- -Dio.aeron.benchmarks.warmup.iterations=$WARM -Dio.aeron.benchmarks.output.file=aeron-cluster-$RATE"
-PROCESS_FILE_NAME=kb-client JVM_OPTS="$JVM_BASE $OPTS" taskset -c "$HOUSE" \
-  "$B/cluster-client" $C $HERE/client.properties $X &
+# The load generator: the Rust rig (bench/rig, built with its cargo), with
+# the Java LoadTestRig's method; its C client's conductor stays on HOUSE,
+# the rig thread moves to 15.
+RIG=${RIG_BIN:-$HERE/../rig/target/release/e3-rig}
+taskset -c "$HOUSE" "$RIG" aeron --rate "$RATE" --duration "$SECS" --warmup "$WARM" \
+  --rig-cpu 15 --aeron-dir /dev/shm/kb-aeron-client \
+  --ingress 'aeron:udp?endpoint=localhost:20000' --egress 'aeron:udp?endpoint=localhost:24000' &
 client=$!
 pids+=($client)
-pin $client load-test-rig 15
 wait $client
