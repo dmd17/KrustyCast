@@ -325,7 +325,9 @@ fn polling_only_when_due_sends_what_scanning_every_time_sends() {
                     let s = 1 + rng.below(a.next_seqno.max(1) + 2);
                     let outcome = match rng.below(8) {
                         0 => Outcome::Nak,
-                        1 => Outcome::Busy { retry_after_us: rng.below(3) },
+                        1 => Outcome::Busy {
+                            retry_after_us: rng.below(3),
+                        },
                         2 => Outcome::NotLeader { leader: 0 },
                         _ => Outcome::Accepted { global_seqno: s },
                     };
@@ -335,7 +337,8 @@ fn polling_only_when_due_sends_what_scanning_every_time_sends() {
                     assert_eq!(ea, eb, "seed {seed} step {step}");
                 }
                 _ => {
-                    let (mut ta, mut tb, mut ea, mut eb) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                    let (mut ta, mut tb, mut ea, mut eb) =
+                        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
                     a.poll(now, &mut ta, &mut ea);
                     b.next_due_ns = 0; // the reference scans every time
                     b.poll(now, &mut tb, &mut eb);
