@@ -39,7 +39,7 @@
 //! election_min_ms = 50
 //! election_max_ms = 100
 //! heartbeat_ms = 10
-//! max_inflight = 16             # Appends in flight per follower
+//! max_inflight = 2              # Appends in flight per follower
 //! core = 6                      # replication I/O stage
 //! ```
 use crate::{Idle, MoldConfig, NodeConfig};
@@ -77,7 +77,7 @@ pub struct Cluster {
     pub heartbeat_ms: Option<u64>,
     pub max_append_bytes: Option<usize>,
     /// Appends in flight to each follower before the leader waits for
-    /// replies (default 16).
+    /// replies (default 2: BASELINE E3, 2026-11-22).
     pub max_inflight: Option<u32>,
     pub retain_entries: Option<u64>,
     pub core: Option<usize>,

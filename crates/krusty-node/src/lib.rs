@@ -70,6 +70,7 @@ pub struct ClusterConfig {
     pub heartbeat_us: u64,
     /// Most entry bytes per Append datagram.
     pub max_append_bytes: usize,
+    /// Most unacknowledged Appends per follower (krusty_raft::Config).
     pub max_inflight: u32,
     /// Committed entries kept in memory for lagging followers (older ones
     /// are read from the log).
@@ -91,7 +92,7 @@ impl ClusterConfig {
             election_max_us: 100_000,
             heartbeat_us: 10_000,
             max_append_bytes: 60_000,
-            max_inflight: 16,
+            max_inflight: 2,
             retain_entries: 1 << 16,
             core: None,
             trace: None,

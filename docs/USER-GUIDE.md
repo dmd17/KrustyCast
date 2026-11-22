@@ -239,6 +239,7 @@ Every key is optional; unknown keys are errors. Command-line flags of
 | `election_min_ms`, `election_max_ms` | 50, 100 | Election timeout range. |
 | `heartbeat_ms` | 10 | Leader heartbeat. Must be below `election_min_ms`. |
 | `max_append_bytes` | 60000 | Most entry bytes per replication datagram. |
+| `max_inflight` | 2 | Appends sent to a follower and not yet acknowledged. Keep it small: the leader sends an Append on every pass with new entries, and a deep pipeline only queues them (at 16, p50 tripled under load; docs/BASELINE.md E3). Raise it only for long round trips, where 2 × `max_append_bytes` per round trip would limit throughput. |
 | `retain_entries` | 65536 | Committed entries kept in memory for lagging followers (older ones are read from disk). |
 | `core` | | CPU for the replication stage. |
 

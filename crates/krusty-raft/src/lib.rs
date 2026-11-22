@@ -52,7 +52,12 @@ pub struct Config {
     /// served from storage are not counted: the shell sends fewer if they
     /// do not fit, which the follower's reply reports.
     pub max_append_bytes: usize,
-    /// Most unacknowledged Appends per follower.
+    /// Most unacknowledged Appends per follower. Small (2): the leader
+    /// sends an Append on each pass that has new entries, and more in
+    /// flight only queued them behind the replication thread's
+    /// per-datagram cost (docs/BASELINE.md E3: p50 at 300k msg/s 44 µs
+    /// with 2, 146 µs with 16), while entries left behind ride in the
+    /// next, larger Append.
     pub max_inflight: u32,
     /// Committed entries kept in memory for followers that lag.
     pub retain_entries: u64,
@@ -69,7 +74,7 @@ impl Config {
             heartbeat_ns: 10_000_000,
             max_append_entries: 256,
             max_append_bytes: usize::MAX,
-            max_inflight: 16,
+            max_inflight: 2,
             retain_entries: 1 << 16,
             seed: 0,
         }
