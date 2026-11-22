@@ -282,3 +282,68 @@ fn sessions_against_the_core_over_a_lossy_network() {
         );
     }
 }
+
+/// `poll` scans everything in flight only when a resend may be due; that
+/// must send exactly what scanning every time (the earlier algorithm, and
+/// the reference here) sends. Both sessions get the same submits,
+/// outcomes and polls at the same times; their transmissions and events
+/// must agree at every step.
+#[test]
+fn polling_only_when_due_sends_what_scanning_every_time_sends() {
+    struct Lcg(u64);
+    impl Lcg {
+        fn below(&mut self, n: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 33) % n
+        }
+    }
+    for seed in 0..500u64 {
+        let mut rng = Lcg(seed);
+        let c = Config {
+            client_id: 3,
+            window: 1 + rng.below(16) as usize,
+            retry_interval_ns: 100 + rng.below(1_000),
+            max_attempts: 2 + rng.below(5) as u32,
+        };
+        let (mut a, mut b) = (Session::new(c, 7), Session::new(c, 7));
+        let mut now = 0u64;
+        let mut handle = 0u64;
+        for step in 0..400 {
+            now += rng.below(300);
+            match rng.below(6) {
+                0 | 1 => {
+                    let ra = a.submit(Append::Unconditional, handle);
+                    let rb = b.submit(Append::Unconditional, handle);
+                    assert_eq!(ra, rb, "seed {seed} step {step}");
+                    handle += 1;
+                }
+                2 | 3 => {
+                    // An outcome for some seqno near the window.
+                    let s = 1 + rng.below(a.next_seqno.max(1) + 2);
+                    let outcome = match rng.below(8) {
+                        0 => Outcome::Nak,
+                        1 => Outcome::Busy { retry_after_us: rng.below(3) },
+                        2 => Outcome::NotLeader { leader: 0 },
+                        _ => Outcome::Accepted { global_seqno: s },
+                    };
+                    let (mut ea, mut eb) = (Vec::new(), Vec::new());
+                    a.on_feedback(&fb(3, 7, s, outcome), now, &mut ea);
+                    b.on_feedback(&fb(3, 7, s, outcome), now, &mut eb);
+                    assert_eq!(ea, eb, "seed {seed} step {step}");
+                }
+                _ => {
+                    let (mut ta, mut tb, mut ea, mut eb) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                    a.poll(now, &mut ta, &mut ea);
+                    b.next_due_ns = 0; // the reference scans every time
+                    b.poll(now, &mut tb, &mut eb);
+                    assert_eq!(ta, tb, "seed {seed} step {step}: transmissions");
+                    assert_eq!(ea, eb, "seed {seed} step {step}: events");
+                }
+            }
+            assert_eq!(a.in_flight(), b.in_flight());
+        }
+    }
+}

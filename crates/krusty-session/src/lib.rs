@@ -103,6 +103,16 @@ pub struct Session {
     resend_from: Option<u64>,
     /// SESSION_EXPIRED received: the minimum next incarnation.
     expired: Option<u64>,
+    /// The oldest unanswered seqno (`next_seqno` if none), kept as entries
+    /// finish: each seqno is passed once, so finding it costs O(1) per
+    /// message, not a scan of the window (at a window of 1024 that scan
+    /// was what limited a client, BASELINE E3 2026-11-23).
+    oldest: u64,
+    /// Every seqno below this has been sent at least once.
+    unsent_from: u64,
+    /// No retry is due before this time: until then `poll` sends only new
+    /// messages instead of scanning everything in flight.
+    next_due_ns: u64,
 }
 
 impl Session {
@@ -117,6 +127,9 @@ impl Session {
             hold_until_ns: 0,
             resend_from: None,
             expired: None,
+            oldest: 1,
+            unsent_from: 1,
+            next_due_ns: u64::MAX,
         }
     }
 
@@ -140,25 +153,22 @@ impl Session {
 
     /// The oldest unanswered seqno, if any.
     fn oldest(&self) -> Option<u64> {
-        let mut oldest: Option<u64> = None;
-        let mut i = 0;
-        while i < self.pending.len() {
-            let cell = self.pending[i];
-            match cell {
-                Some(p) => {
-                    let older = match oldest {
-                        Some(o) => p.client_seqno < o,
-                        None => true,
-                    };
-                    if older {
-                        oldest = Some(p.client_seqno);
-                    }
-                }
-                None => {}
-            }
-            i += 1;
+        if self.oldest < self.next_seqno {
+            Some(self.oldest)
+        } else {
+            None
         }
-        oldest
+    }
+
+    /// Moves `oldest` past finished messages.
+    fn advance_oldest(&mut self) {
+        while self.oldest < self.next_seqno {
+            let i = self.index(self.oldest);
+            match self.pending[i] {
+                Some(p) if p.client_seqno == self.oldest => return,
+                _ => self.oldest += 1,
+            }
+        }
     }
 
     /// Queues a message; returns its client seqno. It goes out at the next `poll`.
@@ -201,7 +211,16 @@ impl Session {
             Some(o) => o,
             None => self.next_seqno,
         };
-        let mut s = start;
+        // Everything in flight is looked at only when a resend may be due;
+        // otherwise only what has not been sent yet.
+        let full = resend_from.is_some() || now_ns >= self.next_due_ns;
+        let mut s = if full || self.unsent_from < start {
+            start
+        } else {
+            self.unsent_from
+        };
+        let mut earliest = u64::MAX;
+        let mut failed = false;
         while s < self.next_seqno {
             let i = self.index(s);
             let cell = self.pending[i];
@@ -218,6 +237,7 @@ impl Session {
                         if p.attempts >= self.cfg.max_attempts {
                             self.pending[i] = None;
                             self.in_flight -= 1;
+                            failed = true;
                             events.push(Event::Failed {
                                 client_seqno: s,
                                 handle: p.handle,
@@ -235,12 +255,23 @@ impl Session {
                                 append: p.append,
                                 handle: p.handle,
                             });
+                            earliest = earliest.min(now_ns);
                         }
+                    } else {
+                        earliest = earliest.min(p.last_sent_ns);
                     }
                 }
                 None => {}
             }
             s += 1;
+        }
+        self.unsent_from = self.next_seqno;
+        let due = earliest.saturating_add(self.cfg.retry_interval_ns);
+        // A full scan saw everything in flight; a partial one only adds
+        // what it sent now.
+        self.next_due_ns = if full { due } else { self.next_due_ns.min(due) };
+        if failed {
+            self.advance_oldest();
         }
     }
 
@@ -303,6 +334,7 @@ impl Session {
                 if p.client_seqno == client_seqno {
                     self.pending[i] = None;
                     self.in_flight -= 1;
+                    self.advance_oldest();
                     Some(p.handle)
                 } else {
                     None
@@ -332,6 +364,7 @@ impl Session {
             s += 1;
         }
         self.in_flight = 0;
+        self.oldest = self.next_seqno;
     }
 
     /// Starts a new incarnation (after a SESSION_EXPIRED, or when the
@@ -340,6 +373,9 @@ impl Session {
         self.fail_all(FailReason::Restarted, events);
         self.incarnation = incarnation;
         self.next_seqno = 1;
+        self.oldest = 1;
+        self.unsent_from = 1;
+        self.next_due_ns = u64::MAX;
         self.hold_until_ns = 0;
         self.resend_from = None;
         self.expired = None;

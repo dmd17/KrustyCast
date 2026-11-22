@@ -197,7 +197,7 @@ fn io_loop(
     mut output: Producer,
     mtu: usize,
 ) {
-    let mut sb = SendBatch::new(64, mtu.max(2048));
+    let mut sb = SendBatch::new(64, mtu);
     let mut rb = RecvBatch::new(64, 65_536);
     while !stop.load(Ordering::Acquire) {
         let to = nodes[target.load(Ordering::Relaxed)];
