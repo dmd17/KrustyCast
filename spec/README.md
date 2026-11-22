@@ -269,6 +269,22 @@ layer is where the follower rule (entries at or below its commit index
 count as matching) and in-flight replies from earlier terms make the
 argument hard, and where strengthening is expected.
 
+## `tla/RaftKCPower.tla`: power loss in mode (a) (open finding)
+
+RaftKC with what a power loss leaves on disk. In mode (a), term, vote and
+entries reach the disk when the OS flushes them, and followers acknowledge
+entries on receipt. One node losing power, within PRD G3's failure budget,
+breaks safety:
+
+| Config | Lost on power loss | Violated |
+|---|---|---|
+| `RaftKCPower.cfg` | anything not yet flushed | ElectionSafety (depth 12): a node forgets its vote and votes again in the same term |
+| `RaftKCPowerLog.cfg` | unflushed entries only (term and vote fsynced) | LeaderCompleteness (depth 17, 36 M states): a leader elected without a committed entry |
+
+Not in CI: these configurations are expected to fail until mode (a) is
+fixed or G3 restated. The options and the plan are in
+`RAFT-VERIFICATION.md`.
+
 ## `tla/Cluster.tla`: the cluster shell (`krusty-node/src/cluster.rs`)
 
 How a node turns client SUBMITs into Raft proposals and committed entries
