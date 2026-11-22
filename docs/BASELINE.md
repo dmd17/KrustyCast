@@ -441,10 +441,112 @@ is the closest pair, not an equal one):
 | Disk, no fsync before commit | archive on disk, `file.sync.level=0` (writes on the commit path) | mode (a) on disk (storage off the commit path) |
 | fsync before commit | archive `file.sync.level=1` (fsync per recorded block) | mode (b): publish after the group's fsync, on two nodes |
 
-### Current results: latency distributions (2026-11-22)
+### Current results: one Rust load generator (2026-11-22)
 
-The reference comparison. Everything below this section records how it
+The reference comparison. Everything after this section records how it
 was reached; where an earlier number disagrees, this one stands.
+
+**Method.** As in the layout above, with these differences:
+- **One load generator for both, in Rust, with no JVM on either client
+  side** (`bench/rig`, `e3-rig`). It keeps the method of aeron-io/benchmarks'
+  Java `LoadTestRig`:
+  - an open-loop schedule, one message per send, each stamped with its
+    scheduled time;
+  - latency from then to the answer (Aeron's echo, KrustyCast's ACCEPTED);
+  - a warm-up in 10 chunks, then 60 s measured;
+  - the same percentile output.
+- **Aeron's client:** its C client, with the Cluster client protocol
+  implemented in the rig, and Aeron's C media driver (`aeronmd`, SHARED,
+  busy spin) on CPU 7 in place of the Java client driver. Its cluster
+  nodes and their drivers are Java, as Aeron Cluster is.
+- **KrustyCast's client:** the client session (`krusty-session`) on the
+  rig thread (CPU 15), and an I/O thread on CPU 7 that packs SUBMITs into
+  datagrams. Window 1024, MTU 1408 on both systems.
+- **One isolated session,** both clusters interleaved by rate (`sweep19.sh`).
+- **KrustyCast as of 2026-11-22:**
+  - several messages per datagram both ways;
+  - 2 Appends in flight per follower (the default);
+  - the session doing constant work per message on the common path
+    (ec4f7df);
+  - nothing reads its feed (Aeron's echo benchmark has none), and the
+    feed's port is held so frames are dropped, not refused.
+
+![Latency distributions on tmpfs](img/e3-latency-tmpfs.svg)
+
+![Latency distributions on disk](img/e3-latency-disk.svg)
+
+µs, from each message's scheduled send time:
+
+**Logs on tmpfs (Aeron on tmpfs)**
+
+| Offered | System | min | p10 | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | p99.999 | max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100k | Aeron | 19.7 | 36.6 | 39.8 | 46.5 | 51.1 | 59.6 | 71.2 | 77.8 | 1,047 | 3,181 | 3,410 |
+| 100k | KrustyCast | 22.0 | 27.2 | 29.0 | 30.5 | 37.0 | 37.5 | 42.0 | 47.8 | 56.9 | 77.3 | 148 |
+| 300k | Aeron | 27.9 | 41.0 | 46.1 | 50.5 | 57.5 | 65.7 | 77.5 | 84.6 | 2,226 | 3,541 | 3,809 |
+| 300k | KrustyCast | 30.6 | 41.3 | 44.3 | 46.4 | 49.7 | 53.1 | 62.5 | 68.5 | 82.4 | 356 | 477 |
+| 500k | Aeron | 29.8 | 45.9 | 53.1 | 58.9 | 66.6 | 73.2 | 83.9 | 854 | 4,096 | 4,653 | 4,714 |
+| 500k | KrustyCast | 32.3 | 45.4 | 48.7 | 51.2 | 55.3 | 61.0 | 73.7 | 81.4 | 89.3 | 110 | 147 |
+| 750k | Aeron | fell behind (about 562k msg/s) | | | | | | | | | | |
+| 750k | KrustyCast | 39.3 | 60.3 | 70.3 | 78.4 | 89.6 | 100.0 | 118 | 135 | 400 | 1,030 | 1,438 |
+
+**On disk (Aeron archive sync level 0; KrustyCast mode (a))**
+
+| Offered | System | min | p10 | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | p99.999 | max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100k | Aeron | 26.2 | 37.3 | 41.2 | 47.1 | 52.3 | 61.1 | 76.7 | 97.4 | 9,150 | 10.9 ms | 11.3 ms |
+| 100k | KrustyCast | 20.8 | 27.1 | 27.5 | 28.8 | 31.1 | 37.5 | 47.2 | 50.2 | 72.6 | 109 | 250 |
+| 300k | Aeron | 27.9 | 41.2 | 46.6 | 51.0 | 58.1 | 66.0 | 79.8 | 7,250 | 10.4 ms | 11.5 ms | 11.7 ms |
+| 300k | KrustyCast | 29.6 | 38.2 | 41.1 | 43.5 | 47.1 | 51.1 | 58.8 | 67.3 | 118 | 378 | 658 |
+| 500k | Aeron | 30.3 | 47.6 | 55.5 | 61.6 | 69.4 | 76.3 | 92.5 | 9,249 | 11.5 ms | 11.9 ms | 11.9 ms |
+| 500k | KrustyCast | 31.6 | 41.9 | 46.0 | 49.4 | 54.6 | 60.9 | 83.5 | 97.3 | 145 | 425 | 548 |
+| 750k | Aeron | fell behind (about 576k msg/s) | | | | | | | | | | |
+| 750k | KrustyCast | 35.3 | 56.4 | 63.9 | 70.5 | 81.8 | 94.7 | 121 | 3,480 | 11.7 ms | 12.9 ms | 13.0 ms |
+**Reading them.**
+- **At every percentile from p10 up, KrustyCast is at or below Aeron**
+  at 100k–500k on both storages. The one exception is 300k on tmpfs, where
+  its p10 is 0.3 µs higher. Its minimum is 1–3 µs higher except at 100k on
+  disk. The floor, about 20–30 µs on both, is roughly a round trip through
+  three processes over loopback.
+- **The gap is largest in the tail.** On tmpfs, KrustyCast's maximum is
+  148 µs at 100k, 477 µs at 300k and 147 µs at 500k. Aeron's is 3.4–4.7
+  ms. On disk, KrustyCast's maximum is 250–658 µs through 500k. Aeron's
+  p99.9 there is 7–9 ms from 300k, and its maximum 11–12 ms at every rate.
+- **Aeron's tail comes from its JVMs, and on disk its archive.** Its
+  client side has no JVM now, and its cluster processes (nodes and their
+  media drivers) still pause. Each run had 3–5 safepoint stops over 1 ms,
+  the longest 3.7–4.6 ms, which matches its tmpfs maximum of 3.4–4.7 ms.
+  These counts include start-up; the logs are under `results-e3/rust-rig/*-gc`
+  on nuc2. On disk at sync level 0, its archive writes are on the commit
+  path.
+- **750k:** KrustyCast sustains it on both storages, and Aeron falls behind
+  (about 562k msg/s on tmpfs, 577k on disk). KrustyCast's p50 at 750k is
+  71–78 µs. Its tail there is long on disk (p99.9 3.5 ms, max 13 ms), which
+  is near its limit and not yet explained. On tmpfs the max is 1.4 ms.
+- **Against the Java rig** (the next section): KrustyCast's tail fell from
+  milliseconds to under 0.7 ms through 500k. The Java rig's own GC pauses
+  (my first transceiver allocated per message) had been landing on
+  KrustyCast's runs. Aeron's distributions are about the same under both
+  rigs, as expected, since its pauses are in its cluster.
+
+**Data and reproduction.** `bench/results/e3-rust-rig/` holds each run's
+distribution as the rig printed it (`*.hgrm`; Aeron's 750k files record
+that it fell behind), the sweep script and the KrustyCast node
+configurations. `bench/results/plot.py` draws the figures from a sweep's
+results. To run it again:
+1. Build Aeron 1.54.0's C client and driver, and the rig
+   (`bench/rig/README.md`).
+2. Build the release binaries.
+3. Run `sweep19.sh` on nuc2. It needs the isolation scripts under
+   `/var/tmp/krusty-aeron-bench/iso/`, which use sudo and restore
+   everything on exit.
+
+### Java rig distributions (2026-11-22, superseded)
+
+Superseded by the Rust rig above. These were measured with aeron-io/benchmarks'
+Java `LoadTestRig` for both clusters. Its KrustyCast transceiver allocated
+per message, and the rig's GC pauses (1.5–2.2 ms about every 2 s) land in
+KrustyCast's tail here.
 
 **Method.** As in the original layout above, with these differences:
 - **One load generator for both.** aeron-io/benchmarks' `LoadTestRig`
@@ -461,10 +563,6 @@ was reached; where an earlier number disagrees, this one stands.
   reads KrustyCast's feed, as nothing reads one in Aeron's echo benchmark,
   and its port is held so frames are dropped rather than refused
   (bf0ab44).
-
-![Latency distributions on tmpfs](img/e3-latency-tmpfs.svg)
-
-![Latency distributions on disk](img/e3-latency-disk.svg)
 
 µs, from each message's scheduled send time:
 
@@ -517,9 +615,8 @@ was reached; where an earlier number disagrees, this one stands.
 
 **Data and reproduction.** `bench/results/e3-2026-11-22/` holds each run's
 distribution as the rig printed it (`*.hgrm`; `*-750k.hgrm` for Aeron
-records that it fell behind), the sweep script, the KrustyCast node
-configurations (`config/`), and `plot.py`, which draws the figures from a
-sweep's results. To run it again: build the rig's jar
+records that it fell behind), the sweep script and the KrustyCast node
+configurations (`config/`). To run it again: build the rig's jar
 (`bench/aeron-rig-krusty/build.sh`) and the release binaries, then
 `sweep16.sh` on nuc2. That needs the isolation scripts under
 `/var/tmp/krusty-aeron-bench/iso/`, which use sudo and restore everything
@@ -880,9 +977,10 @@ a full round trip for the Append ahead of it.
   `krusty-load --cluster 3` across three machines (the in-process mode
   needs a multi-host variant) and the failover example.
 - E3 again on the reference servers (real NICs, multicast feed).
-- The millisecond pauses behind both systems' p99.99 and max on this
-  machine (about one message in 10,000): where they come from, and
-  whether KrustyCast's are its own.
+- KrustyCast's tail at 750k on disk (p99.9 3.5 ms, max 13 ms), near its
+  limit. Through 500k its maximum is under 0.7 ms. The millisecond pauses
+  in earlier runs were the Java rig's GC, and Aeron's are its cluster
+  JVMs' safepoints.
 - Replication refinements (partial vs full Appends with a byte cap for
   bulk, one reply per follower pass), measured against the 2-in-flight
   default.

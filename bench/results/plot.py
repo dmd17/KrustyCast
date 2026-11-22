@@ -1,11 +1,11 @@
-"""Draws docs/img/e3-latency-{tmpfs,disk}.svg from the rig outputs of sweep16.sh
+"""Draws docs/img/e3-latency-{tmpfs,disk}.svg from the rig outputs of a sweep (sweep19.sh: e3-rust-rig)
 (run from the repository root). Percentiles on a "nines" axis, latency log."""
 import re, math, sys
 import matplotlib
 matplotlib.use('svg')
 import matplotlib.pyplot as plt
 # Usage: python3 plot.py <results dir of sweep16.sh> (default: the one on nuc2)
-E=sys.argv[1] if len(sys.argv) > 1 else '/var/tmp/krusty-aeron-bench/results-e3/one-rig-2'
+E=sys.argv[1] if len(sys.argv) > 1 else '/var/tmp/krusty-aeron-bench/results-e3/rust-rig'
 def load(p):
     t=open(p).read()
     if 'managed to send only' in t: return None

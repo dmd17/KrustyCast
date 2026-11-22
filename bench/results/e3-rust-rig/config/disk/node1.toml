@@ -1,0 +1,27 @@
+# KrustyCast cluster member 1 for the E3 baseline (run.sh): the layout of
+# krusty-load --cluster 3 --leader-cores 1,2,3,4,12
+# --follower-cores 5,13,10,10/6,14,11,11, as a separate process.
+ingress = "127.0.0.1:27001"
+feed = "127.0.0.1:27900"       # krusty-load --feed-bind
+interface = "127.0.0.1"
+recovery = "127.0.0.1:27101"
+stream_id = 1
+spin = true
+cores = [1, 2, 3, 9]           # ingress, core, egress, recovery
+admin = "127.0.0.1:27201"
+metrics = "/dev/shm/kb-krusty-node1.stats"
+
+[limits]
+mtu = 1408                     # Aeron's default MTU (E3 batching rerun)
+outcome_ring = 1024              # the rig's window (krusty.window)
+
+[storage]
+dir = "/var/tmp/krusty-aeron-bench/krusty-node1"
+durability = "a"
+snapshot_every = 1000000
+core = 12
+
+[cluster]
+id = 1
+members = ["1@127.0.0.1:27301", "2@127.0.0.1:27302", "3@127.0.0.1:27303"]
+core = 4

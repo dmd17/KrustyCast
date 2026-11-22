@@ -47,7 +47,10 @@ impl Krusty {
         io_cpu: Option<usize>,
         epoch: Instant,
     ) -> Krusty {
-        assert!(!nodes.is_empty(), "--nodes: the ingress addresses, in node id order");
+        assert!(
+            !nodes.is_empty(),
+            "--nodes: the ingress addresses, in node id order"
+        );
         let (to_io, io_in) = byte_ring(1 << 22);
         let (io_out, from_io) = byte_ring(1 << 22);
         let target = Arc::new(AtomicUsize::new(0));
@@ -101,7 +104,9 @@ impl Krusty {
         self.session.poll(now, &mut self.tx, &mut self.ev);
         let n = self.payload.len();
         for t in &self.tx {
-            self.payload[0..8].copy_from_slice(&self.ts[(t.handle % self.ts.len() as u64) as usize].to_le_bytes());
+            self.payload[0..8].copy_from_slice(
+                &self.ts[(t.handle % self.ts.len() as u64) as usize].to_le_bytes(),
+            );
             self.payload[n - 8..].copy_from_slice(&CHECKSUM.to_le_bytes());
             let s = Submit {
                 client_id: 1,
@@ -122,7 +127,9 @@ impl Krusty {
     fn report(&mut self, got: &mut dyn FnMut(u64)) {
         for e in self.ev.drain(..) {
             match e {
-                Event::Accepted { handle, .. } => got(self.ts[(handle % self.ts.len() as u64) as usize]),
+                Event::Accepted { handle, .. } => {
+                    got(self.ts[(handle % self.ts.len() as u64) as usize])
+                }
                 _ => self.failed += 1,
             }
         }
@@ -150,7 +157,8 @@ impl Transceiver for Krusty {
 
     fn receive(&mut self, got: &mut dyn FnMut(u64)) {
         let now = now_ns(self.epoch);
-        let (session, ev, target, nodes) = (&mut self.session, &mut self.ev, &self.target, self.nodes);
+        let (session, ev, target, nodes) =
+            (&mut self.session, &mut self.ev, &self.target, self.nodes);
         let (rotated_at, retry_ns) = (&mut self.rotated_at, self.retry_ns);
         self.from_io.read(64, |_, d| {
             for f in krusty_wire::batch::feedbacks(d).flatten() {
@@ -204,7 +212,11 @@ fn io_loop(
         input.read(1024, |_, rec| {
             let len = rec.len();
             let fill = |b: &mut [u8]| b.copy_from_slice(rec);
-            let p = if len <= mtu { sb.push_packed(to, len, fill) } else { Packed::Full };
+            let p = if len <= mtu {
+                sb.push_packed(to, len, fill)
+            } else {
+                Packed::Full
+            };
             if p == Packed::Full {
                 let _ = sb.flush(&sock);
                 sb.push_packed(to, len, |b| b.copy_from_slice(rec));

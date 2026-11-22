@@ -49,7 +49,12 @@ struct Egress {
     payload: usize,
 }
 
-unsafe extern "C" fn on_fragment(clientd: *mut c_void, buffer: *const u8, length: usize, _h: *mut aeron_header_t) {
+unsafe extern "C" fn on_fragment(
+    clientd: *mut c_void,
+    buffer: *const u8,
+    length: usize,
+    _h: *mut aeron_header_t,
+) {
     // SAFETY: clientd is the Egress the poll was given; buffer holds length bytes.
     let e = unsafe { &mut *(clientd as *mut Egress) };
     let b = unsafe { std::slice::from_raw_parts(buffer, length) };
@@ -95,7 +100,13 @@ pub struct AeronCluster {
 }
 
 impl AeronCluster {
-    pub fn connect(dir: &str, ingress: &str, egress: &str, payload: usize, epoch: Instant) -> AeronCluster {
+    pub fn connect(
+        dir: &str,
+        ingress: &str,
+        egress: &str,
+        payload: usize,
+        epoch: Instant,
+    ) -> AeronCluster {
         let check = |r: i32, what: &str| assert!(r >= 0, "{what}: {}", errmsg());
         let mut ctx = std::ptr::null_mut();
         let mut client = std::ptr::null_mut();
@@ -107,14 +118,25 @@ impl AeronCluster {
             check(aeron_init(&mut client, ctx), "init");
             check(aeron_start(client), "start");
         }
-        let (in_c, eg_c) = (CString::new(ingress).unwrap(), CString::new(egress).unwrap());
+        let (in_c, eg_c) = (
+            CString::new(ingress).unwrap(),
+            CString::new(egress).unwrap(),
+        );
         let mut pub_async = std::ptr::null_mut();
         let mut sub_async = std::ptr::null_mut();
         let mut publication: *mut aeron_exclusive_publication_t = std::ptr::null_mut();
         let mut subscription: *mut aeron_subscription_t = std::ptr::null_mut();
         // SAFETY: as above; the async handles are polled until done.
         unsafe {
-            check(aeron_async_add_exclusive_publication(&mut pub_async, client, in_c.as_ptr(), INGRESS_STREAM), "ingress");
+            check(
+                aeron_async_add_exclusive_publication(
+                    &mut pub_async,
+                    client,
+                    in_c.as_ptr(),
+                    INGRESS_STREAM,
+                ),
+                "ingress",
+            );
             check(
                 aeron_async_add_subscription(
                     &mut sub_async,
@@ -129,11 +151,17 @@ impl AeronCluster {
                 "egress",
             );
             while publication.is_null() {
-                check(aeron_async_add_exclusive_publication_poll(&mut publication, pub_async), "ingress poll");
+                check(
+                    aeron_async_add_exclusive_publication_poll(&mut publication, pub_async),
+                    "ingress poll",
+                );
                 std::thread::yield_now();
             }
             while subscription.is_null() {
-                check(aeron_async_add_subscription_poll(&mut subscription, sub_async), "egress poll");
+                check(
+                    aeron_async_add_subscription_poll(&mut subscription, sub_async),
+                    "egress poll",
+                );
                 std::thread::yield_now();
             }
         }
@@ -167,9 +195,22 @@ impl AeronCluster {
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
         let mut sent = false;
         while c.state.event.is_none() {
-            assert!(Instant::now() < deadline, "no SessionEvent from the cluster");
+            assert!(
+                Instant::now() < deadline,
+                "no SessionEvent from the cluster"
+            );
             // SAFETY: valid publication and buffer.
-            if !sent && unsafe { aeron_exclusive_publication_offer(c.ingress, req.as_ptr(), req.len(), None, std::ptr::null_mut()) } > 0 {
+            if !sent
+                && unsafe {
+                    aeron_exclusive_publication_offer(
+                        c.ingress,
+                        req.as_ptr(),
+                        req.len(),
+                        None,
+                        std::ptr::null_mut(),
+                    )
+                } > 0
+            {
                 sent = true;
             }
             c.poll();
@@ -195,7 +236,15 @@ impl AeronCluster {
         b[HEADER..HEADER + 8].copy_from_slice(&self.state.leadership_term.to_le_bytes());
         b[HEADER + 8..HEADER + 16].copy_from_slice(&self.session.to_le_bytes());
         // SAFETY: valid publication and buffer.
-        unsafe { aeron_exclusive_publication_offer(self.ingress, b.as_ptr(), b.len(), None, std::ptr::null_mut()) };
+        unsafe {
+            aeron_exclusive_publication_offer(
+                self.ingress,
+                b.as_ptr(),
+                b.len(),
+                None,
+                std::ptr::null_mut(),
+            )
+        };
     }
 }
 
@@ -211,7 +260,15 @@ impl Transceiver for AeronCluster {
         let mut k = 0;
         while k < n {
             // SAFETY: valid publication and buffer.
-            let r = unsafe { aeron_exclusive_publication_offer(self.ingress, m.as_ptr(), m.len(), None, std::ptr::null_mut()) };
+            let r = unsafe {
+                aeron_exclusive_publication_offer(
+                    self.ingress,
+                    m.as_ptr(),
+                    m.len(),
+                    None,
+                    std::ptr::null_mut(),
+                )
+            };
             if r < 0 {
                 break; // back pressure (or not connected): the rig retries
             }
@@ -226,7 +283,9 @@ impl Transceiver for AeronCluster {
     fn receive(&mut self, got: &mut dyn FnMut(u64)) {
         // SAFETY (lifetime): the pointer is only used during this poll.
         let p: *mut (dyn FnMut(u64) + '_) = got;
-        self.state.got = Some(unsafe { std::mem::transmute::<*mut (dyn FnMut(u64) + '_), *mut dyn FnMut(u64)>(p) });
+        self.state.got = Some(unsafe {
+            std::mem::transmute::<*mut (dyn FnMut(u64) + '_), *mut dyn FnMut(u64)>(p)
+        });
         self.poll();
         self.state.got = None;
         let now = now_ns(self.epoch);

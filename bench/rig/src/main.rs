@@ -61,7 +61,13 @@ struct Result {
 }
 
 /// LoadTestRig.send: `secs` seconds at `rate`, one message per send.
-fn run(t: &mut dyn Transceiver, epoch: Instant, rate: u64, secs_ns: u64, hist: &mut Histogram<u64>) -> Result {
+fn run(
+    t: &mut dyn Transceiver,
+    epoch: Instant,
+    rate: u64,
+    secs_ns: u64,
+    hist: &mut Histogram<u64>,
+) -> Result {
     let interval = 1_000_000_000 / rate;
     let total = secs_ns * rate / 1_000_000_000;
     let start = now_ns(epoch);
@@ -149,8 +155,12 @@ fn main() {
     // thread) are created first, with the process's CPUs; then this thread
     // moves to its own, as the Java rig does.
     let mut t: Box<dyn Transceiver> = match system.as_str() {
-        "aeron" => Box::new(aeron::AeronCluster::connect(&aeron_dir, &ingress, &egress, size, epoch)),
-        "krusty" => Box::new(krusty::Krusty::start(nodes, size, mtu, window, retry_ms, io_cpu, epoch)),
+        "aeron" => Box::new(aeron::AeronCluster::connect(
+            &aeron_dir, &ingress, &egress, size, epoch,
+        )),
+        "krusty" => Box::new(krusty::Krusty::start(
+            nodes, size, mtu, window, retry_ms, io_cpu, epoch,
+        )),
         other => panic!("system: aeron | krusty, not {other}"),
     };
     pin(rig_cpu);
@@ -186,7 +196,10 @@ fn main() {
 /// As HdrHistogram's outputPercentileDistribution (5 ticks per half
 /// distance), values in µs.
 fn print_distribution(h: &Histogram<u64>) {
-    println!("{:>12} {:>14} {:>10} {:>14}\n", "Value", "Percentile", "TotalCount", "1/(1-Percentile)");
+    println!(
+        "{:>12} {:>14} {:>10} {:>14}\n",
+        "Value", "Percentile", "TotalCount", "1/(1-Percentile)"
+    );
     let mut total = 0u64;
     for v in h.iter_quantiles(5) {
         total += v.count_since_last_iteration();
