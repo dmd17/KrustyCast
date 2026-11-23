@@ -40,7 +40,14 @@ VARIABLES currentTerm, role, votedFor, log, commitIndex, votes, matchIndex, msgs
 \* was committed in; exactly that term when a leader commits it).
 VARIABLE committed
 
-vars == <<currentTerm, role, votedFor, log, commitIndex, votes, matchIndex, msgs, committed>>
+\* Power-loss recovery in mode (a) (2026-11-23; spec/RAFT-VERIFICATION.md,
+\* RaftKCRecover.tla): a node that may have lost writes it acknowledged is
+\* `recovering` since restarting in term `recoverTerm`. Only PowerLossTo
+\* sets it (MCRaftKCPower, TraceRaftKC); elsewhere it stays FALSE.
+VARIABLES recovering, recoverTerm
+
+vars == <<currentTerm, role, votedFor, log, commitIndex, votes, matchIndex, msgs, committed,
+          recovering, recoverTerm>>
 
 LastTerm(l) == IF Len(l) = 0 THEN 0 ELSE l[Len(l)].term
 Min(a, b) == IF a < b THEN a ELSE b
@@ -56,6 +63,8 @@ Init ==
     /\ matchIndex = [s \in Servers |-> [t \in Servers |-> 0]]
     /\ msgs = {}
     /\ committed = << >>
+    /\ recovering = [s \in Servers |-> FALSE]
+    /\ recoverTerm = [s \in Servers |-> 0]
 
 Send(m) == msgs' = msgs \cup {m}
 
@@ -68,6 +77,7 @@ Consume(m) == msgs' = msgs \ {m}
 
 Timeout(s) ==
     /\ role[s] \in {"follower", "candidate"}
+    /\ ~recovering[s]   \* no election while recovering
     /\ currentTerm[s] < MaxTerm
     /\ role' = [role EXCEPT ![s] = "candidate"]
     /\ currentTerm' = [currentTerm EXCEPT ![s] = @ + 1]
@@ -91,6 +101,18 @@ BecomeLeader(s) ==
     \* The no-op that lets the new leader commit earlier entries.
     /\ log' = [log EXCEPT ![s] = Append(@, [term |-> currentTerm[s], value |-> Noop])]
     /\ UNCHANGED <<currentTerm, votedFor, commitIndex, votes, msgs>>
+
+\* A node learns of a later term some node holds, and moves to it as a
+\* follower with no vote: in krusty-raft, a pre-vote rejected by a node at a
+\* later term (2026-11-23; pre-vote is otherwise not modelled). As any
+\* message from a later term would, so it cannot break safety.
+LearnTerm(s, t) ==
+    /\ t > currentTerm[s]
+    /\ \E u \in Servers : currentTerm[u] >= t
+    /\ currentTerm' = [currentTerm EXCEPT ![s] = t]
+    /\ role' = [role EXCEPT ![s] = "follower"]
+    /\ votedFor' = [votedFor EXCEPT ![s] = Nil]
+    /\ UNCHANGED <<log, commitIndex, votes, matchIndex, msgs>>
 
 \* Check-quorum (or anything else) may make a leader step down.
 StepDown(s) ==
@@ -147,6 +169,7 @@ HandleVote(m) ==
     LET s == m.to
         n == NewTerm(s, m.term)
         grant == m.term = n.ct /\ n.v \in {Nil, m.from} /\ UpToDate(m, s)
+                 /\ ~recovering[s]   \* no vote while recovering
     IN
     /\ currentTerm' = [currentTerm EXCEPT ![s] = n.ct]
     /\ role' = [role EXCEPT ![s] = n.r]
@@ -253,6 +276,7 @@ RecordCommits ==
 
 Actions ==
     \/ \E s \in Servers : Timeout(s) \/ BecomeLeader(s) \/ StepDown(s) \/ AdvanceCommit(s) \/ Restart(s)
+    \/ \E s \in Servers : \E t \in (currentTerm[s] + 1)..MaxTerm : LearnTerm(s, t)
     \/ \E s, t \in Servers : RequestVote(s, t)
     \/ \E s \in Servers, v \in Values : ClientRequest(s, v)
     \* Any range of the leader's log: krusty-raft sends at most
@@ -262,7 +286,32 @@ Actions ==
     \/ \E s, t \in Servers : \E prev, last \in 0..MaxLog : AppendEntries(s, t, prev, last)
     \/ \E m \in msgs : Receive(m) \/ Drop(m)
 
-Next == Actions /\ RecordCommits
+\* Leaving recovery: this step consumed an Append to s, from a leader of
+\* s's restart term or later, and s answered success with everything up to
+\* the leader's last index as of sending (RaftKCRecover.tla, rule "last").
+LeavesRecovery(s) ==
+    \E m \in msgs \ msgs' :
+        /\ m.type = "append" /\ m.to = s /\ m.term >= recoverTerm[s]
+        /\ \E r \in msgs' \ msgs :
+              /\ r.type = "appendReply" /\ r.from = s /\ r.success /\ r.match >= m.last
+
+RecoveryNext ==
+    /\ recovering' = [s \in Servers |-> recovering[s] /\ ~LeavesRecovery(s)]
+    /\ UNCHANGED recoverTerm
+
+\* A power loss leaves node s with log `l`, what its disk held (term and vote
+\* are fsynced before use and survive), and it restarts recovering.
+PowerLossTo(s, l) ==
+    /\ log' = [log EXCEPT ![s] = l]
+    /\ role' = [role EXCEPT ![s] = "follower"]
+    /\ commitIndex' = [commitIndex EXCEPT ![s] = 0]
+    /\ votes' = [votes EXCEPT ![s] = {}]
+    /\ matchIndex' = [matchIndex EXCEPT ![s] = [t \in Servers |-> 0]]
+    /\ recovering' = [recovering EXCEPT ![s] = TRUE]
+    /\ recoverTerm' = [recoverTerm EXCEPT ![s] = currentTerm[s]]
+    /\ UNCHANGED <<currentTerm, votedFor, msgs, committed>>
+
+Next == Actions /\ RecordCommits /\ RecoveryNext
 
 Spec == Init /\ [][Next]_vars
 

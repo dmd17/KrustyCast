@@ -38,7 +38,12 @@ struct Store {
 
 struct Node {
     raft: Option<Raft>,
+    /// What survives a process crash (the page cache).
     store: Store,
+    /// The log as last fsynced: what survives a power loss (mode a).
+    disk: Vec<(u64, Vec<u8>)>,
+    /// The `recovering` marker: set by a power loss, kept until recovered.
+    marker: bool,
 }
 
 const MS: u64 = 1_000_000;
@@ -53,12 +58,16 @@ fn config(id: NodeId, n: u32, seed: u64) -> Config {
     }
 }
 
-fn boot(id: NodeId, n: u32, seed: u64, store: &Store, now: u64) -> Raft {
+fn boot(id: NodeId, n: u32, seed: u64, store: &Store, now: u64, recover: bool) -> Raft {
     let mut log = RaftLog::new(0, 0);
     for (t, d) in &store.log {
         log.append(*t, d);
     }
-    Raft::new(config(id, n, seed), store.hs, log, 0, now)
+    let mut r = Raft::new(config(id, n, seed), store.hs, log, 0, now);
+    if recover {
+        r.recover_after_power_loss();
+    }
+    r
 }
 
 fn value(d: &[u8]) -> String {
@@ -138,6 +147,9 @@ enum Call {
     Receive(String, bool), // RaftKC form of the message (if any); can it start an election
     Propose(String),
     Restart,
+    /// A boot with the recovering marker: after a power loss (the log is
+    /// what the disk kept), or a crash while recovering.
+    PowerLoss,
 }
 
 struct Before {
@@ -184,8 +196,13 @@ impl Tracer {
                     plan.push("[a |-> \"inject\"]".into());
                     plan.push("[a |-> \"receive\"]".into());
                 }
-                if *pre_vote_reply && raft.term() == before.term + 1 {
-                    plan.push("[a |-> \"timeout\"]".into());
+                if *pre_vote_reply && raft.term() > before.term {
+                    if raft.role() == Role::Candidate && raft.term() == before.term + 1 {
+                        plan.push("[a |-> \"timeout\"]".into());
+                    } else {
+                        // Rejected by a node at a later term: caught up to it.
+                        plan.push(format!("[a |-> \"learnTerm\", term |-> {}]", raft.term()));
+                    }
                 }
                 if before.role != Role::Leader && leader_now {
                     plan.push("[a |-> \"becomeLeader\"]".into());
@@ -196,6 +213,7 @@ impl Tracer {
             }
             Call::Propose(v) => plan.push(format!("[a |-> \"clientRequest\", v |-> {v}]")),
             Call::Restart => plan.push("[a |-> \"restart\"]".into()),
+            Call::PowerLoss => plan.push("[a |-> \"powerLoss\"]".into()),
         }
         // Requests the core sent (replies come with `receive`).
         for (to, m, _) in sends {
@@ -230,13 +248,14 @@ impl Tracer {
         let mut r = String::new();
         let _ = write!(
             r,
-            "[node |-> {}, msg |-> {msg}, plan |-> <<{}>>, term |-> {}, role |-> \"{}\", votedFor |-> {voted}, log |-> <<{}>>, commit |-> {}, sends |-> {{{}}}]",
+            "[node |-> {}, msg |-> {msg}, plan |-> <<{}>>, term |-> {}, role |-> \"{}\", votedFor |-> {voted}, log |-> <<{}>>, commit |-> {}, recovering |-> {}, sends |-> {{{}}}]",
             node(id),
             plan.join(", "),
             raft.term(),
             role(raft.role()),
             log.join(", "),
             c2,
+            if raft.recovering() { "TRUE" } else { "FALSE" },
             spec_sends
                 .iter()
                 .map(|s| s.as_str())
@@ -325,6 +344,9 @@ fn carry_out(
         wires.push((to, buf));
     }
     tracer.record(id, call, before, c0, c1, raft, &node.store, &sends);
+    if node.marker && !raft.recovering() {
+        node.marker = false; // recovered: the marker goes
+    }
     for ((to, buf), (_, _, spec)) in wires.into_iter().zip(sends) {
         if !up(id, to) || rng.below(1000) < 100 {
             continue;
@@ -343,8 +365,10 @@ fn run(seed: u64, n: u32) -> Tracer {
     };
     let mut nodes: Vec<Node> = (1..=n)
         .map(|id| Node {
-            raft: Some(boot(id, n, seed, &Store::default(), 0)),
+            raft: Some(boot(id, n, seed, &Store::default(), 0, false)),
             store: Store::default(),
+            disk: Vec::new(),
+            marker: false,
         })
         .collect();
     let mut net: Net = Vec::new();
@@ -366,6 +390,20 @@ fn run(seed: u64, n: u32) -> Tracer {
             let k = rng.below(n as u64) as usize;
             nodes[k].raft = None;
         }
+        // Mode (a): the OS writes logs back now and then; a power loss
+        // keeps only that (one node at a time, f = 1).
+        for node in nodes.iter_mut() {
+            if rng.below(40) == 0 {
+                node.disk = node.store.log.clone();
+            }
+        }
+        if now < 1200 * MS && rng.below(400) == 0 && !nodes.iter().any(|x| x.marker) {
+            let k = rng.below(n as u64) as usize;
+            let node = &mut nodes[k];
+            node.raft = None;
+            node.store.log = node.disk.clone();
+            node.marker = true;
+        }
         let g = group.clone();
         let up = move |a: NodeId, b: NodeId| g[a as usize] == g[b as usize];
         for k in 0..n as usize {
@@ -376,12 +414,17 @@ fn run(seed: u64, n: u32) -> Tracer {
                     role: Role::Follower,
                     term: node.store.hs.term,
                 };
-                node.raft = Some(boot(id, n, seed ^ now, &node.store, now));
+                let recover = node.marker;
+                node.raft = Some(boot(id, n, seed ^ now, &node.store, now, recover));
                 carry_out(
                     id,
                     node,
                     Outbox::default(),
-                    Call::Restart,
+                    if recover {
+                        Call::PowerLoss
+                    } else {
+                        Call::Restart
+                    },
                     before,
                     0,
                     &mut net,
@@ -571,7 +614,10 @@ fn export_traces() {
 #[test]
 fn traces_cover_elections_commits_and_conflicts() {
     let (mut elections, mut truncations, mut commits, mut transfers) = (0, 0, 0, 0);
-    for seed in 0..5 {
+    let mut power_losses = 0;
+    // (Ten seeds: with power losses in the runs, five no longer always
+    // included a follower dropping conflicting entries.)
+    for seed in 0..10 {
         let t = run(seed, 3);
         elections += t.elections;
         truncations += t.truncations;
@@ -581,7 +627,16 @@ fn traces_cover_elections_commits_and_conflicts() {
             .iter()
             .filter(|r| r.contains("\"advanceCommit\""))
             .count();
+        power_losses += t
+            .records
+            .iter()
+            .filter(|r| r.contains("\"powerLoss\""))
+            .count();
     }
+    eprintln!(
+        "{elections} elections, {truncations} truncations, {commits} commits, {transfers} transfers, {power_losses} power losses"
+    );
+    assert!(power_losses >= 5, "{power_losses} power losses");
     assert!(elections >= 10, "{elections} elections");
     assert!(truncations >= 1, "no conflicts");
     assert!(commits >= 50, "{commits} commits");

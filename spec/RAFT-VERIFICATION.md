@@ -125,8 +125,50 @@ without finishing; logs of 1 is what completes. Still to do: a third term
   up and vote again. A plain restart in the same boot does not recover.
 - *Spec:* RaftKC's Appends carry `last`, so the nightly Raft trace
   validation checks the field the code sends (three traces accepted).
-  The recovery rule itself stays in `RaftKCRecover.tla` until the
-  randomized Raft harness has a power-loss fault.
+
+**Power loss in the harnesses (2026-11-23), and two bugs it found.**
+The randomized Raft harness (`krusty-raft/tests/cluster.rs`) and the
+trace harness now model mode (a)'s disk:
+- the page cache survives a process crash;
+- what was last fsynced (written back at random) survives a power loss;
+- term and vote are always durable;
+- one node at a time loses power and reboots recovering, with a marker
+  until it recovers.
+
+Both bugs were liveness bugs, real in the code, and not visible to RaftKC,
+which has no `nextIndex` and no pre-vote:
+1. **A follower that lost entries was never repaired.** The leader would
+   not back up below the follower's old match index. Each rejection set
+   off another batch, and with duplicating links the messages grew
+   exponentially; the run exhausted 4 GB. Fix: a rejection whose hint is
+   below the follower's match index lowers it. That only delays commits;
+   "match index only grows" assumes no node loses writes.
+2. **Pre-vote never caught up on terms.** A node with the longest log but
+   an old term could not be elected: its pre-votes asked for a term no
+   peer granted, and a rejection did not say why. With one node
+   recovering, which grants nothing, the cluster stayed without a leader.
+   Fix, as in etcd: a pre-vote rejection carries the rejecter's own term,
+   and a pre-candidate behind it moves to it. A first version sent back
+   the requested term, which told a rejected node of a term nobody was at;
+   two nodes then leapfrogged through terms without electing.
+
+RaftKC gains `LearnTerm` (moving to a later term some node holds, as a
+follower with no vote) for the second fix. The recovery rule is folded
+into RaftKC (`recovering`, `recoverTerm`, `PowerLossTo`, `RecoveryNext`),
+so trace validation checks recovery steps:
+- *Randomized harness.* With power losses, the gentle and harsh tests
+  pass. The nightly sweep runs every other seed with power losses: 2,000
+  seeds pass. Without recovery, 3 of 300 harsh runs violate safety.
+  Power-loss runs get 6 s after the network heals instead of 2, because
+  with one node recovering the other two must agree, as with a node down.
+- *Trace validation.* Traces with power losses, recovery and term
+  catch-up are accepted (6 seeds; coverage test: 36 power losses in 10
+  seeds). With the code weakened to the "any Append" rule, 5 of 6 are
+  rejected.
+- *Model.* `MCRaftKCPower.tla` checks RaftKC's own rule (with LearnTerm)
+  under power loss, at the bounds where RaftKCRecover held (3 servers,
+  2 terms, 1-entry logs, one power loss, depth 17): no violation,
+  exhaustive, 23.2 M states, 22.5 min (`check.sh --large`).
 
 **Plan as written before implementing.**
 - *krusty-raft:* the `last` field on Append (wire); a `recovering` state

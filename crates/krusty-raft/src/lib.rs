@@ -729,6 +729,14 @@ impl Raft {
                     && !leader_alive
                     && self.recovering.is_none()
                     && self.up_to_date(last_index, last_term);
+                // A rejection carries our own term (as etcd's raft does): a
+                // pre-candidate behind it catches up. A node with the longest
+                // log but an old term could otherwise never be elected: its
+                // pre-votes ask for a term no peer grants (tests/cluster.rs,
+                // power losses, seed 340). Not the requested term: that told
+                // a rejected pre-candidate of a term nobody was at, and two
+                // nodes leapfrogged through terms (seed 305).
+                let term = if granted { term } else { self.hs.term };
                 out.sends
                     .push((from, Message::PreVoteReply { term, granted }));
             }
@@ -740,8 +748,11 @@ impl Raft {
                     if self.granted() >= self.cfg.quorum() {
                         self.start_election(out);
                     }
-                } else if !granted && term > self.hs.term + 1 {
-                    // Someone is ahead of us: catch up to their view of the term.
+                } else if !granted && term > self.hs.term && self.role == Role::PreCandidate {
+                    // Rejected by a node at a later term: catch up to it, as
+                    // a follower with no vote, and pre-vote from there.
+                    self.become_follower(term, None, out);
+                    self.reset_election_timer();
                 }
             }
             Message::Vote {
@@ -840,6 +851,17 @@ impl Raft {
                     self.advance_commit();
                     self.maybe_timeout_now(out);
                 } else {
+                    // A hint below what the follower had matched: it lost
+                    // entries it acknowledged (a power loss in mode a). Match
+                    // from what it has now. (Lowering `matched` only delays
+                    // commits; a stale reply costs a resend.) Without this the
+                    // leader never backed up below the old match, and each
+                    // rejection set off another batch: the follower was never
+                    // repaired and the rejections multiplied (2026-11-23,
+                    // tests/cluster.rs, power losses).
+                    if index < p.matched {
+                        p.matched = index;
+                    }
                     // Back up and resend from the hint (probe: one batch at a time).
                     p.next = (index + 1).max(p.matched + 1).min(p.next);
                     p.inflight = 0;

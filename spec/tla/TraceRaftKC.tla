@@ -47,6 +47,7 @@ Do(a) ==
       \* RaftKC lets the leader pick any eligible index; the code's choice:
       [] a.a = "advanceCommit" -> AdvanceCommit(S) /\ commitIndex'[S] = a.n
       [] a.a = "restart"       -> Restart(S)
+      [] a.a = "learnTerm"     -> LearnTerm(S, a.term)
 
 \* The node's state and what it sent match the record.
 Matches ==
@@ -55,11 +56,21 @@ Matches ==
     /\ votedFor[S] = E.votedFor
     /\ log[S] = E.log
     /\ commitIndex[S] = E.commit
+    /\ recovering[S] = E.recovering
     /\ msgs = E.sends
 
 TraceNext ==
     /\ \/ /\ k <= Len(E.plan)
+          /\ Step.a = "powerLoss"
+          \* The node's log is what its disk kept (the record's), and it
+          \* restarts recovering.
+          /\ PowerLossTo(S, E.log)
+          /\ k' = k + 1
+          /\ UNCHANGED l
+       \/ /\ k <= Len(E.plan)
+          /\ Step.a # "powerLoss"
           /\ Do(Step)
+          /\ RecoveryNext
           /\ k' = k + 1
           /\ UNCHANGED l
        \/ /\ k = Len(E.plan) + 1
@@ -68,7 +79,8 @@ TraceNext ==
           /\ l' = l + 1
           /\ k' = 1
           /\ msgs' = {}
-          /\ UNCHANGED <<currentTerm, role, votedFor, log, commitIndex, votes, matchIndex>>
+          /\ UNCHANGED <<currentTerm, role, votedFor, log, commitIndex, votes, matchIndex,
+                         recovering, recoverTerm>>
     /\ RecordCommits   \* last: it reads the primed state
 
 TraceSpec == TraceInit /\ [][TraceNext]_traceVars

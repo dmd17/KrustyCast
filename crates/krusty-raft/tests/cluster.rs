@@ -1,7 +1,10 @@
 #![allow(clippy::needless_range_loop)]
 //! Randomized clusters: lossy, duplicating, reordering network, changing
-//! partitions, crashes and restarts from storage. Checks Raft's safety
-//! properties throughout and liveness once the network heals.
+//! partitions, crashes and restarts from storage, and (with `power_every`)
+//! power losses in mode (a): a node's log reverts to what was last fsynced,
+//! and it restarts recovering (spec/RAFT-VERIFICATION.md, "Decision").
+//! Checks Raft's safety properties throughout and liveness once the network
+//! heals.
 use krusty_raft::wire::{self, EntriesView};
 use krusty_raft::{Config, HardState, Message, NodeId, Outbox, Raft, RaftLog, Role};
 use std::collections::{BTreeMap, HashMap};
@@ -29,7 +32,14 @@ struct Store {
 
 struct Node {
     raft: Option<Raft>,
+    /// What survives a process crash (the page cache).
     store: Store,
+    /// The log as last fsynced: what survives a power loss. The hard state
+    /// is fsynced before use, so it always survives.
+    disk: Vec<(u64, Vec<u8>)>,
+    /// The `recovering` marker: set by a power loss, kept until Raft has
+    /// recovered (so a crash while recovering does not end it).
+    marker: bool,
     applied: u64,
 }
 
@@ -46,12 +56,16 @@ fn config(id: NodeId, n: u32, seed: u64) -> Config {
     }
 }
 
-fn boot(id: NodeId, n: u32, seed: u64, store: &Store, now: u64) -> Raft {
+fn boot(id: NodeId, n: u32, seed: u64, store: &Store, now: u64, recover: bool) -> Raft {
     let mut log = RaftLog::new(0, 0);
     for (t, d) in &store.log {
         log.append(*t, d);
     }
-    Raft::new(config(id, n, seed), store.hs, log, 0, now)
+    let mut r = Raft::new(config(id, n, seed), store.hs, log, 0, now);
+    if recover {
+        r.recover_after_power_loss();
+    }
+    r
 }
 
 /// Carries out an outbox in the required order: persist, then send.
@@ -64,6 +78,12 @@ struct Faults {
     /// Mean steps (0.5 ms) between repartitions / crashes.
     repartition_every: u64,
     crash_every: u64,
+    /// Mean steps between power losses (0: none). At most one node is
+    /// down from one, or recovering, at a time (f = 1 of 3).
+    power_every: u64,
+    /// Whether a node back from a power loss recovers (the fix); false is
+    /// the code before it, for the check that the harness sees the bug.
+    recover: bool,
 }
 
 const GENTLE: Faults = Faults {
@@ -71,12 +91,16 @@ const GENTLE: Faults = Faults {
     max_delay_ms: 5,
     repartition_every: 400,
     crash_every: 600,
+    power_every: 0,
+    recover: true,
 };
 const HARSH: Faults = Faults {
     loss: 300,
     max_delay_ms: 40,
     repartition_every: 100,
     crash_every: 150,
+    power_every: 0,
+    recover: true,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -152,8 +176,10 @@ fn run(seed: u64, n: u32, f: Faults) -> u64 {
     let mut rng = Rng(seed);
     let mut nodes: Vec<Node> = (1..=n)
         .map(|id| Node {
-            raft: Some(boot(id, n, seed, &Store::default(), 0)),
+            raft: Some(boot(id, n, seed, &Store::default(), 0, false)),
             store: Store::default(),
+            disk: Vec::new(),
+            marker: false,
             applied: 0,
         })
         .collect();
@@ -167,9 +193,18 @@ fn run(seed: u64, n: u32, f: Faults) -> u64 {
     // A transfer under way: (target, term it started in).
     let mut transfer: Option<(NodeId, u64)> = None;
     let mut handovers = 0u64;
+    let mut power_down: Option<usize> = None;
+    let mut power_losses = 0u64;
     // Partition: group[id] (nodes talk only within their group).
     let mut group: Vec<u32> = vec![0; n as usize + 1];
-    let end = 6_000 * MS;
+    let end = std::env::var("KRUSTY_RAFT_END_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        // With power losses a node may still be recovering when the network
+        // heals (it votes only once a leader exists): the other two must then
+        // agree, which under heavy loss takes longer, as with a node down.
+        .unwrap_or(if f.power_every > 0 { 10_000 } else { 6_000 })
+        * MS;
     let heal_at = 4_000 * MS;
     let mut now = 0u64;
     let mut offsets = Vec::new();
@@ -189,10 +224,41 @@ fn run(seed: u64, n: u32, f: Faults) -> u64 {
             let k = rng.below(n as u64) as usize;
             nodes[k].raft = None; // crash: memory gone, the store survives
         }
+        // The OS writes logs back now and then (mode a: not before acking).
+        for node in nodes.iter_mut() {
+            if rng.below(40) == 0 {
+                node.disk = node.store.log.clone();
+            }
+        }
+        if faulty
+            && f.power_every > 0
+            && rng.below(f.power_every) == 0
+            && power_down.is_none()
+            && !nodes.iter().any(|x| x.marker)
+        {
+            // Power loss: what was not fsynced is gone.
+            let k = rng.below(n as u64) as usize;
+            let node = &mut nodes[k];
+            node.raft = None;
+            node.store.log = node.disk.clone();
+            node.marker = f.recover;
+            power_down = Some(k);
+            power_losses += 1;
+        }
         for (k, node) in nodes.iter_mut().enumerate() {
             if node.raft.is_none() && (!faulty || rng.below(300) == 0) {
-                node.raft = Some(boot(k as u32 + 1, n, seed ^ now, &node.store, now));
+                node.raft = Some(boot(
+                    k as u32 + 1,
+                    n,
+                    seed ^ now,
+                    &node.store,
+                    now,
+                    node.marker,
+                ));
                 node.applied = 0;
+                if power_down == Some(k) {
+                    power_down = None;
+                }
             }
         }
         let g = group.clone();
@@ -251,6 +317,40 @@ fn run(seed: u64, n: u32, f: Faults) -> u64 {
                 raft.replicate(&mut out, false);
             }
             apply_outbox(f, id, node, &mut out, &mut net, &mut rng, now, &up);
+        }
+        if std::env::var_os("KRUSTY_RAFT_DEBUG").is_some() && now.is_multiple_of(100 * MS) {
+            let st: Vec<String> = nodes
+                .iter()
+                .map(|x| match &x.raft {
+                    Some(r) => format!(
+                        "{:?}/t{}/log{}/c{}{}",
+                        r.role(),
+                        r.term(),
+                        r.last_index(),
+                        r.commit_index(),
+                        if r.recovering() { "/REC" } else { "" }
+                    ),
+                    None => "down".into(),
+                })
+                .collect();
+            let stores: Vec<String> = nodes
+                .iter()
+                .map(|x| {
+                    format!(
+                        "{}/{}{}",
+                        x.store.log.len(),
+                        x.disk.len(),
+                        if x.marker { "M" } else { "" }
+                    )
+                })
+                .collect();
+            eprintln!(
+                "seed {seed} t={}ms net={} {} stores {}",
+                now / MS,
+                net.len(),
+                st.join(" "),
+                stores.join(" ")
+            );
         }
         // Invariants.
         for (k, node) in nodes.iter_mut().enumerate() {
@@ -314,8 +414,15 @@ fn run(seed: u64, n: u32, f: Faults) -> u64 {
             }
             node.applied = node.applied.max(c);
             raft.applied(node.applied);
+            if node.marker && !raft.recovering() {
+                node.marker = false; // recovered: the marker goes
+            }
         }
     }
+    assert!(
+        f.power_every == 0 || power_losses > 0,
+        "seed {seed}: no power loss happened"
+    );
     // Liveness: after healing, a leader exists and work got committed.
     let leaders_now = nodes
         .iter()
@@ -351,6 +458,8 @@ fn leadership_transfers_hand_over() {
         max_delay_ms: 1,
         repartition_every: u64::MAX,
         crash_every: u64::MAX,
+        power_every: 0,
+        recover: true,
     };
     let mut handovers = 0;
     for seed in 0..10 {
@@ -365,6 +474,77 @@ fn three_nodes_under_faults() {
     for seed in 0..40 {
         run(seed, 3, GENTLE);
     }
+}
+
+/// Power losses in mode (a): one node at a time loses what it had not
+/// fsynced and restarts recovering.
+#[test]
+fn three_nodes_with_power_losses() {
+    for seed in 300..360 {
+        run(
+            seed,
+            3,
+            Faults {
+                power_every: 300,
+                ..GENTLE
+            },
+        );
+    }
+}
+
+#[test]
+fn harsh_faults_with_power_losses() {
+    for seed in 400..430 {
+        run(
+            seed,
+            3,
+            Faults {
+                power_every: 120,
+                ..HARSH
+            },
+        );
+    }
+}
+
+/// Without recovery (the code before 2026-11-23), the same power losses
+/// break Raft's safety in some runs: the harness can see the bug.
+#[test]
+fn power_losses_without_recovery_break_safety() {
+    let quiet = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut broken = Vec::new();
+    for seed in 500..800 {
+        let r = std::panic::catch_unwind(|| {
+            run(
+                seed,
+                3,
+                Faults {
+                    power_every: 120,
+                    recover: false,
+                    ..HARSH
+                },
+            )
+        });
+        if let Err(e) = r {
+            let msg = e
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            if msg.contains("two leaders")
+                || msg.contains("lacks committed")
+                || msg.contains("committed a different")
+            {
+                broken.push(seed);
+            }
+        }
+    }
+    std::panic::set_hook(quiet);
+    assert!(!broken.is_empty(), "no safety violation without recovery");
+    eprintln!(
+        "safety violated without recovery in {} of 300 runs",
+        broken.len()
+    );
 }
 
 #[test]
@@ -389,7 +569,16 @@ fn harsh_sweep() {
         var("KRUSTY_RAFT_BASE", 10_000),
     );
     for seed in base..base + n {
-        run(seed, 3, HARSH);
+        // Every other seed with power losses in mode (a) (recovering nodes).
+        let f = if seed % 2 == 0 {
+            HARSH
+        } else {
+            Faults {
+                power_every: 120,
+                ..HARSH
+            }
+        };
+        run(seed, 3, f);
     }
 }
 

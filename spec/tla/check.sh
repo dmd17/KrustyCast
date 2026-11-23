@@ -19,7 +19,7 @@ Cluster:ClusterLive1 Cluster:ClusterLive2 RaftKCInd:RaftKCIndMC"
 [ "${1:-}" = "--large" ] && configs="$configs
 Sequencer:SequencerLarge SequencerBounded:SequencerBoundedEvictLarge
 RaftKC:RaftKC RaftKC:RaftKCLarge RaftKC:RaftKCTerms3 RaftKC:RaftKCTerms4
-Egress:EgressLarge Cluster:ClusterTwo RaftKCInd:RaftKCIndTerms3"
+Egress:EgressLarge Cluster:ClusterTwo RaftKCInd:RaftKCIndTerms3 MCRaftKCPower:MCRaftKCPower"
 
 status=0
 for pair in $configs; do

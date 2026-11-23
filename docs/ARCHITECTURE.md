@@ -227,7 +227,13 @@ list.
   carries the leader's append timestamp, so the native stream's
   `timestamp_ns` is replicated state, not a local clock reading.
 - Pipelined: several batches in flight, bounded by a per-follower window.
-- Pre-vote and check-quorum prevent disruptive elections.
+- Pre-vote and check-quorum prevent disruptive elections. A pre-vote
+  rejection carries the rejecter's term, and a pre-candidate behind it
+  moves to it (as etcd does). Otherwise a node with the longest log but
+  an old term could never be elected (2026-11-23).
+- A rejected Append whose hint is below the follower's match index means
+  the follower lost entries (a power loss in mode a): the leader lowers
+  the match index and resends from the hint.
 - Heartbeat and election timeouts are tuned for the NFR-6 failover target.
 - Followers ack on receipt (mode a) or after fsync (mode b).
 - The commit index advances at quorum. Log index and egress seqno are
@@ -267,7 +273,11 @@ As built (M3, `krusty-node/src/cluster.rs`):
   - *Leaving:* when an Append from a leader of its restart term or later
     leaves it holding that leader's whole log as of sending. Appends
     carry it as `last`; replication wire version 2.
-  - *Checked:* `RaftKCRecover.tla`, rule "last"; weaker rules fail.
+  - *Checked:*
+    - `RaftKCRecover.tla`: rule "last" holds, weaker rules fail;
+    - `RaftKC` with the rule folded in (`MCRaftKCPower`);
+    - the randomized Raft harness with power losses;
+    - trace validation of recovery steps.
   - *If every node lost power at once,* none can vote: an operator ends
     recovery (`krusty-admin end-recovery`), accepting that what no node
     kept is lost.
