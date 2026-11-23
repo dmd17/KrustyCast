@@ -1140,7 +1140,7 @@ impl Log {
     /// before it starts.
     pub fn take_sync(&mut self) -> io::Result<SyncJob> {
         self.flush()?;
-        let mut files: Vec<Arc<File>> = self.unsynced.drain(..).collect();
+        let mut files = std::mem::take(&mut self.unsynced);
         files.push(self.active.clone());
         let dir = std::mem::take(&mut self.dir_dirty).then(|| self.cfg.dir.clone());
         Ok(SyncJob {
