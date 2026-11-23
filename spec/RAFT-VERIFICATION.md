@@ -101,7 +101,34 @@ A first attempt with logs of 2 entries ran 40 minutes past 23 M states
 without finishing; logs of 1 is what completes. Still to do: a third term
 (stale leaders) and a deeper random simulation of `"last"`.
 
-**Implementation, once the model holds.**
+**Implemented (2026-11-23).**
+- *krusty-raft:*
+  - Appends carry `last` (replication wire version 2);
+  - `recover_after_power_loss`, `recovering`, `end_recovery`;
+  - recovering nodes grant no votes or pre-votes, and ignore election
+    timeouts and TimeoutNow;
+  - recovery ends on an accepted Append, from a leader of the restart
+    term or later, matching up to its `last`.
+
+  `tests/recovery.rs` covers these. Two of its tests fail if the rule is
+  weakened to "any accepted Append".
+- *krusty-node:*
+  - the hard state is always fsynced;
+  - `must_recover`: in mode (a), a recorded boot id that differs, or none
+    recorded with state on disk, or the `recovering` marker (created
+    fsynced, removed once recovered);
+  - the `raft_recovering` and `raft_recoveries` metrics;
+  - `krusty-admin end-recovery`.
+
+  The krusty-client test `a_node_back_from_a_power_loss_recovers_before_voting`
+  rewrites a follower's boot id, restarts it, and sees it recover, catch
+  up and vote again. A plain restart in the same boot does not recover.
+- *Spec:* RaftKC's Appends carry `last`, so the nightly Raft trace
+  validation checks the field the code sends (three traces accepted).
+  The recovery rule itself stays in `RaftKCRecover.tla` until the
+  randomized Raft harness has a power-loss fault.
+
+**Plan as written before implementing.**
 - *krusty-raft:* the `last` field on Append (wire); a `recovering` state
   (no votes granted, no election or pre-vote timeouts, left by the rule
   above); power-loss faults in the randomized harness, losing the

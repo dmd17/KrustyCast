@@ -414,6 +414,7 @@ fn wire_round_trip() {
         prev_term: 6,
         count: 2,
         commit: 9,
+        last: 12,
     };
     let mut at = wire::encode(&mut buf, 3, &m);
     at = wire::push_entry(&mut buf, at, 7, b"hello");

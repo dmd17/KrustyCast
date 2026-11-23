@@ -803,3 +803,54 @@ fn cluster_shell_traces() {
         assert!(t.lines().count() > 10, "node {id}: a short trace");
     }
 }
+
+/// A power loss in mode (a): a follower comes back in a new boot (its
+/// recorded boot id no longer matches), so writes it acknowledged may be
+/// gone. It recovers: no votes until it holds the leader's log, then votes
+/// again, and the marker that outlives process crashes is removed
+/// (spec/RAFT-VERIFICATION.md, "Decision").
+#[test]
+fn a_node_back_from_a_power_loss_recovers_before_voting() {
+    let mut c = Cluster::new(3, "power", Durability::Async);
+    let leader = c.wait_leader(Duration::from_secs(5));
+    let mut pcfg = PublisherConfig::new(31, c.ingress());
+    pcfg.max_attempts = 1000;
+    let mut p = Publisher::new(pcfg).unwrap();
+    publish(&mut p, 1, 201, || {});
+    let f = (leader + 1) % 3;
+    c.stop(f);
+    // As if the machine had rebooted.
+    std::fs::write(c.dirs[f].join("boot_id"), "another boot").unwrap();
+    c.restart(f);
+    let stat = |c: &Cluster, k: usize, f: fn(&krusty_node::metrics::Shared) -> u64| {
+        f(&c.nodes[k].as_ref().unwrap().stats)
+    };
+    // (The core stage counts it when it starts, just after `restart`.)
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while stat(&c, f, |s| s.raft_recoveries.load(Ordering::Relaxed)) == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "a node back from a power loss must start recovering"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // The leader's heartbeats and Appends bring it up to date.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while stat(&c, f, |s| s.raft_recovering.load(Ordering::Relaxed)) == 1
+        || c.dirs[f].join("recovering").exists()
+    {
+        assert!(Instant::now() < deadline, "still recovering");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // A plain process restart (same boot) does not recover.
+    let g = (leader + 2) % 3;
+    c.stop(g);
+    c.restart(g);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        stat(&c, g, |s| s.raft_recoveries.load(Ordering::Relaxed)),
+        0
+    );
+    // The cluster carries on, with the node voting again.
+    publish(&mut p, 201, 301, || {});
+}

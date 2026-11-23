@@ -45,7 +45,7 @@ use crate::stages::{
     HIST_HEADER, Out, REC_HDR, REC_TO, emit_frames, feed_record, get_addr, get_ts, idle, now_ns,
     pin, put_addr, put_history, put_ts, write_ring,
 };
-use crate::storage::{S_ENTRY, S_ENTRY_HEADER, S_SNAPSHOT, S_TRUNCATE, put_entry};
+use crate::storage::{Durability, S_ENTRY, S_ENTRY_HEADER, S_SNAPSHOT, S_TRUNCATE, put_entry};
 use crate::trace::{self, Tracer};
 use crate::{ClusterConfig, NodeConfig, StorageConfig};
 use krusty_core::Core;
@@ -115,6 +115,54 @@ pub(crate) struct Restored {
     pub loaded: u64,
 }
 
+/// The marker of a node recovering from a possible power loss
+/// (`Raft::recover_after_power_loss`): it outlives process crashes, which
+/// would otherwise make the node forget it had not caught up.
+pub(crate) const RECOVERING_MARKER: &str = "recovering";
+const BOOT_ID_FILE: &str = "boot_id";
+
+fn sync_dir(dir: &std::path::Path) -> io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// Whether this start must recover (spec/RAFT-VERIFICATION.md, "Decision").
+/// In mode (a) the node acknowledges entries before they are fsynced, so a
+/// power loss can take back what it acknowledged. A process crash keeps the
+/// page cache (and the kernel's boot id); a power loss does not. So: the
+/// node recovers if it was recovering (the marker), or if it has state and
+/// the boot id differs from the one it recorded (or none was recorded).
+/// Mode (b) acknowledges only fsynced entries and never needs this. The
+/// boot id is recorded afterwards, and the marker set first, both fsynced.
+fn must_recover(
+    dir: &std::path::Path,
+    durability: Durability,
+    has_state: bool,
+) -> io::Result<bool> {
+    let marker = dir.join(RECOVERING_MARKER);
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let recorded = std::fs::read_to_string(dir.join(BOOT_ID_FILE))
+        .map(|s| s.trim().to_string())
+        .ok();
+    let recover = marker.exists()
+        || (durability == Durability::Async
+            && has_state
+            && (boot.is_empty() || recorded.as_deref() != Some(boot.as_str())));
+    if recover && !marker.exists() {
+        std::fs::File::create(&marker)?.sync_all()?;
+        sync_dir(dir)?;
+    }
+    if !boot.is_empty() && recorded.as_deref() != Some(boot.as_str()) {
+        let tmp = dir.join("boot_id.tmp");
+        std::fs::write(&tmp, &boot)?;
+        std::fs::File::open(&tmp)?.sync_all()?;
+        std::fs::rename(&tmp, dir.join(BOOT_ID_FILE))?;
+        sync_dir(dir)?;
+    }
+    Ok(recover)
+}
+
 /// Opens the log: core from the latest snapshot, Raft log from the entries
 /// after it, hard state from `raft.state`.
 pub(crate) fn restore(
@@ -169,12 +217,19 @@ pub(crate) fn restore(
     if rl.last_index() != opened.last_index {
         return Err(bad("log does not continue from the snapshot".into()));
     }
+    let has_state = rl.last_index() > 0;
     let (hs_file, (term, vote)) = HardStateFile::open(&st.log.dir)?;
     let hs = HardState {
         term,
         voted_for: (vote != 0).then_some(vote),
     };
-    let raft = Raft::new(raft_config(cl), hs, rl, snap, mono_ns());
+    let mut raft = Raft::new(raft_config(cl), hs, rl, snap, mono_ns());
+    if must_recover(&st.log.dir, st.durability, has_state || term > 0)? {
+        eprintln!(
+            "krusty-node: this start may follow a power loss (mode a): recovering, no votes until caught up with a leader"
+        );
+        raft.recover_after_power_loss();
+    }
     // Raft takes the entries it starts with as durable.
     log.sync()?;
     let disk = log.reader();
@@ -384,7 +439,11 @@ impl Shell {
         let sync = self.synced.is_some();
         if let Some(hs) = self.ob.hard_state.take() {
             self.hs_file
-                .store(hs.term, hs.voted_for.unwrap_or(0), sync)
+                // Always fsynced, in both modes: a vote forgotten in a
+                // power loss lets a node vote twice in a term
+                // (spec/tla/RaftKCPower.tla). Terms and votes change only in
+                // elections, so this costs nothing in steady state.
+                .store(hs.term, hs.voted_for.unwrap_or(0), true)
                 .unwrap_or_else(|e| fatal("hard state", e));
         }
         if let Some(t) = self.ob.truncate_from.take() {
@@ -499,6 +558,7 @@ impl Shell {
                 mut prev_term,
                 count,
                 commit,
+                last,
             } => {
                 if prev_index > 0 && prev_term == 0 {
                     match self.raft.term_at(prev_index) {
@@ -534,6 +594,7 @@ impl Shell {
                     prev_term,
                     count: k,
                     commit,
+                    last,
                 };
                 wire::encode(&mut self.msg, self.id, &m);
                 if k > 0 {
@@ -896,6 +957,10 @@ pub(crate) fn cluster_core_stage(
     let mut last_sent = Instant::now();
     let mut next_tick = 0u64;
     let mut was_leader = false;
+    let mut was_recovering = sh.raft.recovering();
+    if was_recovering {
+        stats.raft_recoveries.fetch_add(1, Ordering::Relaxed);
+    }
     let mut empty = 0;
     loop {
         let batch_start = mono_ns();
@@ -967,6 +1032,25 @@ pub(crate) fn cluster_core_stage(
         stats
             .clients
             .store(sh.core.clients() as u64, Ordering::Relaxed);
+        if control.end_recovery.swap(false, Ordering::AcqRel) && sh.raft.recovering() {
+            eprintln!(
+                "krusty-node: recovery ended by the operator (entries lost on every node stay lost)"
+            );
+            sh.raft.end_recovery();
+        }
+        if was_recovering && !sh.raft.recovering() {
+            // Caught up (or the operator's override): vote again from now on,
+            // also after a restart in this boot.
+            if let Some(st) = &cfg.storage {
+                let _ = std::fs::remove_file(st.log.dir.join(RECOVERING_MARKER));
+                let _ = sync_dir(&st.log.dir);
+            }
+            eprintln!("krusty-node: recovered: this node votes again");
+        }
+        was_recovering = sh.raft.recovering();
+        stats
+            .raft_recovering
+            .store(was_recovering as u64, Ordering::Relaxed);
         let t = control.transfer.swap(0, Ordering::AcqRel);
         if t != 0 {
             let (seq, to) = (t >> 32, (t & 0xFFFF_FFFF) as u32);

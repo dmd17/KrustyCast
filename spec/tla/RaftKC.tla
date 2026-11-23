@@ -116,7 +116,10 @@ AppendEntries(s, t, prev, last) ==
     /\ Send([type |-> "append", term |-> currentTerm[s], from |-> s, to |-> t,
              prev |-> prev, prevTerm |-> IF prev = 0 THEN 0 ELSE log[s][prev].term,
              entries |-> SubSeq(log[s], prev + 1, last),
-             commit |-> Min(commitIndex[s], last)])
+             commit |-> Min(commitIndex[s], last),
+             \* The leader's last index when sending (power-loss recovery,
+             \* RaftKCRecover.tla; not read here).
+             last |-> Len(log[s])])
     /\ UNCHANGED <<currentTerm, role, votedFor, log, commitIndex, votes, matchIndex>>
 
 \* The leader commits the largest index a quorum holds, if from its term.

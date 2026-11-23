@@ -123,6 +123,10 @@ pub enum Message {
         prev_term: u64,
         count: u64,
         commit: u64,
+        /// The leader's last index when it sent this: a node recovering
+        /// from a power loss votes again only once it holds this much
+        /// (spec/RAFT-VERIFICATION.md, "Decision").
+        last: u64,
     },
     /// `success`: everything up to `index` matches. Otherwise `index` is a
     /// hint: retry with `prev_index = index`.
@@ -224,6 +228,13 @@ pub struct Raft {
     rng: u64,
     scratch: Vec<u64>,
     events: Events,
+    /// After a possible power loss in mode (a), the term the node restarted
+    /// in: until it holds a leader's whole log (an Append's `last`), from a
+    /// leader of this term or later, it grants no votes and starts no
+    /// election. Its log may lack entries it acknowledged before the loss;
+    /// voting then could elect a leader without a committed entry
+    /// (spec/tla/RaftKCRecover.tla).
+    recovering: Option<u64>,
 }
 
 /// Counts of this node's elections and step-downs since it started, for
@@ -295,6 +306,7 @@ impl Raft {
             rng,
             scratch: Vec::with_capacity(16),
             events: Events::default(),
+            recovering: None,
         };
         r.reset_election_timer();
         r
@@ -388,6 +400,24 @@ impl Raft {
         self.now = now.max(self.now);
     }
 
+    /// The node may have lost writes it acknowledged (a power loss in mode
+    /// (a)): it recovers before voting again (see `recovering`).
+    pub fn recover_after_power_loss(&mut self) {
+        self.recovering = Some(self.hs.term);
+    }
+
+    /// Whether the node is recovering from a power loss.
+    pub fn recovering(&self) -> bool {
+        self.recovering.is_some()
+    }
+
+    /// An operator's override, when every node lost power at once and none
+    /// can vote: this node votes again. Entries acknowledged before the
+    /// loss and lost everywhere stay lost.
+    pub fn end_recovery(&mut self) {
+        self.recovering = None;
+    }
+
     /// Advances time: elections, heartbeats, check-quorum.
     pub fn tick(&mut self, now: u64, out: &mut Outbox) {
         self.now = now.max(self.now);
@@ -414,7 +444,12 @@ impl Raft {
             }
             _ => {
                 if self.now >= self.election_deadline {
-                    self.start_pre_vote(out);
+                    if self.recovering.is_some() {
+                        // No election while recovering: wait for a leader.
+                        self.reset_election_timer();
+                    } else {
+                        self.start_pre_vote(out);
+                    }
                 }
             }
         }
@@ -566,6 +601,7 @@ impl Raft {
                         prev_term,
                         count,
                         commit: self.commit,
+                        last,
                     },
                 ));
                 next += count;
@@ -583,6 +619,7 @@ impl Raft {
                         prev_term,
                         count: 0,
                         commit: self.commit,
+                        last,
                     },
                 ));
                 sent = true;
@@ -688,8 +725,10 @@ impl Raft {
                     Some(t) => self.now - t < self.cfg.election_min_ns,
                     None => false,
                 } || self.role == Role::Leader;
-                let granted =
-                    term > self.hs.term && !leader_alive && self.up_to_date(last_index, last_term);
+                let granted = term > self.hs.term
+                    && !leader_alive
+                    && self.recovering.is_none()
+                    && self.up_to_date(last_index, last_term);
                 out.sends
                     .push((from, Message::PreVoteReply { term, granted }));
             }
@@ -714,6 +753,7 @@ impl Raft {
                     self.become_follower(term, None, out);
                 }
                 let can_vote = term == self.hs.term
+                    && self.recovering.is_none()
                     && (self.hs.voted_for.is_none() || self.hs.voted_for == Some(from))
                     && self.up_to_date(last_index, last_term);
                 if can_vote {
@@ -748,6 +788,7 @@ impl Raft {
                 prev_term,
                 count,
                 commit,
+                last,
             } => {
                 if term < self.hs.term {
                     out.sends.push((
@@ -766,7 +807,14 @@ impl Raft {
                 self.leader_heard_at = Some(self.now);
                 self.reset_election_timer();
                 debug_assert_eq!(entries.len(), count);
-                self.handle_append(from, prev_index, prev_term, commit, entries, out);
+                let matched = self.handle_append(from, prev_index, prev_term, commit, entries, out);
+                if let Some(t) = self.recovering
+                    && term >= t
+                    && matched.is_some_and(|m| m >= last)
+                {
+                    // Holds everything the leader had when it sent this.
+                    self.recovering = None;
+                }
             }
             Message::AppendReply {
                 term,
@@ -801,7 +849,10 @@ impl Raft {
             Message::TimeoutNow { term } => {
                 // Only from our current leader, in its term: start an election
                 // now, without pre-vote (the leader asked for it).
-                if term == self.hs.term && self.role == Role::Follower && self.leader == Some(from)
+                if term == self.hs.term
+                    && self.role == Role::Follower
+                    && self.leader == Some(from)
+                    && self.recovering.is_none()
                 {
                     self.start_election(out);
                 }
@@ -810,6 +861,8 @@ impl Raft {
         out.committed = self.commit;
     }
 
+    /// Handles an Append in the current term; returns the index matched
+    /// on success.
     fn handle_append(
         &mut self,
         from: NodeId,
@@ -818,7 +871,7 @@ impl Raft {
         commit: u64,
         entries: &dyn Entries,
         out: &mut Outbox,
-    ) {
+    ) -> Option<u64> {
         let term = self.hs.term;
         if prev_index > self.log.last_index() {
             let hint = self.log.last_index();
@@ -830,7 +883,7 @@ impl Raft {
                     index: hint,
                 },
             ));
-            return;
+            return None;
         }
         // Entries at or below our commit index are final and match by Log
         // Matching; only check later ones.
@@ -851,7 +904,7 @@ impl Raft {
                             index: hint,
                         },
                     ));
-                    return;
+                    return None;
                 }
                 None => {
                     out.sends.push((
@@ -862,7 +915,7 @@ impl Raft {
                             index: self.commit,
                         },
                     ));
-                    return;
+                    return None;
                 }
             }
         }
@@ -910,6 +963,7 @@ impl Raft {
                 index: matched,
             },
         ));
+        Some(matched)
     }
 }
 

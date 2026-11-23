@@ -94,6 +94,12 @@ fn answer(
             }
             Err(_) => format!("error roll: {id:?} is not a stream id\n"),
         },
+        ["end-recovery"] => {
+            control
+                .end_recovery
+                .store(true, std::sync::atomic::Ordering::Release);
+            "ok end-recovery: this node votes again once it handles the request; messages acknowledged before a power loss and lost on every node stay lost\n".into()
+        }
         [cmd, ..] => format!("error unknown command {cmd:?}\n"),
         [] => "error empty request\n".into(),
     }

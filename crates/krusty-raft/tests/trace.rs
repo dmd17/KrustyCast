@@ -102,10 +102,11 @@ fn spec_msg(from: NodeId, to: NodeId, m: &Message, entries: &[(u64, Vec<u8>)]) -
             prev_term,
             count,
             commit,
+            last,
         } => {
             let es: Vec<String> = entries.iter().map(|(t, d)| entry(*t, d)).collect();
             format!(
-                "[type |-> \"append\", term |-> {term}, from |-> {f}, to |-> {t}, prev |-> {prev_index}, prevTerm |-> {prev_term}, entries |-> <<{}>>, commit |-> {}]",
+                "[type |-> \"append\", term |-> {term}, from |-> {f}, to |-> {t}, prev |-> {prev_index}, prevTerm |-> {prev_term}, entries |-> <<{}>>, commit |-> {}, last |-> {last}]",
                 es.join(", "),
                 commit.min(prev_index + count)
             )

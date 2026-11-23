@@ -2,14 +2,15 @@
 //! rest of the native formats).
 //!
 //! `magic u16 | version u8 | type u8 | from u32 | term u64 | a u64 | b u64 |
-//! c u64 | d u64` (48 bytes), then for Append `count` entries of
+//! c u64 | d u64 | e u64` (56 bytes), then for Append `count` entries of
 //! `term u64 | len u32 | pad u32 | data`, each padded to 8 bytes.
 
 use crate::{Entries, Message, NodeId};
 
 pub const MAGIC: u16 = 0x524B; // "KR"
-pub const VERSION: u8 = 1;
-pub const HEADER_LEN: usize = 48;
+/// 2 (2026-11-23): Append carries the leader's last index (`e`).
+pub const VERSION: u8 = 2;
+pub const HEADER_LEN: usize = 56;
 const ENTRY_HEADER: usize = 16;
 
 const T_PREVOTE: u8 = 1;
@@ -40,32 +41,35 @@ pub fn entry_len(len: usize) -> usize {
 /// Writes the header of `m`; for Append, then call [`push_entry`] `count`
 /// times. Returns the header length.
 pub fn encode(out: &mut [u8], from: NodeId, m: &Message) -> usize {
-    let (t, term, a, b, c, d) = match *m {
+    let (t, term, a, b, c, d, e) = match *m {
         Message::PreVote {
             term,
             last_index,
             last_term,
-        } => (T_PREVOTE, term, last_index, last_term, 0, 0),
-        Message::PreVoteReply { term, granted } => (T_PREVOTE_REPLY, term, granted as u64, 0, 0, 0),
+        } => (T_PREVOTE, term, last_index, last_term, 0, 0, 0),
+        Message::PreVoteReply { term, granted } => {
+            (T_PREVOTE_REPLY, term, granted as u64, 0, 0, 0, 0)
+        }
         Message::Vote {
             term,
             last_index,
             last_term,
-        } => (T_VOTE, term, last_index, last_term, 0, 0),
-        Message::VoteReply { term, granted } => (T_VOTE_REPLY, term, granted as u64, 0, 0, 0),
+        } => (T_VOTE, term, last_index, last_term, 0, 0, 0),
+        Message::VoteReply { term, granted } => (T_VOTE_REPLY, term, granted as u64, 0, 0, 0, 0),
         Message::Append {
             term,
             prev_index,
             prev_term,
             count,
             commit,
-        } => (T_APPEND, term, prev_index, prev_term, count, commit),
+            last,
+        } => (T_APPEND, term, prev_index, prev_term, count, commit, last),
         Message::AppendReply {
             term,
             success,
             index,
-        } => (T_APPEND_REPLY, term, success as u64, index, 0, 0),
-        Message::TimeoutNow { term } => (T_TIMEOUT_NOW, term, 0, 0, 0, 0),
+        } => (T_APPEND_REPLY, term, success as u64, index, 0, 0, 0),
+        Message::TimeoutNow { term } => (T_TIMEOUT_NOW, term, 0, 0, 0, 0, 0),
     };
     out[..HEADER_LEN].fill(0);
     out[0..2].copy_from_slice(&MAGIC.to_le_bytes());
@@ -77,6 +81,7 @@ pub fn encode(out: &mut [u8], from: NodeId, m: &Message) -> usize {
     put(out, 24, b);
     put(out, 32, c);
     put(out, 40, d);
+    put(out, 48, e);
     HEADER_LEN
 }
 
@@ -132,6 +137,7 @@ pub fn decode<'a>(
     }
     let from = u32::from_le_bytes(b[4..8].try_into().unwrap());
     let (term, a, bb, c, d) = (get(b, 8), get(b, 16), get(b, 24), get(b, 32), get(b, 40));
+    let e = get(b, 48);
     let flag = |v: u64| match v {
         0 => Some(false),
         1 => Some(true),
@@ -162,6 +168,7 @@ pub fn decode<'a>(
             prev_term: bb,
             count: c,
             commit: d,
+            last: e,
         },
         T_APPEND_REPLY => Message::AppendReply {
             term,

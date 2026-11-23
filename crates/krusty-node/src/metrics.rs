@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAGIC: u64 = 0x5354_4154_534B_434B; // "KCKSTATS"
-pub const LAYOUT_VERSION: u64 = 11;
+pub const LAYOUT_VERSION: u64 = 12;
 pub const BUCKETS: usize = 64;
 
 /// log2 histogram: bucket `b` counts values in `[2^(b-1), 2^b)` ns (bucket 0: 0).
@@ -145,12 +145,15 @@ counters! {
     cluster_loop_max_ns: "Gauge: the longest pass of the cluster core loop (ns): how long Raft went without ticks.",
     ingress_datagrams: "Datagrams received on ingress (submits / this: SUBMITs per datagram).",
     feedback_datagrams: "Datagrams of outcomes sent to clients (feedback / this: outcomes per datagram).",
+    raft_recoveries: "Times this node started recovering from a possible power loss (mode a): new boot, or still recovering when it stopped.",
+    raft_recovering: "Gauge: 1 while this node recovers from a possible power loss (mode a): it does not vote until it holds a leader's log.",
 }
 
 /// Counters that are levels, not totals (no rate is computed for them).
 pub const GAUGES: &[&str] = &[
     "stream_next",
     "raft_role",
+    "raft_recovering",
     "raft_term",
     "raft_commit",
     "node_id",

@@ -224,4 +224,7 @@ pub struct Control {
     pub roll_seq: std::sync::atomic::AtomicU64,
     /// The core stage's answer: `seq << 8 | ROLL_*`.
     pub roll_done: std::sync::atomic::AtomicU64,
+    /// The operator ends this node's recovery from a power loss (krusty-admin
+    /// end-recovery): when every node lost power at once, none could vote.
+    pub end_recovery: std::sync::atomic::AtomicBool,
 }

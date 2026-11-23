@@ -55,7 +55,10 @@ any node can take over (G1, G7). Failover takes about 70 ms at p50
 **Durability modes.**
 - *Mode (a)*: a message is acknowledged and published once a majority
   *holds* it; fsync happens off the latency path. It survives any minority
-  of nodes failing, but not every node losing power at once.
+  of nodes failing, including losing power, but not every node losing
+  power at once. A node back from a power loss (a new boot) first catches
+  up with the leader and does not vote until it has (`raft_recovering`;
+  §7.5).
 - *Mode (b)*: acknowledged and published only after a majority has
   *fsynced* it. Survives anything short of losing a majority's disks;
   adds about one device flush to latency.
@@ -414,6 +417,31 @@ On the leader's instruction every node, at the same log entry:
 - **Consumers** (unpinned) report `EndOfStream`, then follow the new stream
   from seqno 1. The old stream's tail stays recoverable by its stream id.
 - **MoldUDP64** ends its session and continues as session `0020261118`.
+
+### 7.5 After a power loss (mode a)
+
+In mode (a), a node acknowledges entries before they reach its disk. A
+node that comes back from a power loss (it sees a new kernel boot id) may
+have lost some of them, so it starts **recovering**:
+- it takes entries from the leader as usual, but votes in no election and
+  starts none, until it holds the leader's whole log;
+- it then votes again, by itself, usually within milliseconds;
+- the `recovering` file in its storage directory marks it meanwhile, so a
+  crash while recovering does not cut recovery short.
+
+`krusty-stat` shows `raft_recovering` (1 meanwhile) and `raft_recoveries`.
+While one node recovers, the other two must both be up for an election.
+
+If **every** node lost power at once, which mode (a) does not survive (see
+Durability modes), every node is recovering and none can vote: the cluster
+stays without a leader. To bring it back, accepting that messages no node
+kept are lost, end recovery on each node:
+
+```sh
+krusty-admin --node ... end-recovery
+```
+
+Mode (b) never recovers this way: it acknowledges only what is fsynced.
 - Stream ids are never reused; the default is the current id + 1. A roll
   needs `[cluster]` and `[storage]`. It is refused during a leadership
   transfer.
@@ -429,6 +457,7 @@ On the leader's instruction every node, at the same log entry:
 | `repl_unservable` | `krusty-stat` | A follower is so far behind that the leader can no longer feed it (InstallSnapshot is not implemented; §10). |
 | `recovered_from_disk` | `krusty-stat` | Consumers recovering old data. |
 | `mold_lost` | `krusty-stat` | The Mold adapter fell behind the history. |
+| `raft_recovering`, `raft_recoveries` | `krusty-stat` | 1 while the node recovers from a power loss (mode a) and does not vote; how often it started to (§7.5). Stuck at 1 on every node: they all lost power, see §7.5. |
 | `raft_pre_votes`, `raft_elections`, `raft_quorum_lost` | `krusty-stat` | Elections this node started, and step-downs as leader because a majority went quiet. Rising under steady load: some node stopped answering (look at its `cluster_loop_max_ns`). |
 | `resends_filtered` | `krusty-stat` | Resends the leader dropped because the original is still being committed. High: commits are slower than clients' retry interval (mode b on slow disks, overload). |
 | `ingress_datagrams`, `feedback_datagrams` | `krusty-stat` | Datagrams in and out for clients. `submits` / `ingress_datagrams` is SUBMITs per datagram, and `feedback` / `feedback_datagrams` is outcomes per datagram: near 1 at low load, higher under load as publishers and the node pack (see Batching under the publisher). |

@@ -253,8 +253,24 @@ As built (M3, `krusty-node/src/cluster.rs`):
   synced (`repl_held`), so a committed entry is on a majority's disks.
   A held reply is dropped if its entries are truncated or the term moves
   on. Leader and followers fsync in parallel, each with group commit.
-  The hard state goes to `raft.state` (two slots, CRC) before any message
-  that depends on it (fsynced in mode b).
+  The hard state goes to `raft.state` (two slots, CRC), fsynced, before
+  any message that depends on it, in both modes (2026-11-23; it changes
+  only in elections).
+- **Power loss in mode (a)** (2026-11-23, spec/RAFT-VERIFICATION.md). A
+  follower may lose entries it acknowledged, which alone breaks Raft's
+  safety (spec/tla/RaftKCPower.tla). So a node that may have lost power
+  restarts *recovering*:
+  - *When:* the kernel's boot id differs from the one it recorded, or the
+    `recovering` marker is present. The marker outlives process crashes.
+  - *While recovering:* it grants no vote or pre-vote and starts no
+    election, and it still accepts and acknowledges entries.
+  - *Leaving:* when an Append from a leader of its restart term or later
+    leaves it holding that leader's whole log as of sending. Appends
+    carry it as `last`; replication wire version 2.
+  - *Checked:* `RaftKCRecover.tla`, rule "last"; weaker rules fail.
+  - *If every node lost power at once,* none can vote: an operator ends
+    recovery (`krusty-admin end-recovery`), accepting that what no node
+    kept is lost.
 - Lagging followers are served from memory (`retain_entries`) or the log
   (a sparse in-memory index per segment finds an entry with one short
   read). InstallSnapshot is not implemented: a follower behind the log's
