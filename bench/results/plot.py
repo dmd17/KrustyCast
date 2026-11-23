@@ -1,4 +1,4 @@
-"""Draws docs/img/e3-latency-{tmpfs,disk}.svg from the rig outputs of a sweep (sweep19.sh: e3-rust-rig)
+"""Draws docs/img/e3-latency-{tmpfs,disk}.svg from a directory holding the rig outputs of both systems (a-*.txt: sweep19.sh, Aeron; k-*.txt: sweep20.sh, KrustyCast)
 (run from the repository root). Percentiles on a "nines" axis, latency log."""
 import re, math, sys
 import matplotlib

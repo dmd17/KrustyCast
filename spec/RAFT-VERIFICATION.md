@@ -346,6 +346,46 @@ No bug in the code turned up. Two checks show the test can find one:
 - *Liveness is exercised.* When the faults end on a paused or isolated
   leader, the run settles 10–40 ms later, after an election.
 
+**Found: a process crash could lose acknowledged entries in mode (a)**
+(2026-11-23). Reading the shell for the Raft trace showed a gap that no
+model sees. Mode (a) counted an entry as persisted, and acknowledged
+it, once it was handed to the storage stage (ring S). The storage
+thread writes a batch out only when it drains the ring, and runs each
+fsync inline. During an fsync, milliseconds on a disk, newer entries
+wait in ring S or the log's write buffer: process memory, already
+acknowledged. A `SIGKILL` loses them. The node restarts with the same
+boot id and no marker, so it rejoins without the cautious restart. That
+is RaftKCPowerLog's counterexample, caused by an ordinary crash rather
+than a power loss. RaftKC's `Restart` keeps the whole log, which the code
+did not. PRD G3 assumes only power loss loses unsynced data in mode (a).
+
+- *Shown:* `KRUSTY_PROC_SCENARIO=crash-pairs` pauses one node, lets the
+  other two commit without it, kills both at once, then restarts them and
+  resumes the first. With logs on ext4, 2 of 3 seeds lost committed,
+  published messages. In seed 303 the feed reached 21,002 and every node
+  stopped at 21,000.
+- *Fixed (write before ack, chosen 2026-11-23):* in mode (a) the storage
+  stage writes each batch to the log file, reports how many entries it
+  has written, and fsyncs on a thread of its own (`krusty-fsync`), so the
+  next writes never wait behind an fsync. Raft counts and acknowledges
+  only written entries, through mode (b)'s held-reply path with "written"
+  in place of "synced". The page cache outlives a process crash, so a
+  restart keeps what was acknowledged, as RaftKC assumes. Power loss is
+  still handled by the cautious restart.
+- *After the fix:* crash-pairs passes on 5 of 5 seeds (the two that
+  failed, and three new ones; 180,000 messages and about 26 kills each).
+  The random-fault runs, power losses included, and the workspace tests
+  pass. E3 latency (BASELINE "matched durability"): 6–14 µs more at p50 on
+  tmpfs. Disk tails are now in milliseconds (p99.9 3–4 ms from 300k), as
+  Aeron's are (7–9 ms), since writes now wait behind ext4 journal
+  commits. Aeron's followers also acknowledge what their archive has
+  written, so the comparison is now matched.
+- *Why the other checks missed it:* the models and the in-process
+  harnesses treat "handed to storage" as persisted. The real-process runs
+  kill one node at a time, and losing data needs a second failure before
+  the entries are re-replicated. The node's Raft trace (still to do) would
+  have flagged it at the first restart: a log shorter than RaftKC's.
+
 The checking script had a bug of its own. TLC prints the whole trace
 after its verdict, both when it accepts a trace (as a violation of
 `Unfinished`) and when it rejects one. For a 6,000-record trace that is

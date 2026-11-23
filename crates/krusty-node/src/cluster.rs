@@ -19,15 +19,17 @@
 //!   replies to clients (followers answer NOT_LEADER with the leader's id).
 //!   A node that proposed an entry remembers the client's address and
 //!   replies when the entry is applied, if it is still the same entry.
-//! - Durability (PRD FR-8). Mode (a): an entry handed to the storage stage
-//!   counts as persisted for Raft, so followers acknowledge on receipt and a
-//!   committed entry is in the memory of a majority. Mode (b): an entry
-//!   counts only once the storage stage has fsynced it (it reports how many
-//!   entries are synced); the leader's own entries join its quorum then, and
-//!   a follower holds back each successful AppendReply until everything it
-//!   acknowledges is synced, so a committed entry is on the disks of a
-//!   majority. Leader and followers fsync in parallel (group commit on
-//!   each). A held reply is dropped if the entries it covers are truncated
+//! - Durability (PRD FR-8). An entry counts as persisted for Raft only
+//!   once the storage stage reports it: written out to the log file in
+//!   mode (a) (the page cache, which outlives a process crash; fsynced in
+//!   the background), fsynced in mode (b). The leader's own entries join
+//!   its quorum then, and a follower holds back each successful
+//!   AppendReply until everything it acknowledges is reported, so a
+//!   committed entry is in the page cache (a) or on the disk (b) of a
+//!   majority. Until 2026-11-23 mode (a) counted an entry once it was in
+//!   ring S, which a killed process loses: two kills could lose committed
+//!   entries (tests/processes.rs, crash-pairs). Leader and followers write
+//!   and fsync in parallel (group commit on each). A held reply is dropped if the entries it covers are truncated
 //!   or the term moves on (Raft tolerates the loss). In both modes the hard
 //!   state (term, vote) is written before any message that depends on it is
 //!   sent; in mode (b) it is fsynced too.
@@ -98,7 +100,8 @@ pub(crate) struct ClusterStart {
     pub last_ts: u64,
     pub disk: LogReader,
     pub snapshots: Option<crate::stages::SnapshotLink>,
-    /// Mode (b): how many entries the storage stage has fsynced.
+    /// How many entries the storage stage has written (mode a) or fsynced
+    /// (mode b): Raft counts only those.
     pub synced: Option<Arc<AtomicU64>>,
     /// The streams so far (session rolls); the last is current.
     pub streams: Arc<crate::epochs::Streams>,
@@ -126,9 +129,10 @@ fn sync_dir(dir: &std::path::Path) -> io::Result<()> {
 }
 
 /// Whether this start must recover (spec/RAFT-VERIFICATION.md, "Decision").
-/// In mode (a) the node acknowledges entries before they are fsynced, so a
-/// power loss can take back what it acknowledged. A process crash keeps the
-/// page cache (and the kernel's boot id); a power loss does not. So: the
+/// In mode (a) the node acknowledges entries once written, before they are
+/// fsynced, so a power loss can take back what it acknowledged. A process
+/// crash keeps the page cache (and the kernel's boot id); a power loss does
+/// not. So: the
 /// node recovers if it was recovering (the marker), or if it has state and
 /// the boot id differs from the one it recorded (or none was recorded).
 /// Mode (b) acknowledges only fsynced entries and never needs this. The
@@ -344,15 +348,15 @@ struct Shell {
     /// dropped here is lost. Entries leave when applied; the table is
     /// cleared on becoming leader, and if it fills.
     proposed: HashMap<(u32, u64, u64), (u64, u64)>,
-    /// Mode (b): the storage stage's count of synced entries.
+    /// The storage stage's count of written (a) or synced (b) entries.
     synced: Option<Arc<AtomicU64>>,
     /// Entries handed to the storage stage so far.
     handed: u64,
-    /// Mode (b): (count when handed, log index) of entries not yet synced.
+    /// (count when handed, log index) of entries not yet reported.
     unsynced: VecDeque<(u64, u64)>,
-    /// Mode (b): the local log is durable up to here.
+    /// The local log counts as persisted up to here.
     durable: u64,
-    /// Mode (b): successful AppendReplies waiting for `durable`.
+    /// Successful AppendReplies waiting for `durable`.
     held: VecDeque<(u32, Message)>,
     last_ts: u64,
     proposals: u64,
@@ -481,14 +485,14 @@ impl Shell {
                 }
             }
             if !sync {
-                // Mode (a): handed to the storage stage counts as persisted.
+                // No storage stage (in memory): appended counts as persisted.
                 self.raft.persisted(last, &mut self.ob);
             }
         }
         let mut sends = std::mem::take(&mut self.ob.sends);
         for (to, m) in sends.drain(..) {
             match m {
-                // Mode (b): acknowledge only what is on disk.
+                // Acknowledge only what the storage stage reported.
                 Message::AppendReply {
                     success: true,
                     index,
@@ -503,7 +507,7 @@ impl Shell {
         self.ob.sends = sends;
     }
 
-    /// Mode (b): takes in what the storage stage has synced; Raft counts it
+    /// Takes in what the storage stage has reported; Raft counts it
     /// and held replies covered by it go out. Returns whether anything did.
     fn poll_durable(&mut self) -> bool {
         let Some(synced) = &self.synced else {

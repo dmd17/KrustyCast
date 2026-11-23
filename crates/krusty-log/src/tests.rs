@@ -198,6 +198,52 @@ fn retention_deletes_only_below_the_snapshot() {
 }
 
 #[test]
+fn a_snapshot_job_stores_off_the_writer_and_retention_waits_for_it() {
+    let d = Dir::new("snapjob");
+    let c = LogConfig {
+        retain_bytes: 3 * (64 << 10),
+        ..cfg(&d)
+    };
+    let mut log = Log::open(c.clone()).unwrap().log;
+    fill(&mut log, 1, 6001);
+    let segs = log.shared.segments.read().unwrap().len();
+    let job = log.snapshot_job(5000, b"s".to_vec()).unwrap();
+    // Not yet stored: retention may delete nothing.
+    log.enforce_retention().unwrap();
+    assert_eq!(log.shared.segments.read().unwrap().len(), segs);
+    // Run on another thread while the writer appends more.
+    let t = std::thread::spawn(move || job.run().unwrap());
+    fill(&mut log, 6001, 6101);
+    assert_eq!(t.join().unwrap(), b"s".to_vec());
+    log.enforce_retention().unwrap();
+    assert!(log.shared.segments.read().unwrap().len() < segs);
+    log.sync().unwrap();
+    drop(log);
+    let o = Log::open(c).unwrap();
+    assert_eq!(o.snapshot.as_ref().map(|s| s.0), Some(5000));
+    assert_eq!(replayed(&o.log, 5001).len(), 1100);
+}
+
+#[test]
+fn a_sync_job_makes_written_entries_durable_off_the_writer() {
+    let d = Dir::new("syncjob");
+    let mut log = Log::open(cfg(&d)).unwrap().log;
+    for i in 1..=500u64 {
+        let pos = log.append(i, &payload(i)).unwrap();
+        let s = log.next_seqno();
+        log.index_published(s, pos).unwrap();
+    }
+    let job = log.take_sync().unwrap();
+    // Written out (readable) before the fsync runs; not yet durable.
+    assert_eq!(log.reader().last_seqno(), 500);
+    assert_eq!(log.shared.synced_seqno.load(Ordering::Acquire), 0);
+    std::thread::spawn(move || job.run().unwrap())
+        .join()
+        .unwrap();
+    assert_eq!(log.shared.synced_seqno.load(Ordering::Acquire), 500);
+}
+
+#[test]
 fn readers_see_flushed_entries_while_the_writer_appends() {
     let d = Dir::new("concurrent");
     let mut log = Log::open(cfg(&d)).unwrap().log;

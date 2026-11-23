@@ -258,14 +258,15 @@ fn failover_and_rejoin(durability: Durability, tag: &str) {
         assert!(Instant::now() < deadline, "the rejoined node lags");
         std::thread::sleep(Duration::from_millis(5));
     }
-    // Followers held their acknowledgements for fsync in mode (b) only.
+    // Followers held their acknowledgements until the storage stage
+    // reported the entries: written in mode (a), fsynced in mode (b).
     let held: u64 = c
         .nodes
         .iter()
         .flatten()
         .map(|n| n.stats.repl_held.load(Ordering::Relaxed))
         .sum();
-    assert_eq!(held > 0, durability == Durability::Sync, "held {held}");
+    assert!(held > 0, "held {held} ({durability:?})");
     eprintln!(
         "failover: first ACCEPTED {:?} after stopping the leader",
         failover

@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAGIC: u64 = 0x5354_4154_534B_434B; // "KCKSTATS"
-pub const LAYOUT_VERSION: u64 = 13;
+pub const LAYOUT_VERSION: u64 = 14;
 pub const BUCKETS: usize = 64;
 
 /// log2 histogram: bucket `b` counts values in `[2^(b-1), 2^b)` ns (bucket 0: 0).
@@ -79,6 +79,12 @@ macro_rules! counters {
             pub append_rtt: Histogram,
             /// Leader: a SUBMIT proposed → applied (its commit wait).
             pub propose_to_apply: Histogram,
+            /// Storage, mode (a) in a cluster: writing a batch out (what
+            /// acknowledgements wait for).
+            pub store_write: Histogram,
+            /// Storage, mode (a) in a cluster: one batch, first read to
+            /// reported (appends, segment rolls, the write).
+            pub store_group: Histogram,
         }
 
         impl Shared {
@@ -87,7 +93,7 @@ macro_rules! counters {
                 vec![$((stringify!($name), self.$name.load(Ordering::Relaxed)),)*]
             }
 
-            pub fn histograms(&self) -> [(&'static str, &Histogram); 10] {
+            pub fn histograms(&self) -> [(&'static str, &Histogram); 12] {
                 [
                     ("ingress_to_core", &self.ingress_to_core),
                     ("core_batch", &self.core_batch),
@@ -99,6 +105,8 @@ macro_rules! counters {
                     ("peer_handling", &self.peer_handling),
                     ("append_rtt", &self.append_rtt),
                     ("propose_to_apply", &self.propose_to_apply),
+                    ("store_write", &self.store_write),
+                    ("store_group", &self.store_group),
                 ]
             }
         }

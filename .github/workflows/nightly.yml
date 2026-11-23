@@ -59,6 +59,9 @@ jobs:
             KRUSTY_PROC_SEED=$((base + s)) KRUSTY_PROC_SECS=20 \
               cargo test -q --release -p krusty-node --test processes -- --ignored --nocapture
           done
+          # Two nodes killed at once (mode (a) must keep what it acknowledged).
+          KRUSTY_PROC_SCENARIO=crash-pairs KRUSTY_PROC_SEED=$((base + 5)) KRUSTY_PROC_SECS=20 \
+            KRUSTY_PROC_RATE=3000 cargo test -q --release -p krusty-node --test processes -- --ignored --nocapture
           # Short runs whose traces TLC can replay (cost grows with length).
           for s in 3 4; do
             KRUSTY_PROC_SEED=$((base + s)) KRUSTY_PROC_SECS=10 KRUSTY_PROC_RATE=30 \

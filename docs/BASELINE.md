@@ -438,13 +438,100 @@ is the closest pair, not an equal one):
 | | Aeron Cluster | KrustyCast |
 |---|---|---|
 | No disk on the commit path | cluster and archive data on tmpfs | logs on tmpfs |
-| Disk, no fsync before commit | archive on disk, `file.sync.level=0` (writes on the commit path) | mode (a) on disk (storage off the commit path) |
+| Disk, no fsync before commit | archive on disk, `file.sync.level=0` (writes on the commit path) | mode (a) on disk: entries written before they are acknowledged since 2026-11-23 (before that, storage was off the commit path) |
 | fsync before commit | archive `file.sync.level=1` (fsync per recorded block) | mode (b): publish after the group's fsync, on two nodes |
 
-### Current results: one Rust load generator (2026-11-22)
+### Current results: matched durability (2026-11-23)
 
 The reference comparison. Everything after this section records how it
 was reached; where an earlier number disagrees, this one stands.
+
+**What changed.** Until 2026-11-23, KrustyCast's mode (a) counted an
+entry as persisted, and acknowledged it, once it was handed to the
+storage stage's ring. A killed process loses that ring, and two kills
+could lose committed messages (spec/RAFT-VERIFICATION.md). Now an entry
+counts once the storage stage has written it to the log file, the page
+cache, which outlives a process crash. Fsyncs and snapshots run on a
+thread of their own. Aeron's followers likewise report the position the
+archive has recorded, so the middle row of the durability table is now a
+matched pair. The numbers below replace those of 2026-11-22, which
+measured the weaker guarantee.
+
+**Method.** As in "one Rust load generator" below, unchanged (`sweep20.sh`
+for KrustyCast; Aeron's runs are sweep19's, since its code did not
+change). Two changes in KrustyCast besides the write before
+acknowledging:
+- In spin mode, a stage on the storage stage's CPU sleeps when idle. A
+  follower's idle ingress and egress share CPU 10 or 11 with its storage
+  stage, and acknowledgements now wait for that stage.
+- The fsync thread is started at most once per millisecond, since waking
+  it costs the storage thread a few µs.
+
+![Latency distributions on tmpfs](img/e3-latency-tmpfs.svg)
+
+![Latency distributions on disk](img/e3-latency-disk.svg)
+
+µs, from each message's scheduled send time (Aeron's rows as in the
+2026-11-22 tables below):
+
+**Logs on tmpfs (Aeron on tmpfs)**
+
+| Offered | System | min | p10 | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | p99.999 | max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100k | Aeron | 19.7 | 36.6 | 39.8 | 46.5 | 51.1 | 59.6 | 71.2 | 77.8 | 1,047 | 3,181 | 3,410 |
+| 100k | KrustyCast | 20.5 | 36.2 | 38.2 | 40.7 | 47.3 | 49.2 | 65.8 | 78.7 | 96.8 | 253 | 488 |
+| 300k | Aeron | 27.9 | 41.0 | 46.1 | 50.5 | 57.5 | 65.7 | 77.5 | 84.6 | 2,226 | 3,541 | 3,809 |
+| 300k | KrustyCast | 35.9 | 46.6 | 50.3 | 52.9 | 56.9 | 60.4 | 68.4 | 74.6 | 89.7 | 122 | 207 |
+| 500k | Aeron | 29.8 | 45.9 | 53.1 | 58.9 | 66.6 | 73.2 | 83.9 | 854 | 4,096 | 4,653 | 4,714 |
+| 500k | KrustyCast | 41.4 | 57.4 | 61.9 | 65.4 | 70.9 | 76.8 | 91.0 | 105 | 124 | 142 | 219 |
+| 750k | Aeron | fell behind (about 562k msg/s) | | | | | | | | | | |
+| 750k | KrustyCast | 44.3 | 92.5 | 103 | 114 | 133 | 168 | 238 | 287 | 326 | 394 | 498 |
+
+**On disk (Aeron archive sync level 0; KrustyCast mode (a))**
+
+| Offered | System | min | p10 | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | p99.999 | max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100k | Aeron | 26.2 | 37.3 | 41.2 | 47.1 | 52.3 | 61.1 | 76.7 | 97.4 | 9,150 | 10.9 ms | 11.3 ms |
+| 100k | KrustyCast | 27.7 | 37.7 | 40.4 | 47.0 | 47.7 | 50.5 | 58.0 | 80.1 | 2,968 | 4,927 | 5,431 |
+| 300k | Aeron | 27.9 | 41.2 | 46.6 | 51.0 | 58.1 | 66.0 | 79.8 | 7,250 | 10.4 ms | 11.5 ms | 11.7 ms |
+| 300k | KrustyCast | 36.0 | 48.9 | 52.5 | 55.6 | 59.9 | 64.9 | 78.4 | 3,031 | 6,959 | 9,232 | 9,708 |
+| 500k | Aeron | 30.3 | 47.6 | 55.5 | 61.6 | 69.4 | 76.3 | 92.5 | 9,249 | 11.5 ms | 11.9 ms | 11.9 ms |
+| 500k | KrustyCast | 43.8 | 65.3 | 73.0 | 80.0 | 91.9 | 106 | 140 | 4,301 | 8,765 | 10.5 ms | 11.0 ms |
+| 750k | Aeron | fell behind (about 576k msg/s) | | | | | | | | | | |
+| 750k | KrustyCast | 67.6 | 197 | 242 | 277 | 1,250 | 2,472 | 6,578 | 8,430 | 9,535 | 9,896 | 10.1 ms |
+
+**Reading them.**
+- **The body.** With the same durability, the medians are close. On tmpfs
+  KrustyCast is 6 µs lower at 100k, and 2–7 µs higher at 300k and 500k.
+  Writing before acknowledging costs it 6–14 µs at p50 on tmpfs, and
+  12–31 µs on disk: a hop to the storage thread and a write, on the
+  leader and on the followers.
+- **The tail.** On tmpfs it is still far shorter. KrustyCast's p99.9 is
+  75–105 µs through 500k (Aeron's 78–854 µs), and its maximum 207–488 µs
+  (Aeron's 3.4–4.7 ms, its cluster JVMs' safepoints). On disk both reach
+  milliseconds. KrustyCast's p99.9 is 3.0–4.3 ms from 300k (Aeron's
+  7.3–9.2 ms), and its maximum 5–11 ms (Aeron's 11–12 ms).
+- **Where KrustyCast's disk tail comes from.** The storage stage's write
+  (`store_write`) waits up to 8 ms behind ext4 journal commits that other
+  writers' fsyncs force, while the fsyncs themselves take up to 33 ms.
+  Segments are preallocated with `fallocate` (unwritten extents), so every
+  fsync converts extents and commits the journal. Zero-filled segments
+  should help: in a microbenchmark of three writers at 30 MB/s, the
+  p99.99 write fell from 104–144 to 25–34 µs. But zero-filling 256 MiB
+  segments costs write bandwidth; not yet tried.
+- **750k:** KrustyCast still sustains it on both storages, and Aeron falls
+  behind. On disk at 750k KrustyCast is near its limit (p75 1.25 ms).
+
+**Data.** `bench/results/e3-matched/` holds KrustyCast's distributions and
+`sweep20.sh`. Aeron's, and the node configurations, are in
+`bench/results/e3-rust-rig/`. `bench/results/plot.py` draws the figures
+from a directory holding both.
+
+### Results with one Rust load generator (2026-11-22, superseded: mode (a) acknowledged entries in memory)
+
+Superseded by "matched durability" above: KrustyCast acknowledged entries
+still in its storage ring, a weaker guarantee than Aeron's. The method
+described here still applies.
 
 **Method.** As in the layout above, with these differences:
 - **One load generator for both, in Rust, with no JVM on either client
@@ -470,10 +557,6 @@ was reached; where an earlier number disagrees, this one stands.
     (ec4f7df);
   - nothing reads its feed (Aeron's echo benchmark has none), and the
     feed's port is held so frames are dropped, not refused.
-
-![Latency distributions on tmpfs](img/e3-latency-tmpfs.svg)
-
-![Latency distributions on disk](img/e3-latency-disk.svg)
 
 µs, from each message's scheduled send time:
 

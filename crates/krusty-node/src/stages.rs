@@ -131,6 +131,21 @@ pub(crate) fn idle(how: Idle, empty_polls: &mut u32) {
     }
 }
 
+/// How a stage pinned to `core` waits when idle. With `spin`, a stage on
+/// the storage stage's CPU sleeps instead: in a cluster, acknowledgements
+/// wait for the storage stage's writes (mode a) or fsyncs (mode b), so it
+/// must get that CPU at once (a follower's idle ingress, egress and
+/// recovery stages share one with it in BASELINE E3's layout).
+pub(crate) fn stage_idle(cfg: &NodeConfig, core: Option<usize>) -> Idle {
+    let storage_core = cfg.storage.as_ref().and_then(|s| s.core);
+    match cfg.idle {
+        Idle::Spin if core.is_some() && core == storage_core && cfg.cluster.is_some() => {
+            Idle::Sleep { sleep_us: 50 }
+        }
+        i => i,
+    }
+}
+
 /// Timer slack for stage threads that sleep when idle, ns.
 const TIMER_SLACK_NS: libc::c_ulong = 1_000;
 
@@ -245,10 +260,10 @@ pub fn start(cfg: NodeConfig) -> io::Result<Node> {
             let (snap_tx, snap_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
             let (back_tx, back_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
             r.start.snapshots = Some((snap_tx, back_rx, st.snapshot_every.max(1)));
-            // Mode (b): Raft counts an entry only once the storage stage
-            // has fsynced it.
-            let synced = (st.durability == crate::Durability::Sync)
-                .then(|| Arc::new(std::sync::atomic::AtomicU64::new(0)));
+            // Raft counts an entry only once the storage stage has fsynced
+            // it (mode b) or written it out (mode a: what a process crash
+            // keeps; ring S does not survive one).
+            let synced = Some(Arc::new(std::sync::atomic::AtomicU64::new(0)));
             r.start.synced = synced.clone();
             let (log, positions) = (r.log, r.positions);
             let (c2, done, sdone, st2) = (
@@ -523,7 +538,7 @@ fn ingress(
     while !stop.load(Ordering::Acquire) {
         let n = rb.recv(&sock).unwrap_or_default();
         if n == 0 {
-            idle(cfg.idle, &mut empty);
+            idle(stage_idle(&cfg, cfg.cores[0]), &mut empty);
             continue;
         }
         empty = 0;
@@ -943,7 +958,7 @@ fn egress(
             if finished && input.is_empty() {
                 return;
             }
-            idle(cfg.idle, &mut empty);
+            idle(stage_idle(&cfg, cfg.cores[2]), &mut empty);
         } else {
             empty = 0;
         }

@@ -114,6 +114,91 @@ struct Shared {
     synced_seqno: AtomicU64,
     /// Lowest seqno still retained.
     earliest_seqno: AtomicU64,
+    /// Latest snapshot made durable by a [`SnapshotJob`] (0: none).
+    snapshot_done: AtomicU64,
+}
+
+/// An fsync of what a [`Log`] had written, run off the writer's thread
+/// ([`Log::take_sync`]).
+pub struct SyncJob {
+    files: Vec<Arc<File>>,
+    /// The directory, when files were renamed into it.
+    dir: Option<PathBuf>,
+    /// Highest seqno it makes durable.
+    seqno: u64,
+    shared: Arc<Shared>,
+}
+
+impl SyncJob {
+    pub fn run(self) -> io::Result<()> {
+        for f in &self.files {
+            f.sync_data()?;
+        }
+        if let Some(d) = &self.dir {
+            sync_dir(d)?;
+        }
+        self.shared
+            .synced_seqno
+            .fetch_max(self.seqno, Ordering::AcqRel);
+        Ok(())
+    }
+}
+
+/// A snapshot stored off the writer's thread ([`Log::snapshot_job`]).
+pub struct SnapshotJob {
+    sync: SyncJob,
+    /// Egress index files to sync (recovery rewrites the index only from
+    /// the latest snapshot on).
+    index: Vec<Arc<File>>,
+    dir: PathBuf,
+    log_index: u64,
+    /// The snapshot before it: kept, older ones removed.
+    previous: u64,
+    bytes: Vec<u8>,
+}
+
+impl SnapshotJob {
+    /// Returns the snapshot's buffer, for reuse.
+    pub fn run(self) -> io::Result<Vec<u8>> {
+        let shared = self.sync.shared.clone();
+        self.sync.run()?;
+        for f in &self.index {
+            f.sync_data()?;
+        }
+        persist_snapshot(&self.dir, self.log_index, &self.bytes, self.previous)?;
+        shared
+            .snapshot_done
+            .fetch_max(self.log_index, Ordering::AcqRel);
+        Ok(self.bytes)
+    }
+}
+
+/// Writes `snap-<log_index>.snap` atomically (temporary file, fsync,
+/// rename, directory fsync) and removes snapshots older than `previous`.
+fn persist_snapshot(dir: &Path, log_index: u64, bytes: &[u8], previous: u64) -> io::Result<()> {
+    let tmp = dir.join(name("snap", log_index, "tmp"));
+    let mut h = [0u8; 32];
+    h[0..8].copy_from_slice(&SNAP_MAGIC.to_le_bytes());
+    h[8..16].copy_from_slice(&log_index.to_le_bytes());
+    h[16..24].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+    h[24..28].copy_from_slice(&crc32c::crc32c(bytes).to_le_bytes());
+    let f = File::create(&tmp)?;
+    f.write_all_at(&h, 0)?;
+    f.write_all_at(bytes, 32)?;
+    f.sync_all()?;
+    fs::rename(&tmp, dir.join(name("snap", log_index, "snap")))?;
+    sync_dir(dir)?;
+    // Keep this one and the previous one.
+    for e in fs::read_dir(dir)? {
+        let e = e?;
+        let n = e.file_name().to_string_lossy().into_owned();
+        if let Some(i) = parse_name(&n, "snap", "snap")
+            && i < previous
+        {
+            fs::remove_file(e.path())?;
+        }
+    }
+    Ok(())
 }
 
 /// The writer. Lives on the storage thread.
@@ -645,6 +730,7 @@ impl Log {
             flushed_index: AtomicU64::new(last_index),
             flushed_seqno: AtomicU64::new(next_seqno - 1),
             synced_seqno: AtomicU64::new(next_seqno - 1),
+            snapshot_done: AtomicU64::new(0),
             earliest_seqno: AtomicU64::new(earliest_seqno),
         });
         let (cfg_dir, seg_bytes) = (cfg.dir.clone(), cfg.segment_bytes);
@@ -1046,41 +1132,73 @@ impl Log {
         Ok(())
     }
 
+    /// `flush`, then what an fsync must cover to make the entries written so
+    /// far durable, for another thread to run ([`SyncJob::run`]): the
+    /// writer goes on appending meanwhile. Durability mode (a) acknowledges
+    /// entries once written (the page cache outlives a process crash) and
+    /// fsyncs in the background; an fsync covers every write completed
+    /// before it starts.
+    pub fn take_sync(&mut self) -> io::Result<SyncJob> {
+        self.flush()?;
+        let mut files: Vec<Arc<File>> = self.unsynced.drain(..).collect();
+        files.push(self.active.clone());
+        let dir = std::mem::take(&mut self.dir_dirty).then(|| self.cfg.dir.clone());
+        Ok(SyncJob {
+            files,
+            dir,
+            seqno: self.next_seqno - 1,
+            shared: self.shared.clone(),
+        })
+    }
+
     /// Stores a snapshot of the core taken after `log_index` (which must be
     /// durable), atomically; keeps the previous one too.
     pub fn write_snapshot(&mut self, log_index: u64, bytes: &[u8]) -> io::Result<()> {
         assert!(log_index < self.next_index);
         self.sync()?;
-        let tmp = self.cfg.dir.join(name("snap", log_index, "tmp"));
-        let mut h = [0u8; 32];
-        h[0..8].copy_from_slice(&SNAP_MAGIC.to_le_bytes());
-        h[8..16].copy_from_slice(&log_index.to_le_bytes());
-        h[16..24].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
-        h[24..28].copy_from_slice(&crc32c::crc32c(bytes).to_le_bytes());
-        let f = File::create(&tmp)?;
-        f.write_all_at(&h, 0)?;
-        f.write_all_at(bytes, 32)?;
-        f.sync_all()?;
-        fs::rename(&tmp, self.cfg.dir.join(name("snap", log_index, "snap")))?;
-        sync_dir(&self.cfg.dir)?;
-        let previous = self.latest_snapshot;
+        persist_snapshot(&self.cfg.dir, log_index, bytes, self.latest_snapshot)?;
         self.latest_snapshot = log_index;
-        // Keep this one and the previous one.
-        for e in fs::read_dir(&self.cfg.dir)? {
-            let e = e?;
-            let n = e.file_name().to_string_lossy().into_owned();
-            if let Some(i) = parse_name(&n, "snap", "snap")
-                && i < previous
-            {
-                fs::remove_file(e.path())?;
-            }
-        }
         Ok(())
+    }
+
+    /// [`write_snapshot`](Self::write_snapshot), to run off the writer's
+    /// thread ([`SnapshotJob::run`]): it syncs the log written so far (all
+    /// of it up to `log_index`) and the egress index, then stores the
+    /// snapshot. Retention counts it once done ([`enforce_retention`](Self::enforce_retention)).
+    /// Jobs must run one at a time, in order.
+    pub fn snapshot_job(&mut self, log_index: u64, bytes: Vec<u8>) -> io::Result<SnapshotJob> {
+        assert!(log_index < self.next_index);
+        let sync = self.take_sync()?;
+        let last = self.next_seqno - 1;
+        let mut index = Vec::new();
+        if last > self.idx_synced {
+            for ix in self.shared.indexes.read().unwrap().iter() {
+                let end = ix.first_seqno + self.cfg.index_entries - 1;
+                if end > self.idx_synced && ix.first_seqno <= last {
+                    index.push(ix.file.clone());
+                }
+            }
+            self.idx_synced = last;
+        }
+        let previous = self
+            .latest_snapshot
+            .max(self.shared.snapshot_done.load(Ordering::Acquire));
+        Ok(SnapshotJob {
+            sync,
+            index,
+            dir: self.cfg.dir.clone(),
+            log_index,
+            previous,
+            bytes,
+        })
     }
 
     /// Deletes the oldest segments while the log exceeds its budget, never
     /// at or above the latest snapshot. Returns the earliest retained seqno.
     pub fn enforce_retention(&mut self) -> io::Result<u64> {
+        self.latest_snapshot = self
+            .latest_snapshot
+            .max(self.shared.snapshot_done.load(Ordering::Acquire));
         let mut deleted_below = None;
         {
             let mut segs = self.shared.segments.write().unwrap();

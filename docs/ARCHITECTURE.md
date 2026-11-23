@@ -235,7 +235,7 @@ list.
   the follower lost entries (a power loss in mode a): the leader lowers
   the match index and resends from the hint.
 - Heartbeat and election timeouts are tuned for the NFR-6 failover target.
-- Followers ack on receipt (mode a) or after fsync (mode b).
+- Followers ack once the entries are written out (mode a) or fsynced (mode b).
 - The commit index advances at quorum. Log index and egress seqno are
   different numbers: rejected entries consume a log index but no seqno.
 
@@ -252,11 +252,19 @@ As built (M3, `krusty-node/src/cluster.rs`):
   and heartbeats (and Mold), and answers clients. Followers answer
   NOT_LEADER with the leader's id. A node stopping does not end the stream
   (no END_OF_SESSION).
-- Mode (a): an entry handed to T-store counts as persisted, so followers
-  acknowledge on receipt. Mode (b): T-store reports how many entries it
-  has fsynced; only those count toward the leader's quorum, and a
-  follower holds each successful AppendReply until what it acknowledges is
-  synced (`repl_held`), so a committed entry is on a majority's disks.
+- Mode (a): T-store reports how many entries it has written to the log
+  file (the page cache, which outlives a process crash), and fsyncs in
+  the background on a thread of its own (`krusty-fsync`), so writes never
+  wait behind an fsync. Mode (b): T-store reports how many it has
+  fsynced. Only reported entries count toward the leader's quorum, and a
+  follower holds each successful AppendReply until what it acknowledges
+  is reported (`repl_held`). So a committed entry is in a majority's
+  page cache (a) or on a majority's disks (b).
+  - Until 2026-11-23, mode (a) counted an entry once it was in ring S. A
+    killed process loses ring S and the log's write buffer, so two kills
+    (or a kill, then the leader's, while the third node lagged) could lose
+    committed entries. `tests/processes.rs` (crash-pairs) lost published
+    messages in 2 of 3 seeds; after the fix, none in 5 or more.
   A held reply is dropped if its entries are truncated or the term moves
   on. Leader and followers fsync in parallel, each with group commit.
   The hard state goes to `raft.state` (two slots, CRC), fsynced, before

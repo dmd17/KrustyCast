@@ -10,7 +10,10 @@
 //!   20), KRUSTY_PROC_RATE (messages/s per publisher, default 300),
 //!   KRUSTY_PROC_DIR (keep configs, logs and traces here; default a
 //!   temporary directory, removed on success), KRUSTY_PROC_POWER=0 (no
-//!   power losses).
+//!   power losses), KRUSTY_PROC_SCENARIO=crash-pairs (instead of random
+//!   faults: pause one node, let the other two commit, kill both at once,
+//!   restart them; mode (a) lost committed entries this way until
+//!   2026-11-23, when entries still in ring S counted as persisted).
 //!
 //! A power loss (mode (a)) is a kill that also loses a tail of the log the
 //! node had not fsynced, then the `recovering` marker a new boot sets
@@ -565,6 +568,9 @@ fn processes_under_faults() {
     let secs: u64 = env("KRUSTY_PROC_SECS", 20);
     let rate: u64 = env("KRUSTY_PROC_RATE", 300);
     let power: bool = env("KRUSTY_PROC_POWER", 1u8) == 1;
+    // KRUSTY_PROC_SCENARIO=crash-pairs: only the scripted fault (below).
+    let crash_pairs = std::env::var("KRUSTY_PROC_SCENARIO").as_deref() == Ok("crash-pairs");
+    let (mut pair_step, mut pair_x) = (0u8, 0usize);
     let (dir, keep) = match std::env::var_os("KRUSTY_PROC_DIR") {
         Some(d) => (PathBuf::from(d), true),
         None => (
@@ -706,7 +712,44 @@ fn processes_under_faults() {
             p.check_alive();
         }
         // Faults.
-        if now < faults_end {
+        if now < faults_end && crash_pairs {
+            // Scripted: pause X; once the other two commit without it, kill
+            // both at once; restart them and resume X.
+            if now >= next_fault {
+                match pair_step {
+                    0 => {
+                        pair_x = rng.below(N as u64) as usize;
+                        procs[pair_x].pause();
+                        next_fault = now + Duration::from_millis(700);
+                    }
+                    1 => {
+                        for k in (0..N).filter(|&k| k != pair_x) {
+                            procs[k].kill();
+                        }
+                        injected += 1;
+                        next_fault = now + Duration::from_millis(100);
+                    }
+                    _ => {
+                        for k in (0..N).filter(|&k| k != pair_x) {
+                            procs[k].start();
+                        }
+                        procs[pair_x].resume();
+                        next_fault = now + Duration::from_millis(1500);
+                    }
+                }
+                pair_step = (pair_step + 1) % 3;
+            }
+        } else if crash_pairs && healed_at.is_none() {
+            if pair_step == 2 {
+                for k in (0..N).filter(|&k| k != pair_x) {
+                    procs[k].start();
+                }
+            }
+            if pair_step != 0 {
+                procs[pair_x].resume();
+            }
+            healed_at = Some(now);
+        } else if now < faults_end {
             if now >= next_fault && active.len() < 2 {
                 if let Some(u) = inject(&mut rng, &net, &mut procs, &mut down, power) {
                     injected += 1;

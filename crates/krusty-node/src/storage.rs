@@ -7,7 +7,13 @@
 //!
 //! Durability modes (PRD FR-8, single node; for a cluster see `cluster`):
 //! - **Async (a)**: egress does not wait; storage runs behind, off the
-//!   latency path. A crash can lose the last unsynced batch.
+//!   latency path. A crash can lose the last unsynced batch. In a cluster
+//!   (`written`), the storage stage writes each batch out (to the page
+//!   cache, which outlives a process crash) and reports how many entries
+//!   it has written; Raft counts and acknowledges only those, so killing a
+//!   node loses nothing it acknowledged. Fsyncs run on a thread of their
+//!   own (`krusty-fsync`), so writes never wait behind one (2026-11-23,
+//!   spec/RAFT-VERIFICATION.md: before, entries still in ring S counted).
 //! - **Sync (b)**: the core routes egress records (frames, feedback)
 //!   through ring S too, and the storage stage forwards a batch to egress
 //!   only after its fsync. Nothing is published or acknowledged before it is
@@ -157,6 +163,115 @@ fn fatal(what: &str, e: io::Error) -> ! {
     std::process::abort();
 }
 
+/// Mode (a) in a cluster: the most often the storage stage starts an fsync.
+/// Waking the fsync thread costs the storage stage a few µs, and in mode
+/// (a) an fsync only bounds what a power loss can take (the cautious
+/// restart recovers the rest).
+const SYNC_EVERY_NS: u64 = 1_000_000;
+
+enum Job {
+    Sync(krusty_log::SyncJob),
+    Snapshot(krusty_log::SnapshotJob),
+}
+
+/// Mode (a) in a cluster: fsyncs and snapshots on a thread of their own
+/// (`krusty-fsync`), one job at a time, so the storage stage's writes (which
+/// acknowledgements wait for) never wait behind a device flush.
+struct Background {
+    tx: std::sync::mpsc::SyncSender<Job>,
+    thread: std::thread::JoinHandle<()>,
+    busy: Arc<AtomicBool>,
+    /// Snapshots stored by the thread; retention runs when it moves.
+    snaps_done: Arc<AtomicU64>,
+    snaps_seen: u64,
+    synced_at: u64,
+    /// Written since the last fsync started.
+    written: bool,
+    /// A snapshot waiting for the thread.
+    snapshot: Option<(u64, Vec<u8>)>,
+}
+
+impl Background {
+    fn start(stats: Arc<Metrics>, returned: SyncSender<Vec<u8>>) -> Background {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Job>(1);
+        let busy = Arc::new(AtomicBool::new(false));
+        let snaps_done = Arc::new(AtomicU64::new(0));
+        let (b, d) = (busy.clone(), snaps_done.clone());
+        let thread = std::thread::Builder::new()
+            .name("krusty-fsync".into())
+            .spawn(move || {
+                for job in rx {
+                    let t0 = crate::metrics::mono_ns();
+                    match job {
+                        Job::Sync(j) => j.run().unwrap_or_else(|e| fatal("sync", e)),
+                        Job::Snapshot(j) => {
+                            let bytes = j.run().unwrap_or_else(|e| fatal("snapshot", e));
+                            let _ = returned.try_send(bytes);
+                            stats.snapshots.fetch_add(1, Ordering::Relaxed);
+                            d.fetch_add(1, Ordering::Release);
+                        }
+                    }
+                    stats.store_sync.record(crate::metrics::mono_ns() - t0);
+                    b.store(false, Ordering::Release);
+                }
+            })
+            .expect("fsync thread");
+        Background {
+            tx,
+            thread,
+            busy,
+            snaps_done,
+            snaps_seen: 0,
+            synced_at: 0,
+            written: false,
+            snapshot: None,
+        }
+    }
+
+    /// Hands the thread a pending snapshot, or an fsync of what was written
+    /// (at most every SYNC_EVERY_NS; the idle loop polls too, so the last
+    /// batch gets one), if it is free; runs retention after a snapshot it
+    /// stored.
+    fn poll(&mut self, log: &mut Log) {
+        let done = self.snaps_done.load(Ordering::Acquire);
+        if done != self.snaps_seen {
+            self.snaps_seen = done;
+            log.enforce_retention()
+                .unwrap_or_else(|e| fatal("retention", e));
+        }
+        if self.busy.load(Ordering::Acquire) {
+            return;
+        }
+        let now = crate::metrics::mono_ns();
+        let job = if let Some((i, bytes)) = self.snapshot.take() {
+            Job::Snapshot(
+                log.snapshot_job(i, bytes)
+                    .unwrap_or_else(|e| fatal("snapshot", e)),
+            )
+        } else if self.written && now >= self.synced_at + SYNC_EVERY_NS {
+            Job::Sync(log.take_sync().unwrap_or_else(|e| fatal("sync", e)))
+        } else {
+            return;
+        };
+        self.written = false;
+        self.synced_at = now;
+        self.busy.store(true, Ordering::Release);
+        self.tx.send(job).expect("fsync thread");
+    }
+
+    /// Stores a waiting snapshot and ends the thread.
+    fn finish(mut self, log: &mut Log) {
+        if let Some((i, bytes)) = self.snapshot.take() {
+            let job = log
+                .snapshot_job(i, bytes)
+                .unwrap_or_else(|e| fatal("snapshot", e));
+            self.tx.send(Job::Snapshot(job)).expect("fsync thread");
+        }
+        drop(self.tx);
+        let _ = self.thread.join();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn store_stage(
     cfg: NodeConfig,
@@ -171,10 +286,20 @@ pub(crate) fn store_stage(
     stats: Arc<Metrics>,
     synced: Option<Arc<AtomicU64>>,
 ) {
-    crate::stages::pin(cfg.storage.as_ref().and_then(|s| s.core));
-    // Entries (S_ENTRY records) received; after each fsync, `synced` (when
-    // given: replication in mode b) says how many of them are durable.
+    // Entries (S_ENTRY records) received; `synced` (when given: a cluster)
+    // says how many of them count as persisted: written out in mode (a),
+    // fsynced in mode (b).
     let mut entries = 0u64;
+    let background = cfg
+        .storage
+        .as_ref()
+        .is_some_and(|s| s.durability == Durability::Async)
+        && synced.is_some();
+    // Mode (a) in a cluster: fsyncs and snapshots on their own thread.
+    let mut bg = background.then(|| Background::start(stats.clone(), returned.clone()));
+    // Pinned only now: the fsync thread keeps the process's CPUs (the
+    // housekeeping ones), not this stage's.
+    crate::stages::pin(cfg.storage.as_ref().and_then(|s| s.core));
     // Staged egress records: kind u32 | len u32 | bytes, back to back.
     let mut pending: Vec<u8> = Vec::with_capacity(PENDING_BYTES);
     let mut empty = 0;
@@ -187,6 +312,7 @@ pub(crate) fn store_stage(
         let mut snapshot_at: Option<u64> = None;
         pending.clear();
         let mut n = 0;
+        let mut group_start = 0u64;
         // Group commit: drain what is queued (bounded) before one fsync.
         // Stop at a snapshot (one per group: its bytes come in order on the
         // channel) and before the staged egress records (mode b) could
@@ -194,6 +320,9 @@ pub(crate) fn store_stage(
         let chunk = cfg.batch * 4;
         let chunk_bytes = chunk * (cfg.mtu + 64);
         loop {
+            if group_start == 0 && !input.is_empty() {
+                group_start = crate::metrics::mono_ns();
+            }
             let k = input.read(chunk, |kind, rec| match kind {
                 S_ENTRY => {
                     let (li, term, ts) = (u64_at(rec, 0), u64_at(rec, 8), u64_at(rec, 16));
@@ -249,15 +378,39 @@ pub(crate) fn store_stage(
         }
         if n == 0 {
             if finished && input.is_empty() {
+                if let Some(bg) = bg.take() {
+                    bg.finish(&mut log);
+                }
                 log.sync().unwrap_or_else(|e| fatal("final sync", e));
                 store_done.store(true, Ordering::Release);
                 return;
+            }
+            // Idle: the last batch written gets its fsync too.
+            if let Some(bg) = &mut bg {
+                bg.poll(&mut log);
             }
             crate::stages::idle(cfg.idle, &mut empty);
             continue;
         }
         empty = 0;
-        if appended > 0 || !pending.is_empty() {
+        if background && appended > 0 {
+            // Written out, so it survives a process crash: Raft may count it.
+            let t0 = crate::metrics::mono_ns();
+            log.flush().unwrap_or_else(|e| fatal("write", e));
+            let t1 = crate::metrics::mono_ns();
+            stats.store_write.record(t1 - t0);
+            stats
+                .store_group
+                .record(t1 - if group_start == 0 { t0 } else { group_start });
+            stats.stored.fetch_add(appended, Ordering::Relaxed);
+            if let Some(s) = &synced {
+                s.store(entries, Ordering::Release);
+            }
+            if let Some(bg) = &mut bg {
+                bg.written = true;
+                bg.poll(&mut log);
+            }
+        } else if appended > 0 || !pending.is_empty() {
             let t0 = crate::metrics::mono_ns();
             log.sync_entries().unwrap_or_else(|e| fatal("sync", e));
             stats.store_sync.record(crate::metrics::mono_ns() - t0);
@@ -276,7 +429,14 @@ pub(crate) fn store_stage(
             at += 8 + len;
         }
         egress.publish();
-        if let Some(i) = snapshot_at
+        if let Some(bg) = &mut bg {
+            if let Some(i) = snapshot_at
+                && let Ok(bytes) = snapshots.recv()
+            {
+                bg.snapshot = Some((i, bytes));
+                bg.poll(&mut log);
+            }
+        } else if let Some(i) = snapshot_at
             && let Ok(bytes) = snapshots.recv()
         {
             log.write_snapshot(i, &bytes)

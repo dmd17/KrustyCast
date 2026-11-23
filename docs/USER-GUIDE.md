@@ -54,9 +54,10 @@ any node can take over (G1, G7). Failover takes about 70 ms at p50
 
 **Durability modes.**
 - *Mode (a)*: a message is acknowledged and published once a majority
-  *holds* it; fsync happens off the latency path. It survives any minority
-  of nodes failing, including losing power, but not every node losing
-  power at once. A node back from a power loss (a new boot) first catches
+  has *written* it to its log file (the OS page cache); fsync happens in
+  the background, off the latency path. It survives any number of node
+  processes crashing, and any minority of nodes losing power, but not
+  every node losing power at once. A node back from a power loss (a new boot) first catches
   up with the leader and does not vote until it has (`raft_recovering`;
   §7.5).
 - *Mode (b)*: acknowledged and published only after a majority has
@@ -420,9 +421,9 @@ On the leader's instruction every node, at the same log entry:
 
 ### 7.5 After a power loss (mode a)
 
-In mode (a), a node acknowledges entries before they reach its disk. A
-node that comes back from a power loss (it sees a new kernel boot id) may
-have lost some of them, so it starts **recovering**:
+In mode (a), a node acknowledges entries once written, before they reach
+its disk. A node that comes back from a power loss (it sees a new kernel
+boot id) may have lost some of them, so it starts **recovering**:
 - it takes entries from the leader as usual, but votes in no election and
   starts none, until it holds the leader's whole log;
 - it then votes again, by itself, usually within milliseconds;
@@ -458,6 +459,7 @@ Mode (b) never recovers this way: it acknowledges only what is fsynced.
 | `recovered_from_disk` | `krusty-stat` | Consumers recovering old data. |
 | `mold_lost` | `krusty-stat` | The Mold adapter fell behind the history. |
 | `raft_recovering`, `raft_recoveries` | `krusty-stat` | 1 while the node recovers from a power loss (mode a) and does not vote; how often it started to (§7.5). Stuck at 1 on every node: they all lost power, see §7.5. |
+| `store_write`, `store_group` (histograms) | `krusty-stat` | Mode (a) in a cluster: how long the storage stage takes to write a batch out; acknowledgements wait for it. Milliseconds at the tail: the disk's journal is stalling writes (§1, durability modes). |
 | `raft_pre_votes`, `raft_elections`, `raft_quorum_lost` | `krusty-stat` | Elections this node started, and step-downs as leader because a majority went quiet. Rising under steady load: some node stopped answering (look at its `cluster_loop_max_ns`). |
 | `resends_filtered` | `krusty-stat` | Resends the leader dropped because the original is still being committed. High: commits are slower than clients' retry interval (mode b on slow disks, overload). |
 | `resends_answered` | `krusty-stat` | Resends of messages already decided, answered by the leader from its state without logging them again. High: outcomes reach clients later than their retry interval. |
