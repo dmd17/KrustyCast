@@ -78,11 +78,28 @@ recovery rule, selected by `Rule`:
   case.
 - `"last"`: the design. Expected to hold.
 
-`RaftKCRecover-{none,any,last}.cfg` use 3 servers, 2 terms, logs of 2,
-one power loss and depth 17 (the depth of the original counterexample).
-They were started 2026-11-22; results to be recorded here. If `"last"`
-holds, the same check with a third term (stale leaders) follows, then a
-deeper random simulation.
+`RaftKCRecover-{none,any,last}.cfg` use 3 servers, 2 terms, logs of 1
+entry (enough for both counterexamples), one power loss, and depth 17.
+Results (2026-11-23):
+
+| Rule | Result |
+|---|---|
+| `"none"` | LeaderCompleteness violated (5.8 M states, 7 min) |
+| `"any"` | LeaderCompleteness violated (14 M states, 21 min) |
+| `"last"` | **No violation: exhaustive to depth 17, 15.3 M states, 32 min** |
+
+The `"any"` counterexample is the stale-acknowledgement case:
+1. The no-op commits on s2 and s3, and s3 loses power without it.
+2. s3 leaves recovery on an Append from s2 that matched only up to index
+   0, while s2's log ran to 1.
+3. s3 then votes for s1, whose log is empty, and s1 leads without the
+   committed entry.
+
+Under `"last"`, s3 must hold s2's whole log before voting again.
+
+A first attempt with logs of 2 entries ran 40 minutes past 23 M states
+without finishing; logs of 1 is what completes. Still to do: a third term
+(stale leaders) and a deeper random simulation of `"last"`.
 
 **Implementation, once the model holds.**
 - *krusty-raft:* the `last` field on Append (wire); a `recovering` state
@@ -97,6 +114,66 @@ deeper random simulation.
   power-loss configurations to the checked set.
 - *Docs:* PRD G3 stands as written once this ships. ARCHITECTURE §8.2 and
   the user guide describe recovering nodes and the override.
+
+## Against published specifications (2026-11-23)
+
+Three published TLA+ specifications, compared with RaftKC:
+- Ongaro's `raft.tla` (ongardie/raft.tla);
+- etcd-io/raft's `etcdraft.tla`, trace-validated against its Go code;
+- CCF's `ccfraft.tla`, release 6.0.0, trace-validated against its C++.
+
+CCF's main branch has since moved to a Lean model of its consensus protocol
+(`lean/consensus`). Its safety theorems (election safety, comparable
+committed logs) are proved for unbounded executions, and a replayer checks
+traces of the C++ code against the model. That is the end state this plan
+describes for step 1.2 and route B. It is a worked example in the tool we
+already use for `krusty-core`.
+
+| | raft.tla | etcdraft.tla | ccfraft.tla (6.0.0) | RaftKC |
+|---|---|---|---|---|
+| Entries per Append | 1 | a range | a range | a range (after any prefix) |
+| Leader's no-op on election | no | yes | signatures instead | yes |
+| Follower matching at its commit index | no | no | no | yes (code's shortcut) |
+| Crash and restart | log kept | reverts to durable state | none | log kept; power loss in RaftKCPower / RaftKCRecover |
+| Pre-vote | no | no | no | no (Timeout covers it) |
+| Check-quorum, step-down | no | no | yes | yes (StepDown) |
+| Leadership transfer | no | no | ProposeVote | no (Timeout covers it) |
+| Membership changes | no | joint, learners | yes | not implemented |
+| Snapshots | no | yes | yes | not implemented |
+| Liveness / fairness | no | no | Fairness defined | no |
+
+**Invariants RaftKC now checks from these** (`RaftKC.tla`; all hold on the
+CI configuration, 176 k states):
+- from etcd: `QuorumLogInv` (every quorum holds what any node has
+  committed) and `MoreUpToDateCorrectInv` (a log at least as up to date as
+  another holds what the other has committed);
+- from CCF: `CandidateTermNotInLogInv`, `MonoTermInv`,
+  `NeverCommitEntryPrevTermsProp` (a leader commits only entries of its
+  own term), `MonotonicMatchIndexProp` and `CommittedLogAppendOnlyProp`.
+  The last two exempt restarts, which CCF does not model.
+
+`CommittedAppendOnly` restates CCF's refinement to its abstract
+replicated log (`abs.tla`): one committed log that only grows. In RaftKC
+it holds by construction of the ghost. The substance is
+`CommittedStable`, which RaftKC already checked.
+
+**Refinement to `raft.tla` is not attempted.** It would need an
+intermediate specification:
+- `raft.tla` takes several atomic steps for what RaftKC does in one
+  Append: it raises the term, removes one conflicting entry per step,
+  appends one entry per step, and replies in yet another step;
+- it also has state RaftKC lacks (`nextIndex`, `votesResponded`,
+  `voterLog`, messages as a bag).
+
+The safety properties are compared directly instead, above.
+
+**Do the new properties catch bugs?** Removing the quorum check from
+commit is caught by `QuorumLogInv` at once (1,185 states). Removing the
+rule that a leader commits only entries of its own term is *not* caught
+within 20 minutes on the CI bounds (2 terms, depth 15, 2.9 M states): the
+scenario needs a third term and an Append range that stops short of the
+new leader's no-op. So `NeverCommitEntryPrevTermsProp` is not yet shown to
+catch anything; that check belongs with the three-term configuration.
 
 ## The plan
 

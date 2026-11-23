@@ -308,6 +308,66 @@ LeaderAppendOnly ==
             => /\ Len(log'[s]) >= Len(log[s])
                /\ SubSeq(log'[s], 1, Len(log[s])) = log[s]]_vars
 
+\* From the published specs (spec/RAFT-VERIFICATION.md, 2026-11-23): the
+\* invariants etcd-io/raft's etcdraft.tla and CCF's ccfraft.tla (6.0.0) check
+\* that RaftKC did not, restated for RaftKC (no reconfiguration; Restart
+\* resets a node's commit and match indexes, so the properties about those
+\* exempt it).
+IsPrefix(a, b) == Len(a) <= Len(b) /\ SubSeq(b, 1, Len(a)) = a
+Committed(s) == SubSeq(log[s], 1, Min(commitIndex[s], Len(log[s])))
+
+\* etcd QuorumLogInv: every quorum holds what any node has committed.
+QuorumLogInv ==
+    \A s \in Servers : \A Q \in SUBSET Servers :
+        Quorum(Q) => \E t \in Q : IsPrefix(Committed(s), log[t])
+
+\* etcd MoreUpToDateCorrectInv: a log at least as up to date as another
+\* (Raft's vote rule) holds what the other has committed.
+MoreUpToDateCorrectInv ==
+    \A s, t \in Servers :
+        (\/ LastTerm(log[s]) > LastTerm(log[t])
+         \/ LastTerm(log[s]) = LastTerm(log[t]) /\ Len(log[s]) >= Len(log[t]))
+        => IsPrefix(Committed(t), log[s])
+
+\* CCF CandidateTermNotInLogInv: a candidate holding a quorum of votes for its
+\* term finds no entry of that term anywhere (only its term's leader makes
+\* them).
+CandidateTermNotInLogInv ==
+    \A s \in Servers :
+        (role[s] = "candidate" /\ Quorum(votes[s])) =>
+            \A t \in Servers : \A n \in 1..Len(log[t]) : log[t][n].term # currentTerm[s]
+
+\* CCF MonoTermInv: no message carries a term above its sender's.
+MonoTermInv == \A m \in msgs : currentTerm[m.from] >= m.term
+
+\* CCF NeverCommitEntryPrevTermsProp: a leader advances its commit index only
+\* to an entry of its own term (Raft's Figure 8 rule).
+NeverCommitEntryPrevTermsProp ==
+    [][\A s \in Servers :
+        (role[s] = "leader" /\ role'[s] = "leader" /\ commitIndex'[s] > commitIndex[s])
+            => log'[s][commitIndex'[s]].term = currentTerm'[s]]_vars
+
+\* CCF MonotonicMatchIndexProp: a leader's match indexes only grow, except
+\* when reset to zero (becoming leader, or a restart).
+MonotonicMatchIndexProp ==
+    [][\A s \in Servers :
+        matchIndex'[s] # [t \in Servers |-> 0] =>
+            \A t \in Servers : matchIndex'[s][t] >= matchIndex[s][t]]_vars
+
+\* CCF CommittedLogAppendOnlyProp: what a node has committed only grows,
+\* except across a restart (which forgets the commit index, not the log).
+CommittedLogAppendOnlyProp ==
+    [][\A s \in Servers :
+        commitIndex'[s] >= commitIndex[s] => IsPrefix(Committed(s), Committed(s)')]_vars
+
+\* The abstract replicated log (CCF's abs.tla, RefinementToAbsProp,
+\* restated): there is one committed log, `committed`, and it only grows. A
+\* node's own committed prefix may shrink across a restart (it forgets its
+\* commit index and relearns it), but CommittedStable keeps it a prefix of
+\* this one. Here the ghost is only ever extended (RecordCommits), so this
+\* holds by construction: the substance of the refinement is CommittedStable.
+CommittedAppendOnly == [][IsPrefix(committed, committed')]_vars
+
 TypeOK ==
     /\ \A s \in Servers : Len(log[s]) <= MaxLog /\ commitIndex[s] <= Len(log[s])
 
