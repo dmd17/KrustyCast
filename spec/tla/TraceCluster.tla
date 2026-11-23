@@ -38,7 +38,9 @@ Min2(a, b) == IF a < b THEN a ELSE b
 \* from scratch otherwise (after a crash).
 RECURSIVE SlowSt(_)
 SlowSt(j) == IF j = 0 THEN Core0 ELSE CoreStep(SlowSt(j - 1), C[j].m)
-TraceSt(j) == IF j = applied[N] + 1 THEN CoreStep(core, C[j].m) ELSE SlowSt(j)
+TraceSt(j) == IF j = applied[N] + 1 THEN CoreStep(core, C[j].m)
+              ELSE IF j = applied[N] THEN core
+              ELSE SlowSt(j)
 
 traceVars == <<vars, l, k, core>>
 
@@ -87,10 +89,14 @@ Do(a) ==
             /\ UNCHANGED <<term, lead, log, C, commit, shell, toClient, clients, faults, core>>
       [] a = "receive" ->
             /\ Receive(X)
-            /\ CASE E.res = "proposed" ->
+            /\ CASE E.res = "answered" ->
+                      \* from the core: nothing logged, the stored outcome sent
+                      lead[N] /\ log' = log
+                      /\ \E y \in toClient' : toClient' = {y} /\ y.out = E.out
+                 [] E.res = "proposed" ->
                       lead[N] /\ Len(log'[N]) = Len(log[N]) + 1 /\ Len(log'[N]) = E.i
-                 [] E.res = "filtered" -> lead[N] /\ log' = log
-                 [] E.res = "notLeader" -> ~lead[N] /\ log' = log
+                 [] E.res = "filtered" -> lead[N] /\ log' = log /\ toClient' = {}
+                 [] E.res = "notLeader" -> ~lead[N] /\ log' = log /\ toClient' = {}
             /\ UNCHANGED core
       [] a = "apply" ->
             /\ Apply(N)

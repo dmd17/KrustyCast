@@ -657,6 +657,29 @@ impl Shell {
             seqno: s.client_seqno,
         };
         if self.raft.role() == Role::Leader && self.raft.transferring().is_none() {
+            // A resend of a message already decided (applied, so committed):
+            // answer from the core, do not log it again. A client retrying
+            // faster than its outcome comes back otherwise logged a copy per
+            // retry that crossed it (24 per message on a CI runner after
+            // batching; Cluster.tla: at most 2 copies with this, more than 3
+            // without).
+            if let Some(outcome) = self
+                .core
+                .decided(s.client_id, s.incarnation, s.client_seqno)
+            {
+                self.stats.resends_answered.fetch_add(1, Ordering::Relaxed);
+                let f = Feedback {
+                    client_id: s.client_id,
+                    incarnation: s.incarnation,
+                    client_seqno: s.client_seqno,
+                    outcome,
+                };
+                send_feedback(&mut self.out, &mut self.fb, src, &f);
+                if let Some(t) = &mut self.trace {
+                    t.answered(m(), trace::sent_of(&f));
+                }
+                return;
+            }
             let key = (s.client_id, s.incarnation, s.client_seqno);
             let term = self.raft.term();
             if let Some(&(index, t)) = self.proposed.get(&key)
@@ -788,15 +811,7 @@ impl Shell {
                     if let (Some(f), Some(addr)) = (e.reply, mine) {
                         send_feedback(&mut self.out, &mut self.fb, addr, &f);
                         replies += 1;
-                        sent = match f.outcome {
-                            Outcome::Accepted { global_seqno } => {
-                                trace::Sent::Accepted(global_seqno)
-                            }
-                            Outcome::Nak => trace::Sent::Nak {
-                                expect: f.client_seqno,
-                            },
-                            _ => trace::Sent::Other,
-                        };
+                        sent = trace::sent_of(&f);
                     }
                 }
             }

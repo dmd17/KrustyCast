@@ -42,6 +42,8 @@ CONSTANTS
     MaxCrash,       \* node crashes, in all
     MaxCopies,      \* the CopiesBounded invariant's bound
     \* Deliberate bugs, for mutation checks (all FALSE in the real model):
+    NoDecidedAnswer,      \* resends of decided messages are logged again (the
+                          \* code before 2026-11-23), not answered from the core
     NoFilter,             \* every resend is proposed again
     FilterIgnoresApplied, \* drop resends even after the entry was applied
     FilterIgnoresTerm,    \* use a filter entry from an earlier term
@@ -238,7 +240,14 @@ Receive(x) ==
            m == x.m
            i == Len(log[n]) + 1
            p == sessf[n][m.c]
-       IN IF lead[n] /\ ~Filtered(n, m) /\ Len(log[n]) < MaxLog
+           core == St(applied[n])
+       IN IF lead[n] /\ ~NoDecidedAnswer /\ m.seq < core.nx[m.c]
+          THEN \* Already decided in this node's core (applied, so committed):
+               \* answer with the stored outcome, log nothing (2026-11-23).
+               /\ toClient' = toClient \cup
+                     {[c |-> m.c, seq |-> m.seq, about |-> m, out |-> core.res[m.c][m.seq]]}
+               /\ UNCHANGED <<term, lead, log, C, commit, shell, clients, faults>>
+          ELSE IF lead[n] /\ ~Filtered(n, m) /\ Len(log[n]) < MaxLog
           THEN /\ log' = [log EXCEPT ![n] = Append(@, [t |-> term[n], m |-> m])]
                /\ pending' = [pending EXCEPT ![n] = Append(@, [i |-> i, t |-> term[n], c |-> m.c])]
                /\ proposed' = [proposed EXCEPT ![n][m] = [i |-> i, t |-> term[n]]]

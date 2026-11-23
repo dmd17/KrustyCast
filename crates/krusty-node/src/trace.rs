@@ -58,6 +58,27 @@ fn value(v: &Value) -> String {
     }
 }
 
+fn out(sent: Sent) -> String {
+    match sent {
+        Sent::Nothing => "[k |-> \"none\"]".to_string(),
+        Sent::Accepted(g) => format!("[k |-> \"acc\", g |-> {g}]"),
+        Sent::Nak { expect } => format!("[k |-> \"nak\", expect |-> {expect}]"),
+        Sent::Other => "[k |-> \"other\"]".to_string(),
+    }
+}
+
+/// The outcome sent, as the trace has it.
+pub(crate) fn sent_of(f: &krusty_wire::feedback::Feedback) -> Sent {
+    use krusty_wire::feedback::Outcome;
+    match f.outcome {
+        Outcome::Accepted { global_seqno } => Sent::Accepted(global_seqno),
+        Outcome::Nak => Sent::Nak {
+            expect: f.client_seqno,
+        },
+        _ => Sent::Other,
+    }
+}
+
 impl Tracer {
     /// `applied`: the index the core starts from (its snapshot's).
     pub fn open(path: &Path, applied: u64) -> io::Result<Tracer> {
@@ -148,13 +169,17 @@ impl Tracer {
         ));
     }
 
+    /// A resend of a decided message, answered from the core (not logged).
+    pub fn answered(&mut self, m: Value, sent: Sent) {
+        let out = out(sent);
+        self.line(format!(
+            "[k |-> \"submit\", m |-> {}, res |-> \"answered\", i |-> 0, out |-> {out}]",
+            value(&m)
+        ));
+    }
+
     pub fn apply(&mut self, i: u64, sent: Sent) {
-        let out = match sent {
-            Sent::Nothing => "[k |-> \"none\"]".to_string(),
-            Sent::Accepted(g) => format!("[k |-> \"acc\", g |-> {g}]"),
-            Sent::Nak { expect } => format!("[k |-> \"nak\", expect |-> {expect}]"),
-            Sent::Other => "[k |-> \"other\"]".to_string(),
-        };
+        let out = out(sent);
         self.line(format!("[k |-> \"apply\", i |-> {i}, out |-> {out}]"));
     }
 }

@@ -346,6 +346,18 @@ The last two checks in the code are defensive: the model shows they are
 not needed for these properties. `MaxLog` bounds the log, so the model
 can tell bounded copies (a finite log absorbs them) from unbounded ones.
 
+**Answering decided resends** (2026-11-23). A leader that receives a
+resend of a message its core has already decided (applied, so committed)
+answers with the stored outcome and logs nothing; before, such resends
+were logged again. With a client retrying every 50 µs, faster than its
+outcomes come back, that cost 1.75 log entries per message on a
+workstation, and 6.5 to 24 on a CI runner once batching made resends
+cheap. It is now exactly one. In the model (`NoDecidedAnswer` keeps the
+old behaviour as a mutation): with the answer, `ClusterLive1` holds with
+`MaxCopies = 2`; without it, `MaxCopies = 3` is violated. Liveness and
+`OutcomesTrue` hold either way. Traces of the code, with `answered`
+records, are accepted by `TraceCluster`.
+
 **Trace validation** (`TraceCluster.tla`, 2026-11-20). Each node of a
 test cluster writes a trace of its shell (`ClusterConfig::trace`; the
 `krusty-client` test `cluster_shell_traces`: a client retrying every

@@ -333,15 +333,17 @@ fn resends_of_messages_being_committed_are_not_logged_again() {
         .map(|k| stat(k, |s| s.resends_filtered.load(Ordering::Relaxed)))
         .sum();
     assert!(filtered > 0, "no resend was filtered");
-    // Entries applied: the messages, a no-op per term, and the resends that
-    // arrive after their original was applied but before the client heard
-    // its outcome. Retrying every 50 µs, faster than an outcome comes back,
-    // that is up to one more per message (Cluster.tla: two copies per
-    // message per episode): about 1.75 per message on a workstation, just
-    // over 2 on a shared CI runner. Bounded, against 23 without the filter.
+    // Entries applied: the messages and a no-op per term. A resend of a
+    // message still being committed is dropped (the filter); a resend of
+    // one already decided is answered from the leader's core (2026-11-23).
+    // Before that, resends crossing their outcome were logged again: about
+    // 1.75 entries per message here, 6.5 to 24 on a CI runner once batching
+    // made resends cheap. Cluster.tla: at most 2 copies with the answer from
+    // the core, more than 3 without.
     let applied = stat(leader, |s| s.applied.load(Ordering::Relaxed));
+    eprintln!("{applied} log entries for {n} messages ({filtered} resends filtered)");
     assert!(
-        applied < 3 * n,
+        applied <= n + n / 20,
         "{applied} log entries for {n} messages ({filtered} resends filtered)"
     );
 }

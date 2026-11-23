@@ -204,6 +204,36 @@ impl Core {
         self.clients.len()
     }
 
+    /// The outcome already decided for this client's message, if the core
+    /// remembers one: the same incarnation's session, a seqno below its next,
+    /// still in the outcome ring. It is what applying a resend of it would
+    /// answer (`in_session`), from applied, hence committed, state: a leader
+    /// answers such resends with it instead of logging them again.
+    pub fn decided(&self, client_id: u32, incarnation: u64, client_seqno: u64) -> Option<Outcome> {
+        match self.clients.get(client_id as u64) {
+            Some(slot) => match self.sessions[slot as usize] {
+                Some(sess) => {
+                    if sess.incarnation == incarnation && client_seqno < sess.next {
+                        match self.ring[self.ring_index(slot, client_seqno)] {
+                            Some(r) => {
+                                if r.client_seqno == client_seqno {
+                                    Some(r.decided.outcome())
+                                } else {
+                                    None
+                                }
+                            }
+                            None => None,
+                        }
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            },
+            None => None,
+        }
+    }
+
     /// Current version of `key` (0 if never appended to).
     pub fn version(&self, key: u64) -> u64 {
         match self.keys.get(key) {

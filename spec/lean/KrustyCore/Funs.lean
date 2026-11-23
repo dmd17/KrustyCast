@@ -1012,8 +1012,59 @@ def table.IdMap.get
   | none => ok none
   | some b1 => ok (some b1.slot)
 
+/-- [krusty_core::{krusty_core::Core}::ring_index]:
+    Source: 'crates/krusty-core/src/lib.rs', lines 386:4-389:5 -/
+def Core.ring_index
+  (self : Core) (slot : Std.U32) (client_seqno : Std.U64) :
+  Result Std.Usize
+  := do
+  let i ← lift (UScalar.cast .Usize slot)
+  let i1 ← i * self.cfg.outcome_ring
+  let i2 ← lift (UScalar.cast .U64 self.cfg.outcome_ring)
+  let i3 ← client_seqno % i2
+  let i4 ← lift (UScalar.cast .Usize i3)
+  i1 + i4
+
+/-- [krusty_core::{krusty_core::Core}::decided]:
+    Source: 'crates/krusty-core/src/lib.rs', lines 212:4-235:5
+    Visibility: public -/
+def Core.decided
+  (self : Core) (client_id : Std.U32) (incarnation : Std.U64)
+  (client_seqno : Std.U64) :
+  Result (Option krusty_wire.feedback.Outcome)
+  := do
+  let i ← lift (UScalar.cast .U64 client_id)
+  let o ← table.IdMap.get self.clients i
+  match o with
+  | none => ok none
+  | some slot =>
+    let i1 ← lift (UScalar.cast .Usize slot)
+    let o1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Option
+        Session)) self.sessions i1
+    match o1 with
+    | none => ok none
+    | some sess =>
+      if sess.incarnation = incarnation
+      then
+        if client_seqno < sess.next
+        then
+          let i2 ← Core.ring_index self slot client_seqno
+          let o2 ←
+            alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Option
+              RingSlot)) self.ring i2
+          match o2 with
+          | none => ok none
+          | some r =>
+            if r.client_seqno = client_seqno
+            then let o3 ← Decided.outcome r.decided
+                 ok (some o3)
+            else ok none
+        else ok none
+      else ok none
+
 /-- [krusty_core::{krusty_core::Core}::version]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 208:4-213:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 238:4-243:5
     Visibility: public -/
 def Core.version (self : Core) (key : Std.U64) : Result Std.U64 := do
   let o ← table.IdMap.get self.keys key
@@ -1067,7 +1118,7 @@ def table.IdMap.insert
       ok (true, { self with buckets := v, len := i1 })
 
 /-- [krusty_core::{krusty_core::Core}::set_version]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 485:4-502:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 515:4-532:5 -/
 def Core.set_version
   (self : Core) (key : Std.U64) (version : Std.U64) :
   Result (Bool × Core)
@@ -1094,7 +1145,7 @@ def Core.set_version
     ok (true, { self with versions := v })
 
 /-- [krusty_core::{krusty_core::Core}::decide_append]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 437:4-482:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 467:4-512:5 -/
 def Core.decide_append
   (self : Core) (s : Request) :
   Result (((Option Decided) × (Option krusty_wire.stream.MessageMeta)) ×
@@ -1128,21 +1179,8 @@ def Core.decide_append
             }), self1)
         else ok ((none, none), self1)
 
-/-- [krusty_core::{krusty_core::Core}::ring_index]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 356:4-359:5 -/
-def Core.ring_index
-  (self : Core) (slot : Std.U32) (client_seqno : Std.U64) :
-  Result Std.Usize
-  := do
-  let i ← lift (UScalar.cast .Usize slot)
-  let i1 ← i * self.cfg.outcome_ring
-  let i2 ← lift (UScalar.cast .U64 self.cfg.outcome_ring)
-  let i3 ← client_seqno % i2
-  let i4 ← lift (UScalar.cast .Usize i3)
-  i1 + i4
-
 /-- [krusty_core::{krusty_core::Core}::reply]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 236:4-246:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 266:4-276:5 -/
 def Core.reply
   (s : Request) (client_seqno : Std.U64)
   (outcome : krusty_wire.feedback.Outcome) :
@@ -1162,12 +1200,12 @@ def Core.reply
     }
 
 /-- [krusty_core::{krusty_core::Core}::busy]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 248:4-250:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 278:4-280:5 -/
 def Core.busy (s : Request) : Result Effects := do
   Core.reply s s.client_seqno (krusty_wire.feedback.Outcome.Busy 0#u64)
 
 /-- [krusty_core::{krusty_core::Core}::in_session]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 361:4-432:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 391:4-462:5 -/
 def Core.in_session
   (self : Core) (slot : Std.U32) (s : Request) : Result (Effects × Core) := do
   let i ← lift (UScalar.cast .Usize slot)
@@ -1249,7 +1287,7 @@ def Core.in_session
               { self1 with next_seqno := i4, sessions := v, ring := v1 })
 
 /-- [krusty_core::{krusty_core::Core}::start_session]: loop body 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 350:8-353:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 380:8-383:9 -/
 @[rust_loop_body]
 def Core.start_session_loop.body
   (n : Std.Usize) (base : Std.Usize) (v : alloc.vec.Vec (Option RingSlot))
@@ -1269,7 +1307,7 @@ def Core.start_session_loop.body
   else ok (done v)
 
 /-- [krusty_core::{krusty_core::Core}::start_session]: loop 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 350:8-353:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 380:8-383:9 -/
 @[rust_loop]
 def Core.start_session_loop
   (v : alloc.vec.Vec (Option RingSlot)) (n : Std.Usize) (base : Std.Usize)
@@ -1281,7 +1319,7 @@ def Core.start_session_loop
     (v, i)
 
 /-- [krusty_core::{krusty_core::Core}::start_session]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 340:4-354:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 370:4-384:5 -/
 def Core.start_session
   (self : Core) (slot : Std.U32) (s : Request) : Result Core := do
   let i ← lift (UScalar.cast .Usize slot)
@@ -1389,7 +1427,7 @@ def table.IdMap.remove
     ok { self with buckets := v1, len := i }
 
 /-- [krusty_core::{krusty_core::Core}::allocate_session]: loop body 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 312:8-326:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 342:8-356:9 -/
 @[rust_loop_body]
 def Core.allocate_session_loop.body
   (i : Std.U64) (v : alloc.vec.Vec (Option Session)) (c : Config)
@@ -1430,7 +1468,7 @@ def Core.allocate_session_loop.body
   else ok (done (c, victim))
 
 /-- [krusty_core::{krusty_core::Core}::allocate_session]: loop 0:
-    Source: 'crates/krusty-core/src/lib.rs', lines 312:8-326:9 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 342:8-356:9 -/
 @[rust_loop]
 def Core.allocate_session_loop
   (c : Config) (i : Std.U64) (v : alloc.vec.Vec (Option Session))
@@ -1443,7 +1481,7 @@ def Core.allocate_session_loop
     (c, victim, i1)
 
 /-- [krusty_core::{krusty_core::Core}::allocate_session]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 305:4-338:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 335:4-368:5 -/
 def Core.allocate_session
   (self : Core) : Result ((Option Std.U32) × Core) := do
   let i := alloc.vec.Vec.len self.sessions
@@ -1480,7 +1518,7 @@ def Core.allocate_session
         })
 
 /-- [krusty_core::{krusty_core::Core}::decide]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 252:4-301:5 -/
+    Source: 'crates/krusty-core/src/lib.rs', lines 282:4-331:5 -/
 def Core.decide (self : Core) (s : Request) : Result (Effects × Core) := do
   let i ← lift (UScalar.cast .U64 s.client_id)
   let found ← table.IdMap.get self.clients i
@@ -1536,7 +1574,7 @@ def Core.decide (self : Core) (s : Request) : Result (Effects × Core) := do
           ok (e, self)
 
 /-- [krusty_core::{krusty_core::Core}::apply]:
-    Source: 'crates/krusty-core/src/lib.rs', lines 217:4-234:5
+    Source: 'crates/krusty-core/src/lib.rs', lines 247:4-264:5
     Visibility: public -/
 def Core.apply
   (self : Core) (log_index : Std.U64) (timestamp_ns : Std.U64)
