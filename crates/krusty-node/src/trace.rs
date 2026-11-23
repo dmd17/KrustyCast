@@ -97,8 +97,11 @@ impl Tracer {
         Ok(t)
     }
 
+    /// Each record is flushed: a node killed (tests/processes.rs) loses
+    /// none of what it did before.
     fn line(&mut self, s: String) {
         let _ = writeln!(self.w, "{s}");
+        let _ = self.w.flush();
     }
 
     fn top(&self) -> u64 {

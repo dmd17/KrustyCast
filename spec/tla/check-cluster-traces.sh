@@ -26,15 +26,20 @@ for t in "$dir"/node*.trace; do
         echo ">>"
         echo "===="
     } > "$w/TraceClusterData.tla"
-    out=$(cd "$w" && java -XX:+UseParallelGC -Xss16m -cp "$jar" tlc2.TLC -workers 1 \
-        -metadir "$w/states" -config TraceCluster.cfg TraceCluster.tla 2>&1 || true)
+    # TLC prints the verdict, then the whole trace (both when the trace is
+    # accepted, as a violation of Unfinished, and when it is rejected):
+    # gigabytes for a long trace. Keep the first 2 MB, which hold the
+    # verdict; TLC stops on the closed pipe.
+    (cd "$w" && java -XX:+UseParallelGC -Xss16m -cp "$jar" tlc2.TLC -workers 1 \
+        -noGenerateSpecTE -metadir "$w/states" -config TraceCluster.cfg TraceCluster.tla 2>&1 || true) \
+        | head -c 2000000 > "$w/tlc.out" || true
     rm -rf -- "$w/states"
-    if grep -q "Invariant Unfinished is violated" <<<"$out"; then
+    if grep -q "Invariant Unfinished is violated" "$w/tlc.out"; then
         echo "accepted: $t ($(wc -l < "$t") records)"
+        rm -f -- "$w/tlc.out"
     else
-        echo "REJECTED: $t"
-        grep -E "Deadlock|is violated|Error" <<<"$out" | head -3 || true
-        echo "$out" > "$w/tlc.out"
+        echo "REJECTED: $t (TLC output: $w/tlc.out)"
+        grep -E "Deadlock|is violated|Error" "$w/tlc.out" | head -3 || true
         fail=1
     fi
 done

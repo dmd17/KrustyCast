@@ -12,6 +12,7 @@ is safe. Written 2026-11-22.
 | Inductive invariant | `tla/RaftKCInd.tla`: a candidate in three layers (elections, logs, commits), holding on every state TLC reaches | Not yet shown inductive, so not yet unbounded |
 | Code against model | `tla/TraceRaftKC.tla`: traces of `krusty-raft` under its randomized harness, replayed with RaftKC's actions (3 per CI run, 20 nightly) | Evidence for the tested runs, from the harness rather than the node |
 | Durability | `tla/RaftKCPower.tla` (2026-11-22): power loss in mode (a) | Two counterexamples, below |
+| Real processes | `krusty-node/tests/processes.rs` (2026-11-23): three `krusty-node` processes through a fault proxy; pauses, kills, power losses, partitions, loss, delay, reordering, duplication. End-to-end checks, and each node's shell trace against Cluster.tla | Evidence from the shipped binary, below |
 | Not modelled | Pre-vote, check-quorum and leadership transfer (left to Timeout and StepDown, which RaftKC allows at any time), liveness, InstallSnapshot and membership changes (neither implemented yet) | |
 
 **Mode (a) and power loss.** In mode (a), term, vote and entries reach
@@ -300,6 +301,73 @@ Two routes, which can be combined.
 - This covers what a proof of `krusty-raft` alone would not: the
   threads, rings, storage modes and held replies around it.
 
+*Done so far (2026-11-23):* `krusty-node/tests/processes.rs` runs
+three `krusty-node` processes. Peer traffic goes through a proxy in the
+test: node i's `cluster.members` points each peer at the proxy's socket
+for that link, and Raft names senders by node id, not by address. The
+test injects, two at a time, for 0.1–3 s each:
+- partitions (a node cut off both ways) and one-way cuts;
+- loss (5–35%), duplication, delay and jitter (reordering);
+- SIGSTOP pauses, SIGKILL and restart;
+- power losses in mode (a): a kill that also zeroes a tail of the
+  newest log segment above the latest snapshot (sometimes mid-record, a
+  torn write), then the `recovering` marker. Only one node at a time is
+  down or recovering (f = 1). What may be cut follows from storage.rs:
+  the hard state is always fsynced, and a snapshot is written only after
+  the log beneath it was.
+
+Two publishers send throughout, and a consumer follows the feed. After
+healing, the run must finish within 30 s (liveness). Then:
+- the feed is gap-free and holds no message twice;
+- each ACCEPTED message is at the position it named, with its payload;
+- the feed holds only accepted messages;
+- every node serves the same stream (RECOVER from each node alone);
+- each node's shell trace is accepted by Cluster.tla
+  (`check-cluster-traces.sh`).
+
+Results (2026-11-23), all with the fix (the cautious restart):
+
+| Runs | Load | Faults | Outcome |
+|---|---|---|---|
+| 8 seeds × 10 s, traces checked | 600 msgs each | 10–15 each, 4 power losses | all end-to-end checks pass; 24 of 24 shell traces accepted by Cluster.tla |
+| 3 seeds × 60 s | 2,000 msg/s, about 120,000 msgs each | 68–73 each, 22 kills, 9 power losses | all pass |
+| 8 more seeds × 8–30 s | 300 msg/s per publisher | 8–40 each, power losses on every node | all pass; settled 0–40 ms after healing |
+
+No bug in the code turned up. Two checks show the test can find one:
+- *The power-loss bug, put back.* `KRUSTY_PROC_NO_MARKER=1` leaves out
+  the `recovering` marker, so a node back from a power loss rejoins as
+  after a plain crash, as before the fix. One seed of 20 (211) then loses
+  committed data, 3 times out of 3. The feed had published 10,382
+  messages, all ACCEPTED, but no node still holds the last two, and two
+  nodes stop near 10,270. The run then livelocks: each resend is
+  sequenced against the shortened history and NAKed, the clients resend
+  forever, and the log grows past 3 million entries. The test reports
+  the lost range per node.
+- *Liveness is exercised.* When the faults end on a paused or isolated
+  leader, the run settles 10–40 ms later, after an election.
+
+The checking script had a bug of its own. TLC prints the whole trace
+after its verdict, both when it accepts a trace (as a violation of
+`Unfinished`) and when it rejects one. For a 6,000-record trace that is
+about 1.4 GB. `check-cluster-traces.sh` held the output in a shell
+variable, and `grep` segfaulted on it, which read as a rejection. The
+script now keeps only the first 2 MB, which holds the verdict, so TLC
+stops on the closed pipe. It also skips the trace-explorer file. Most of
+what had looked like TLC's cost on mid-sized traces was that printing.
+Traces of up to about 7,000 records now check in 1–3 minutes each. The
+19,000-record trace of a 10 s run at 300 msg/s per publisher still did
+not finish in 30 minutes: each step hashes the whole state, which grows
+with the trace (the log and per-message maps). So traces are checked on
+short runs (30 msg/s per publisher), and long runs at higher rates are
+checked end to end only.
+
+Still to do for A: Raft traces from the node itself, checked against
+RaftKC. The trace writer and its plans are in krusty-raft's test harness
+(`tests/trace.rs`). They need to move into the library behind a feature,
+and the per-process traces need merging by the shared monotonic clock.
+TraceRaftKC injects each received message, so a merged order need not put
+sends before receives.
+
 **B. Deductive refinement of `krusty-raft` (the full proof).**
 - *Per-node simulation.* For each public step (`on_message`, `tick`,
   `propose`, `replicate`, `persisted`, `applied`, `transfer_leadership`)
@@ -336,7 +404,7 @@ Two routes, which can be combined.
 |---|---|---|
 | Fix or restate mode (a), checked in RaftKCPower | S–M | a decision on G3 |
 | Refinement to `raft.tla`; feature table against etcd and CCF | M | — |
-| Real-node traces under fault injection (A) | M | a fault harness (Q8) |
+| Real-node traces under fault injection (A) | M | shell traces done (processes.rs); Raft traces from the node to do |
 | Liveness model | M | — |
 | Inductive invariant (Apalache), then unbounded (TLAPS or Lean) | L–XL | — |
 | Deductive refinement of `krusty-raft` in Lean (B) | XL | the protocol invariant, Aeneas-ready code |

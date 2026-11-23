@@ -81,6 +81,9 @@ pub struct Cluster {
     pub max_inflight: Option<u32>,
     pub retain_entries: Option<u64>,
     pub core: Option<usize>,
+    /// Tests: append a trace of the cluster shell to this file, for
+    /// spec/tla/check-cluster-traces.sh (`ClusterConfig::trace`).
+    pub trace: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -233,6 +236,7 @@ impl FileConfig {
                 cl.retain_entries = v;
             }
             cl.core = c.core;
+            cl.trace = c.trace.clone();
             cfg.cluster = Some(cl);
         }
         if let Some(m) = &self.mold {

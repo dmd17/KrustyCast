@@ -30,3 +30,5 @@ toml = "1"
 moldudp = "0.1.1"
 # Tracks the feed in tests/end_to_end.rs.
 krusty-stream = { path = "../krusty-stream" }
+# Clients for tests/processes.rs (real node processes under faults).
+krusty-client = { path = "../krusty-client" }

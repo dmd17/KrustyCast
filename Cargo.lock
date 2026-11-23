@@ -566,6 +566,7 @@ version = "0.1.0"
 dependencies = [
  "ctrlc",
  "hdrhistogram",
+ "krusty-client",
  "krusty-core",
  "krusty-log",
  "krusty-mold",

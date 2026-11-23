@@ -52,6 +52,20 @@ jobs:
           KRUSTY_CLUSTER_TRACE_DIR="$RUNNER_TEMP/cluster-traces" \
             cargo test -q --release -p krusty-client --test cluster -- --ignored traces
           TLA2TOOLS="$RUNNER_TEMP/tla/tla2tools.jar" spec/tla/check-cluster-traces.sh "$RUNNER_TEMP/cluster-traces"
+      - name: Real node processes under faults (pauses, kills, power losses, partitions; ~6 min of TLC)
+        run: |
+          base=$(( $(date +%s) / 86400 * 10 ))
+          for s in 0 1 2; do
+            KRUSTY_PROC_SEED=$((base + s)) KRUSTY_PROC_SECS=20 \
+              cargo test -q --release -p krusty-node --test processes -- --ignored --nocapture
+          done
+          # Short runs whose traces TLC can replay (cost grows with length).
+          for s in 3 4; do
+            KRUSTY_PROC_SEED=$((base + s)) KRUSTY_PROC_SECS=10 KRUSTY_PROC_RATE=30 \
+              KRUSTY_PROC_DIR="$RUNNER_TEMP/proc-$s" \
+              cargo test -q --release -p krusty-node --test processes -- --ignored --nocapture
+            TLA2TOOLS="$RUNNER_TEMP/tla/tla2tools.jar" spec/tla/check-cluster-traces.sh "$RUNNER_TEMP/proc-$s"
+          done
       - name: Node failover smoke (3 nodes over loopback, 20 leader stops)
         run: FAILOVER_MAX_MS=1000 cargo run --release -p krusty-client --example failover -- 20
 
