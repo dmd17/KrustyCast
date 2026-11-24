@@ -444,10 +444,10 @@ sends before receives.
 |---|---|---|
 | Fix or restate mode (a), checked in RaftKCPower | S–M | a decision on G3 |
 | Refinement to `raft.tla`; feature table against etcd and CCF | M | — |
-| Real-node traces under fault injection (A) | M | shell traces done (processes.rs); Raft traces from the node to do |
-| Liveness model | M | — |
-| Inductive invariant (Apalache), then unbounded (TLAPS or Lean) | L–XL | — |
-| Deductive refinement of `krusty-raft` in Lean (B) | XL | the protocol invariant, Aeneas-ready code |
+| Real-node traces under fault injection (A) | M | shell traces done (processes.rs); Raft traces from the node to do (#2) |
+| Liveness model (#3) | M | — |
+| Inductive invariant (Apalache), then unbounded (TLAPS or Lean) (#4) | L–XL | — |
+| Deductive refinement of `krusty-raft` in Lean (B) (#5) | XL | the protocol invariant, Aeneas-ready code |
 
 Until B is done, the claim is: the protocol is checked for small bounds
 (unbounded once step 1.2 is done), and the code is validated on every
