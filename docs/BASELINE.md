@@ -441,10 +441,93 @@ is the closest pair, not an equal one):
 | Disk, no fsync before commit | archive on disk, `file.sync.level=0` (writes on the commit path) | mode (a) on disk: entries written before they are acknowledged since 2026-11-23 (before that, storage was off the commit path) |
 | fsync before commit | archive `file.sync.level=1` (fsync per recorded block) | mode (b): publish after the group's fsync, on two nodes |
 
-### Current results: matched durability (2026-11-23)
+### Current results: after the disk-tail fix (2026-11-24, issue #1)
 
 The reference comparison. Everything after this section records how it
 was reached; where an earlier number disagrees, this one stands.
+
+**What changed since 2026-11-23** (issue #1):
+- **The egress index is synced with the log.** In mode (a) the fsync
+  thread synced the log every millisecond, but the egress index only with
+  each snapshot. By then about 16 MB of index slots had piled up in
+  preallocated (unwritten) extents, and that one fdatasync took 10–19 ms.
+  Its journal commit stalled every writer on the disk, so acknowledgements
+  stalled with it. Found by timing each phase of a snapshot job
+  (`KRUSTY_STORE_DEBUG=1` logs slow writes and fsync jobs).
+- **Snapshots are written into two slots,** overwritten in place in turn
+  (`snapshot.0`, `snapshot.1`), not into a new file each (create, rename,
+  directory fsync).
+- **Ruled out:** zero-filled segments. Writing 256 MiB of zeros per segment
+  competed for the disk, and p99.9 grew from about 3 ms to 16 ms.
+- **The sweep now runs `sync` before each run** (`sweep21.sh`). An Aeron
+  disk run leaves its archive's dirty pages behind, and writing them back
+  stalled the next run's writes: KrustyCast's p99.9 at 300k on disk was
+  4.9 ms right after an Aeron run, and 115 µs after a `sync`.
+
+**Same-session A/B** (`ab.sh`: the build before #1 and after, alternating
+run by run): on disk, the maximum fell from 9.7–12.6 ms to 0.3–1.5 ms at
+100k–500k, and p99.9 from 0.1–4.1 ms to 88–171 µs. Elsewhere it is equal
+or slightly better: p50 is equal or lower, by up to 8 µs (750k on tmpfs).
+
+**This session is slower than 2026-11-22/23 for both systems.** The
+machine was rebooted, and both KrustyCast builds and Aeron are slower.
+Aeron falls behind at 500k; KrustyCast at 750k on disk, by 0.02%. So
+compare within this section's tables, not with earlier sections.
+
+![Latency distributions on tmpfs](img/e3-latency-tmpfs.svg)
+
+![Latency distributions on disk](img/e3-latency-disk.svg)
+
+µs, from each message's scheduled send time. One session, interleaved
+(`sweep21.sh`):
+
+**Logs on tmpfs (Aeron on tmpfs)**
+
+| Offered | System | min | p10 | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | p99.999 | max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100k | Aeron | 29.3 | 42.1 | 48.7 | 52.6 | 60.8 | 71.0 | 87.7 | 90.9 | 120 | 3,103 | 3,518 |
+| 100k | KrustyCast | 30.7 | 42.0 | 48.2 | 48.7 | 51.9 | 58.4 | 60.6 | 68.6 | 78.5 | 98.4 | 129 |
+| 300k | Aeron | 32.8 | 48.6 | 54.9 | 60.3 | 68.8 | 77.9 | 91.4 | 99.7 | 2,757 | 3,768 | 3,875 |
+| 300k | KrustyCast | 38.0 | 52.6 | 56.9 | 60.0 | 64.7 | 69.4 | 78.8 | 85.4 | 101 | 318 | 573 |
+| 500k | Aeron | fell behind (29.89 M of 30 M sent) | | | | | | | | | | |
+| 500k | KrustyCast | 48.1 | 65.1 | 70.5 | 75.1 | 82.3 | 91.1 | 116 | 134 | 145 | 159 | 201 |
+| 750k | Aeron | fell behind (30.2 M of 45 M sent) | | | | | | | | | | |
+| 750k | KrustyCast | 52.6 | 110 | 127 | 143 | 176 | 212 | 287 | 339 | 369 | 447 | 675 |
+
+**On disk (Aeron archive sync level 0; KrustyCast mode (a))**
+
+| Offered | System | min | p10 | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | p99.999 | max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100k | Aeron | 31.2 | 42.5 | 48.9 | 57.1 | 61.6 | 72.1 | 88.3 | 98.0 | 5,661 | 9,953 | 10.4 ms |
+| 100k | KrustyCast | 31.3 | 47.6 | 48.4 | 49.2 | 58.0 | 58.8 | 68.4 | 88.4 | 102 | 121 | 241 |
+| 300k | Aeron | 33.1 | 49.1 | 55.6 | 61.2 | 70.0 | 79.0 | 93.7 | 3,717 | 10.8 ms | 12.9 ms | 13.1 ms |
+| 300k | KrustyCast | 40.6 | 56.1 | 60.2 | 63.7 | 69.2 | 74.9 | 89.2 | 113 | 144 | 486 | 668 |
+| 500k | Aeron | fell behind (28.94 M of 30 M sent) | | | | | | | | | | |
+| 500k | KrustyCast | 50.5 | 78.8 | 89.0 | 96.3 | 108 | 121 | 144 | 176 | 257 | 598 | 1,025 |
+| 750k | Aeron | fell behind (28.94 M of 45 M sent) | | | | | | | | | | |
+| 750k | KrustyCast | fell behind (44.99 M of 45 M sent) | | | | | | | | | | |
+
+**Reading them.**
+- **The body is close.** p50 is 48.7 against 52.6 µs at 100k on tmpfs,
+  60.0 against 60.3 at 300k; on disk 49.2 against 57.1 at 100k, and 63.7
+  against 61.2 at 300k. At the bottom Aeron is a little lower: its
+  minimum and p10 are up to 7.5 µs below KrustyCast's (at 300k on disk).
+- **The tail is far shorter on both storages.** KrustyCast's maximum is
+  0.13–0.67 ms at 100k–300k (Aeron's 3.5–13.1 ms). Its p99.9 on disk is
+  88–176 µs through 500k, against Aeron's 98 µs at 100k and 3.7 ms at
+  300k.
+- **Throughput:** KrustyCast sustains 500k on both storages and 750k on
+  tmpfs. On disk at 750k it sent 99.98% of the schedule. Aeron fell behind
+  at 500k this session, at about 480–498k msg/s.
+
+**Data.** `bench/results/e3-issue1/` holds both systems' distributions
+(`*.hgrm`; a run that fell behind records how much it sent), `sweep21.sh`
+and `ab.sh`. The node configurations are in `bench/results/e3-rust-rig/`.
+
+### Matched durability, before the disk-tail fix (2026-11-23, superseded)
+
+Superseded by the section above: on disk, KrustyCast's tail here came
+from syncing the egress index only with snapshots (issue #1).
 
 **What changed.** Until 2026-11-23, KrustyCast's mode (a) counted an
 entry as persisted, and acknowledged it, once it was handed to the

@@ -1,4 +1,4 @@
-"""Draws docs/img/e3-latency-{tmpfs,disk}.svg from a directory holding the rig outputs of both systems (a-*.txt: sweep19.sh, Aeron; k-*.txt: sweep20.sh, KrustyCast)
+"""Draws docs/img/e3-latency-{tmpfs,disk}.svg from a directory holding the rig outputs of both systems (a-*.txt Aeron, k-*.txt KrustyCast; e.g. sweep21.sh)
 (run from the repository root). Percentiles on a "nines" axis, latency log."""
 import re, math, sys
 import matplotlib
@@ -30,7 +30,7 @@ for kind,title,fn in (('none','Logs on tmpfs (Aeron on tmpfs)','tmpfs'),('async'
         for s,name in (('a','Aeron'),('k','KrustyCast')):
             rows=load(f'{E}/{s}-{kind}-{r}.txt')
             if rows is None:
-                ax.text(0.04,0.93,'Aeron fell behind',transform=ax.transAxes,color=MUTED,fontsize=8.5); continue
+                ax.text(0.04,0.93 if name=='Aeron' else 0.86,f'{name} fell behind',transform=ax.transAxes,color=MUTED,fontsize=8.5); continue
             xs=[nines(p) for p,v in rows if p<1]; ys=[v for p,v in rows if p<1]
             ax.plot(xs,ys,color=COL[name],lw=2,solid_capstyle='round')
             ends[name]=(min(xs[-1],6.4),ys[-1])

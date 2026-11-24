@@ -376,9 +376,11 @@ did not. PRD G3 assumes only power loss loses unsynced data in mode (a).
   failed, and three new ones; 180,000 messages and about 26 kills each).
   The random-fault runs, power losses included, and the workspace tests
   pass. E3 latency (BASELINE "matched durability"): 6–14 µs more at p50 on
-  tmpfs. Disk tails are now in milliseconds (p99.9 3–4 ms from 300k), as
-  Aeron's are (7–9 ms), since writes now wait behind ext4 journal
-  commits. Aeron's followers also acknowledge what their archive has
+  tmpfs. Disk tails went to milliseconds (p99.9 3–4 ms from 300k), since
+  writes now waited behind ext4 journal commits. Issue #1 (2026-11-24)
+  brought them back under 1 ms: the egress index, synced only with
+  snapshots, made one 10–19 ms fdatasync each time (BASELINE, "Current
+  results"). Aeron's followers also acknowledge what their archive has
   written, so the comparison is now matched.
 - *Why the other checks missed it:* the models and the in-process
   harnesses treat "handed to storage" as persisted. The real-process runs

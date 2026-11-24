@@ -321,6 +321,13 @@ fn lose_power(dir: &std::path::Path, rng: &mut Rng) -> u64 {
         if let Some(i) = num("snap-", ".snap") {
             snap = snap.max(i);
         }
+        // Snapshot slots (krusty-log): magic u64 | log index u64 | ...
+        if name == "snapshot.0" || name == "snapshot.1" {
+            let b = std::fs::read(e.path()).unwrap_or_default();
+            if b.len() >= 16 && b[0..8] == 0x5041_4E53_4F4C_434Bu64.to_le_bytes() {
+                snap = snap.max(u64::from_le_bytes(b[8..16].try_into().unwrap()));
+            }
+        }
         if let Some(i) = num("log-", ".seg") {
             segs.push((i, e.path()));
         }

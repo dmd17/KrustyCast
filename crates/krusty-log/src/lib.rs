@@ -10,8 +10,12 @@
 //! - **Egress index** `egress-<first seqno>.idx`: fixed 16-byte slots, one
 //!   per published stream message, holding the log index and offset of the
 //!   entry that produced it, so a recovery read is one lookup plus one read.
-//! - **Snapshots** `snap-<log index>.snap`: the sequencer core's state after
-//!   that entry (written atomically; the latest two are kept).
+//! - **Snapshots** `snapshot.0` and `snapshot.1`: the sequencer core's
+//!   state after a log index, in two slots overwritten in place in turn,
+//!   each with a CRC, so the latest two are kept and a torn write loses only
+//!   the slot being written. (Until 2026-11-24, one `snap-<log index>.snap`
+//!   file each, which `open` still reads: creating and renaming a file per
+//!   snapshot forced a journal commit.)
 //! - **Raft hard state** `raft.state` ([`HardStateFile`]): term and vote.
 //!
 //! Each segment keeps a sparse in-memory index (the offset of every
@@ -161,11 +165,23 @@ impl SnapshotJob {
     /// Returns the snapshot's buffer, for reuse.
     pub fn run(self) -> io::Result<Vec<u8>> {
         let shared = self.sync.shared.clone();
+        let t = std::time::Instant::now();
         self.sync.run()?;
+        let t_log = t.elapsed();
         for f in &self.index {
             f.sync_data()?;
         }
+        let t_idx = t.elapsed();
         persist_snapshot(&self.dir, self.log_index, &self.bytes, self.previous)?;
+        if std::env::var_os("KRUSTY_STORE_DEBUG").is_some() {
+            eprintln!(
+                "store-debug snapshot phases: log {}us, index {}us ({} files), slot {}us",
+                t_log.as_micros(),
+                (t_idx - t_log).as_micros(),
+                self.index.len(),
+                (t.elapsed() - t_idx).as_micros()
+            );
+        }
         shared
             .snapshot_done
             .fetch_max(self.log_index, Ordering::AcqRel);
@@ -173,32 +189,106 @@ impl SnapshotJob {
     }
 }
 
-/// Writes `snap-<log_index>.snap` atomically (temporary file, fsync,
-/// rename, directory fsync) and removes snapshots older than `previous`.
-fn persist_snapshot(dir: &Path, log_index: u64, bytes: &[u8], previous: u64) -> io::Result<()> {
-    let tmp = dir.join(name("snap", log_index, "tmp"));
+/// The two snapshot slots, overwritten in place, alternately. Writing a
+/// new file per snapshot (create, fsync, rename, directory fsync) forced a
+/// journal commit each time that stalled every appender on the disk for
+/// 4–7 ms (issue #1); overwriting blocks already written needs only an
+/// fdatasync of the data. Each slot is a 32-byte header (magic, log index,
+/// length, CRC of all three and the bytes) and the snapshot. A write torn
+/// by a crash leaves a slot whose CRC fails, and only the slot being
+/// written: the other holds the latest snapshot that was stored.
+const SNAP_SLOTS: [&str; 2] = ["snapshot.0", "snapshot.1"];
+
+fn snapshot_crc(log_index: u64, bytes: &[u8]) -> u32 {
+    let c = crc32c::crc32c(&log_index.to_le_bytes());
+    let c = crc32c::crc32c_append(c, &(bytes.len() as u64).to_le_bytes());
+    crc32c::crc32c_append(c, bytes)
+}
+
+/// The log index a slot holds, if its header looks intact (its bytes are
+/// checked by [`read_slot`]).
+fn slot_index(path: &Path) -> Option<u64> {
+    let f = File::open(path).ok()?;
     let mut h = [0u8; 32];
-    h[0..8].copy_from_slice(&SNAP_MAGIC.to_le_bytes());
-    h[8..16].copy_from_slice(&log_index.to_le_bytes());
-    h[16..24].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
-    h[24..28].copy_from_slice(&crc32c::crc32c(bytes).to_le_bytes());
-    let f = File::create(&tmp)?;
-    f.write_all_at(&h, 0)?;
-    f.write_all_at(bytes, 32)?;
-    f.sync_all()?;
-    fs::rename(&tmp, dir.join(name("snap", log_index, "snap")))?;
-    sync_dir(dir)?;
-    // Keep this one and the previous one.
+    f.read_exact_at(&mut h, 0).ok()?;
+    (u64::from_le_bytes(h[0..8].try_into().unwrap()) == SNAP_MAGIC)
+        .then(|| u64::from_le_bytes(h[8..16].try_into().unwrap()))
+}
+
+/// Stores the snapshot taken after `log_index` in the slot not holding the
+/// latest one, then fdatasyncs it. Removes snapshots of the old format
+/// (`snap-<index>.snap`, one file each).
+fn persist_snapshot(dir: &Path, log_index: u64, bytes: &[u8], _previous: u64) -> io::Result<()> {
+    let held: Vec<Option<u64>> = SNAP_SLOTS
+        .iter()
+        .map(|n| slot_index(&dir.join(n)))
+        .collect();
+    // The slot to overwrite: an empty or broken one, else the older.
+    let k = match (held[0], held[1]) {
+        (None, _) => 0,
+        (_, None) => 1,
+        (Some(a), Some(b)) => usize::from(b < a),
+    };
+    let path = dir.join(SNAP_SLOTS[k]);
+    let created = !path.exists();
+    let f = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false) // overwritten in place: no metadata change
+        .open(&path)?;
+    let mut buf = Vec::with_capacity(32 + bytes.len());
+    buf.extend_from_slice(&SNAP_MAGIC.to_le_bytes());
+    buf.extend_from_slice(&log_index.to_le_bytes());
+    buf.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&snapshot_crc(log_index, bytes).to_le_bytes());
+    buf.extend_from_slice(&[0u8; 4]);
+    buf.extend_from_slice(bytes);
+    let grows = f.metadata()?.len() < buf.len() as u64;
+    f.write_all_at(&buf, 0)?;
+    if grows {
+        // Growing changes metadata: rare (the first snapshots, or a larger core).
+        f.sync_all()?;
+    } else {
+        f.sync_data()?;
+    }
+    let mut legacy = false;
     for e in fs::read_dir(dir)? {
         let e = e?;
         let n = e.file_name().to_string_lossy().into_owned();
-        if let Some(i) = parse_name(&n, "snap", "snap")
-            && i < previous
-        {
+        if parse_name(&n, "snap", "snap").is_some() {
             fs::remove_file(e.path())?;
+            legacy = true;
         }
     }
+    if created || legacy {
+        sync_dir(dir)?;
+    }
     Ok(())
+}
+
+/// A slot's snapshot, if intact.
+fn read_slot(path: &Path) -> io::Result<Option<(u64, Vec<u8>)>> {
+    let Ok(f) = File::open(path) else {
+        return Ok(None);
+    };
+    let mut h = [0u8; 32];
+    if f.read_exact_at(&mut h, 0).is_err()
+        || u64::from_le_bytes(h[0..8].try_into().unwrap()) != SNAP_MAGIC
+    {
+        return Ok(None);
+    }
+    let i = u64::from_le_bytes(h[8..16].try_into().unwrap());
+    let len = u64::from_le_bytes(h[16..24].try_into().unwrap());
+    if f.metadata()?.len() < 32 + len {
+        return Ok(None);
+    }
+    let mut bytes = vec![0u8; len as usize];
+    f.read_exact_at(&mut bytes, 32)?;
+    if snapshot_crc(i, &bytes) != u32::from_le_bytes(h[24..28].try_into().unwrap()) {
+        return Ok(None);
+    }
+    Ok(Some((i, bytes)))
 }
 
 /// The writer. Lives on the storage thread.
@@ -706,19 +796,27 @@ impl Log {
             }
         }
 
-        // The latest snapshot that is intact and not ahead of the log.
-        let mut snapshot = None;
-        let mut latest_snapshot = 0;
+        // The latest snapshot that is intact and not ahead of the log: from
+        // the two slots, or from files of the old format.
+        let mut snapshot: Option<(u64, Vec<u8>)> = None;
+        for n in SNAP_SLOTS {
+            if let Some((i, bytes)) = read_slot(&cfg.dir.join(n))?
+                && i <= last_index
+                && snapshot.as_ref().is_none_or(|s| s.0 < i)
+            {
+                snapshot = Some((i, bytes));
+            }
+        }
         for i in snaps.iter().rev() {
-            if *i > last_index {
+            if *i > last_index || snapshot.as_ref().is_some_and(|s| s.0 >= *i) {
                 continue;
             }
             if let Some(bytes) = read_snapshot(&cfg.dir.join(name("snap", *i, "snap")), *i)? {
                 snapshot = Some((*i, bytes));
-                latest_snapshot = *i;
                 break;
             }
         }
+        let latest_snapshot = snapshot.as_ref().map(|s| s.0).unwrap_or(0);
 
         if dropped {
             sync_dir(&cfg.dir)?;
@@ -1142,6 +1240,11 @@ impl Log {
         self.flush()?;
         let mut files = std::mem::take(&mut self.unsynced);
         files.push(self.active.clone());
+        // The egress index too, every time: synced only with snapshots, its
+        // slots piled up (16 MB per million messages) into one fdatasync of
+        // 10–19 ms whose journal commit stalled every writer on the disk
+        // (issue #1). A little each time keeps each commit small.
+        files.extend(self.take_index_files());
         let dir = std::mem::take(&mut self.dir_dirty).then(|| self.cfg.dir.clone());
         Ok(SyncJob {
             files,
@@ -1161,14 +1264,9 @@ impl Log {
         Ok(())
     }
 
-    /// [`write_snapshot`](Self::write_snapshot), to run off the writer's
-    /// thread ([`SnapshotJob::run`]): it syncs the log written so far (all
-    /// of it up to `log_index`) and the egress index, then stores the
-    /// snapshot. Retention counts it once done ([`enforce_retention`](Self::enforce_retention)).
-    /// Jobs must run one at a time, in order.
-    pub fn snapshot_job(&mut self, log_index: u64, bytes: Vec<u8>) -> io::Result<SnapshotJob> {
-        assert!(log_index < self.next_index);
-        let sync = self.take_sync()?;
+    /// The egress index files written since the index was last synced (the
+    /// caller syncs them); marks it synced up to the last seqno.
+    fn take_index_files(&mut self) -> Vec<Arc<File>> {
         let last = self.next_seqno - 1;
         let mut index = Vec::new();
         if last > self.idx_synced {
@@ -1180,6 +1278,18 @@ impl Log {
             }
             self.idx_synced = last;
         }
+        index
+    }
+
+    /// [`write_snapshot`](Self::write_snapshot), to run off the writer's
+    /// thread ([`SnapshotJob::run`]): it syncs the log written so far (all
+    /// of it up to `log_index`) and the egress index, then stores the
+    /// snapshot. Retention counts it once done ([`enforce_retention`](Self::enforce_retention)).
+    /// Jobs must run one at a time, in order.
+    pub fn snapshot_job(&mut self, log_index: u64, bytes: Vec<u8>) -> io::Result<SnapshotJob> {
+        assert!(log_index < self.next_index);
+        let sync = self.take_sync()?;
+        let index = self.take_index_files();
         let previous = self
             .latest_snapshot
             .max(self.shared.snapshot_done.load(Ordering::Acquire));

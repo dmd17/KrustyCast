@@ -144,24 +144,60 @@ fn snapshots_are_atomic_and_fall_back_when_corrupt() {
     log.write_snapshot(5, b"five").unwrap();
     log.write_snapshot(8, b"eight").unwrap();
     log.write_snapshot(10, b"ten").unwrap();
-    let names: Vec<String> = fs::read_dir(&d.0)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".snap"))
+    // Two slots, overwritten in place: the latest two snapshots.
+    let mut held: Vec<u64> = SNAP_SLOTS
+        .iter()
+        .filter_map(|n| slot_index(&d.0.join(n)))
         .collect();
-    assert_eq!(names.len(), 2, "keeps the latest two: {names:?}");
+    held.sort_unstable();
+    assert_eq!(held, vec![8, 10]);
     drop(log);
     assert_eq!(
         Log::open(cfg(&d)).unwrap().snapshot,
         Some((10, b"ten".to_vec()))
     );
-    // Corrupt the newest: open falls back to the previous one.
-    let p = d.0.join(name("snap", 10, "snap"));
-    let f = OpenOptions::new().write(true).open(&p).unwrap();
+    // Corrupt the newest (as a torn write would): open falls back.
+    let newest = SNAP_SLOTS
+        .iter()
+        .find(|n| slot_index(&d.0.join(n)) == Some(10))
+        .unwrap();
+    let f = OpenOptions::new()
+        .write(true)
+        .open(d.0.join(newest))
+        .unwrap();
     f.write_all_at(b"X", 32).unwrap();
     assert_eq!(
         Log::open(cfg(&d)).unwrap().snapshot,
         Some((8, b"eight".to_vec()))
+    );
+}
+
+#[test]
+fn snapshots_of_the_old_format_are_read_then_replaced() {
+    let d = Dir::new("snapold");
+    let mut log = Log::open(cfg(&d)).unwrap().log;
+    fill(&mut log, 1, 11);
+    // The old format: one file per snapshot.
+    let mut h = [0u8; 32];
+    h[0..8].copy_from_slice(&SNAP_MAGIC.to_le_bytes());
+    h[8..16].copy_from_slice(&7u64.to_le_bytes());
+    h[16..24].copy_from_slice(&5u64.to_le_bytes());
+    h[24..28].copy_from_slice(&crc32c::crc32c(b"seven").to_le_bytes());
+    let mut file = h.to_vec();
+    file.extend_from_slice(b"seven");
+    fs::write(d.0.join(name("snap", 7, "snap")), &file).unwrap();
+    drop(log);
+    let mut o = Log::open(cfg(&d)).unwrap();
+    assert_eq!(o.snapshot, Some((7, b"seven".to_vec())));
+    o.log.write_snapshot(9, b"nine").unwrap();
+    assert!(
+        !d.0.join(name("snap", 7, "snap")).exists(),
+        "old file removed"
+    );
+    drop(o);
+    assert_eq!(
+        Log::open(cfg(&d)).unwrap().snapshot,
+        Some((9, b"nine".to_vec()))
     );
 }
 

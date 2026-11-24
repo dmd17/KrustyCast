@@ -200,8 +200,13 @@ impl Background {
         let thread = std::thread::Builder::new()
             .name("krusty-fsync".into())
             .spawn(move || {
+                let debug = std::env::var_os("KRUSTY_STORE_DEBUG").is_some();
                 for job in rx {
                     let t0 = crate::metrics::mono_ns();
+                    let kind = match &job {
+                        Job::Sync(_) => "sync",
+                        Job::Snapshot(_) => "snapshot",
+                    };
                     match job {
                         Job::Sync(j) => j.run().unwrap_or_else(|e| fatal("sync", e)),
                         Job::Snapshot(j) => {
@@ -211,7 +216,11 @@ impl Background {
                             d.fetch_add(1, Ordering::Release);
                         }
                     }
-                    stats.store_sync.record(crate::metrics::mono_ns() - t0);
+                    let t1 = crate::metrics::mono_ns();
+                    stats.store_sync.record(t1 - t0);
+                    if debug && t1 - t0 > 2_000_000 {
+                        eprintln!("store-debug job {kind} {t0} {t1} {}us", (t1 - t0) / 1000);
+                    }
                     b.store(false, Ordering::Release);
                 }
             })
@@ -399,6 +408,9 @@ pub(crate) fn store_stage(
             log.flush().unwrap_or_else(|e| fatal("write", e));
             let t1 = crate::metrics::mono_ns();
             stats.store_write.record(t1 - t0);
+            if t1 - t0 > 1_000_000 && std::env::var_os("KRUSTY_STORE_DEBUG").is_some() {
+                eprintln!("store-debug write {t0} {t1} {}us", (t1 - t0) / 1000);
+            }
             stats
                 .store_group
                 .record(t1 - if group_start == 0 { t0 } else { group_start });
