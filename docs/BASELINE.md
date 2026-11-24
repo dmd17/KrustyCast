@@ -908,20 +908,37 @@ ceiling; see "Current results" and "One load generator for both".)
 
 ### Memory and disk
 
-PSS (proportional set size: memory shared between processes counted
-once), sampled each second; flat across rates for both:
+**Current (2026-11-24, 300k msg/s, `sweep21.sh` layout).** PSS
+(proportional set size: memory shared between processes counted once),
+the median over the measured minute; the same on tmpfs and on disk.
+Sampled once a second by `bench/results/e3-issue1/memsample.py`.
 
 | | Aeron Cluster | KrustyCast |
 |---|---|---|
-| Leader | driver 1.3 GB + node 1.4 GB | 129 MB |
-| Each follower | 1.2 GB + 1.3 GB | 119 MB |
-| Client | driver 1.2 GB + client 1.1 GB | 2 MB |
-| Total | about 10 GB | about 370 MB |
-| Of which | 8 x 1 GB pre-touched heap (our setting; the suite's is 4 GB); live heap a few MB; 1.3 GB of term buffers in /dev/shm | all allocated at start; `outcome_ring = 1024` (mode b runs) raises a node to about 240 MB |
-| Disk per message per node | about 122 B (archive) | about 155 B (log, egress index) |
+| Leader | node 1.37 GB + its media driver 1.31 GB | 248 MB |
+| Each follower | node 1.28 GB + media driver 1.22 GB | 232 MB |
+| Client | C media driver (`aeronmd`) 97 MB + rig 49 MB | rig 9 MB |
+| Total | 7.8 GB | 0.72 GB |
+| Peak RSS per node | node 1.8–2.0 GB + driver 1.4–1.6 GB | 335 MB |
+| Of which | about 1.08 GB per JVM is pre-touched heap (our setting, 1 GB; the suite's is 4 GB), the live heap a few MB; 140–290 MB per process of term buffers in /dev/shm | all anonymous, allocated at start; most of it scales with `outcome_ring` (1024 here, the rig's window) |
 
-Aeron's floor with small heaps would be about 2 GB, mostly term buffers,
-which its term length sets.
+- **Storage grows with every message** in these runs for both systems
+  (no retention limit was reached), and on tmpfs it is RAM too. After a
+  70 s run at 300k (about 21 M messages): on tmpfs, Aeron's archive data
+  was 7.5 GB plus 1.2 GB of node directories; KrustyCast's logs were
+  9.5 GB (2.6–3.8 GB per node). On disk, 2.4–2.6 GB per node for Aeron
+  and 3.2 GB for KrustyCast.
+- **Per message per node:** about 120–125 B for Aeron (archive) and
+  150–160 B for KrustyCast. KrustyCast's extra is the egress index (16 B
+  per message) and the unused end of preallocated 256 MiB segments.
+- **Aeron's floor** with small heaps would be about 2 GB, mostly term
+  buffers, which its term length sets (2026-11-17 analysis).
+
+**2026-11-17, superseded** (Java clients, `outcome_ring = 64`): Aeron
+about 10 GB in total (its client 2.3 GB: a Java driver and a Java client),
+KrustyCast about 370 MB (119–129 MB per node). The rig and the C media
+driver took Aeron's client to 0.15 GB; `outcome_ring = 1024` took a
+KrustyCast node to 232–248 MB, as the mode (b) runs had shown then.
 
 ### Findings
 
